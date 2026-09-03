@@ -7,11 +7,25 @@ services:
         AGENTMEMORY_VERSION: "0.9.29"
         III_VERSION: "0.11.2"
         III_SDK_VERSION: "0.11.2"
+        VOYAGE_EMBEDDING_MODEL: "${VOYAGE_EMBEDDING_MODEL:-voyage-code-4}"
     restart: unless-stopped
+    # Coolify treats the compose file as the single source of truth: a variable
+    # set in the dashboard only reaches the container if it is referenced here.
     environment:
-      SERVICE_FQDN_AGENTMEMORY_3111: ${SERVICE_FQDN_AGENTMEMORY_3111}
+      # Pinned rather than auto-detected. detectEmbeddingProvider() ranks
+      # Gemini and OpenAI above Voyage, so adding an unrelated LLM key later
+      # would silently switch the embedding backend and invalidate the index.
+      EMBEDDING_PROVIDER: "voyage"
+      VOYAGE_API_KEY: "${VOYAGE_API_KEY:?}"
+      # A non-loopback viewer bind refuses to boot without both a secret and an
+      # explicit Host allowlist (its DNS-rebinding defence). The secret comes
+      # from the entrypoint's /data/.hmac; the allowlist must be supplied here.
+      AGENTMEMORY_VIEWER_HOST: "0.0.0.0"
+      VIEWER_ALLOWED_HOSTS: "${VIEWER_ALLOWED_HOSTS:?}"
+      VIEWER_ALLOWED_ORIGINS: "${VIEWER_ALLOWED_ORIGINS:?}"
     expose:
       - "3111"
+      - "3113"
     volumes:
       - agentmemory-data:/data
     healthcheck:
@@ -20,6 +34,32 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Routing bypasses Coolify's Traefik entirely: the tunnel dials out to
+  # Cloudflare, so the host needs no inbound ports and no published port
+  # exists for anyone to reach directly. Ingress hostnames are configured
+  # remotely against the tunnel and resolve `agentmemory` over the network
+  # Coolify creates for this stack.
+  #
+  # No `networks:` key here on purpose — Coolify attaches Traefik to its own
+  # generated network, and a second custom network makes routing pick an
+  # unreachable IP non-deterministically.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.8.3
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${CF_TUNNEL_TOKEN:?}"
+    # Waiting on the healthcheck keeps the tunnel from advertising an origin
+    # that would 502 while the engine is still rebuilding its index on boot.
+    depends_on:
+      agentmemory:
+        condition: service_healthy
     logging:
       driver: json-file
       options:
