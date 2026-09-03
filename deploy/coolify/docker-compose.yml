@@ -17,6 +17,11 @@ services:
       # would silently switch the embedding backend and invalidate the index.
       EMBEDDING_PROVIDER: "voyage"
       VOYAGE_API_KEY: "${VOYAGE_API_KEY:?}"
+      # Optional. When empty the entrypoint generates a secret on first boot
+      # and prints it once — recoverable only if this container's stdout is
+      # readable, which Coolify's single-container log API does not guarantee.
+      # Setting it makes the credential reproducible and rotatable from here.
+      AGENTMEMORY_SECRET: "${AGENTMEMORY_SECRET:-}"
       # A non-loopback viewer bind refuses to boot without both a secret and an
       # explicit Host allowlist (its DNS-rebinding defence). The secret comes
       # from the entrypoint's /data/.hmac; the allowlist must be supplied here.

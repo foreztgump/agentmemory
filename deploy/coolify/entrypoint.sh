@@ -77,7 +77,24 @@ workers:
 EOF
 chown "$RUN_AS" "$III_CONFIG"
 
-if [ ! -s "$HMAC_FILE" ]; then
+# An operator-supplied secret wins over the stored one.
+#
+# The generate-and-print-once flow assumes the operator can read this
+# container's stdout, which is not true on every platform: Coolify's log API
+# exposes only one container of a compose stack, so a generated secret can
+# become unrecoverable without SSH to the host. Seeding from the environment
+# keeps the deployment reproducible and makes rotation a variable change plus
+# a restart, rather than a shell on the volume.
+#
+# The value is still persisted to the volume so the running app keeps a single
+# source of truth, and it is never echoed back to the log.
+if [ -n "${AGENTMEMORY_SECRET:-}" ]; then
+  umask 077
+  printf '%s\n' "$AGENTMEMORY_SECRET" > "$HMAC_FILE"
+  chmod 600 "$HMAC_FILE"
+  chown "$RUN_AS" "$HMAC_FILE"
+  echo "agentmemory: using operator-supplied HMAC secret from the environment"
+elif [ ! -s "$HMAC_FILE" ]; then
   SECRET="$(openssl rand -hex 32)"
   umask 077
   printf '%s\n' "$SECRET" > "$HMAC_FILE"
@@ -88,7 +105,8 @@ if [ ! -s "$HMAC_FILE" ]; then
   echo "AGENTMEMORY_SECRET=$SECRET"
   echo "Copy this value now. It will not be printed again."
   echo "Stored at: $HMAC_FILE (chmod 600)"
-  echo "To rotate: delete $HMAC_FILE on the persistent volume and restart."
+  echo "To rotate: set AGENTMEMORY_SECRET in the environment and restart,"
+  echo "or delete $HMAC_FILE on the persistent volume and restart."
   echo "================================================================"
 fi
 
