@@ -18,6 +18,8 @@ provisioning, log aggregation, and the deploy webhook for you.
 - An HTTP health-check at `/agentmemory/livez` declared in the
   Dockerfile (`HEALTHCHECK` directive). Coolify reuses it for
   rolling-deploy decisions.
+- An engine watchdog in the entrypoint that restarts the container if
+  the iii engine dies after boot (see [Engine watchdog](#engine-watchdog)).
 
 ## One-time setup
 
@@ -106,6 +108,35 @@ Coolify exposes the named volume on the host filesystem under
 up with your existing host-level snapshot tooling (Restic, Borg,
 `rsync`, BTRFS snapshots, etc.) or via Coolify's built-in *Backups*
 feature for Docker volumes.
+
+## Engine watchdog
+
+The agentmemory CLI starts the iii engine as a detached child and does
+not supervise it. If the engine dies after boot, the container keeps
+running but `:3111` refuses connections: Coolify shows the app as
+`running:unhealthy` and the proxy (or tunnel) returns **502**. Docker
+never restarts an unhealthy container on its own.
+
+The entrypoint runs a watchdog to close that gap. It waits for the
+first successful `livez` probe (so a slow first boot is left to the
+healthcheck's `start_period`), then probes every 30 seconds. After 3
+consecutive failures it stops the agentmemory process, the container
+exits, and `restart: unless-stopped` brings the stack back — roughly
+90 seconds of downtime instead of an outage that lasts until someone
+notices. Its log lines are prefixed `agentmemory-watchdog:`.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `AGENTMEMORY_WATCHDOG_INTERVAL` | `30` | Seconds between probes. `0` disables the watchdog. |
+| `AGENTMEMORY_WATCHDOG_FAILURES` | `3` | Consecutive failed probes before the restart. |
+
+Both are read by the entrypoint, so to change them add them to the
+`environment:` block in `docker-compose.yml` — Coolify only passes
+variables that the compose file references.
+
+If the app is stuck at `running:unhealthy` on an image built before
+the watchdog existed, restart it from the dashboard (or
+`POST /api/v1/applications/<uuid>/restart`); `/data` is preserved.
 
 ## Cost floor and resources
 
