@@ -113,4 +113,44 @@ fi
 AGENTMEMORY_SECRET="$(cat "$HMAC_FILE")"
 export AGENTMEMORY_SECRET
 
+# The CLI spawns iii-engine as a detached child and never supervises it. If the
+# engine dies after boot, the CLI stays up, so the container sits at
+# "unhealthy" with :3111 refusing connections — and Docker never restarts an
+# unhealthy container on its own. This watchdog turns a dead engine into a
+# container exit so `restart: unless-stopped` recovers it.
+#
+# It arms only after the first successful probe, so a slow first boot (index
+# rebuild) is left to the healthcheck's start_period. It targets $$, which the
+# exec below turns into the agentmemory process; tini then exits with it.
+# Set AGENTMEMORY_WATCHDOG_INTERVAL=0 to disable.
+WATCHDOG_INTERVAL="${AGENTMEMORY_WATCHDOG_INTERVAL:-30}"
+WATCHDOG_FAILURES="${AGENTMEMORY_WATCHDOG_FAILURES:-3}"
+WATCHDOG_URL="http://127.0.0.1:3111/agentmemory/livez"
+
+if [ "$WATCHDOG_INTERVAL" -gt 0 ]; then
+  (
+    main_pid=$$
+    until curl -fsS --max-time 10 -o /dev/null "$WATCHDOG_URL" 2>/dev/null; do
+      sleep 5
+    done
+    echo "agentmemory-watchdog: engine healthy, watching $WATCHDOG_URL every ${WATCHDOG_INTERVAL}s"
+    failures=0
+    while sleep "$WATCHDOG_INTERVAL"; do
+      if curl -fsS --max-time 10 -o /dev/null "$WATCHDOG_URL" 2>/dev/null; then
+        failures=0
+        continue
+      fi
+      failures=$((failures + 1))
+      echo "agentmemory-watchdog: livez probe failed ($failures/$WATCHDOG_FAILURES)"
+      if [ "$failures" -ge "$WATCHDOG_FAILURES" ]; then
+        echo "agentmemory-watchdog: engine unresponsive, stopping container for restart"
+        kill -TERM "$main_pid" 2>/dev/null || true
+        sleep 20
+        kill -KILL "$main_pid" 2>/dev/null || true
+        exit 0
+      fi
+    done
+  ) &
+fi
+
 exec gosu "$RUN_AS" agentmemory "$@"
