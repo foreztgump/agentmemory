@@ -4,12 +4,32 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        AGENTMEMORY_VERSION: "0.9.29"
-        III_VERSION: "0.11.2"
-        III_SDK_VERSION: "0.11.2"
+        AGENTMEMORY_VERSION: "0.9.30"
+        III_VERSION: "0.22.1"
+        III_SDK_VERSION: "0.22.1"
+        VOYAGE_EMBEDDING_MODEL: "${VOYAGE_EMBEDDING_MODEL:-voyage-code-4}"
     restart: unless-stopped
+    # Keeps an engine leak inside this container's cgroup instead of pushing the
+    # whole host into swap and global OOM kills of unrelated services.
+    mem_limit: "${AGENTMEMORY_MEM_LIMIT:-1536m}"
+    # Coolify treats the compose file as the single source of truth: a variable
+    # set in the dashboard only reaches the container if it is referenced here.
     environment:
       SERVICE_FQDN_AGENTMEMORY_3111: ${SERVICE_FQDN_AGENTMEMORY_3111}
+      # Pinned rather than auto-detected. detectEmbeddingProvider() ranks
+      # Gemini and OpenAI above Voyage, so adding an unrelated LLM key later
+      # would silently switch the embedding backend and invalidate the index.
+      EMBEDDING_PROVIDER: "voyage"
+      VOYAGE_API_KEY: "${VOYAGE_API_KEY:?}"
+      AGENTMEMORY_SECRET: "${AGENTMEMORY_SECRET:-}"
+      # Summaries and consolidation run on an Anthropic-format endpoint (CLIProxy).
+      # Without ANTHROPIC_MODEL the provider defaults to a Sonnet-class model.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-}"
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-haiku-5-5}"
+      # Per-observation compression is one LLM call per tool use; summaries and
+      # consolidation cover recall at a fraction of the request volume.
+      AGENTMEMORY_AUTO_COMPRESS: "${AGENTMEMORY_AUTO_COMPRESS:-false}"
     expose:
       - "3111"
     volumes:
@@ -18,7 +38,8 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3111/agentmemory/livez || exit 1"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
+      # 0.9.30 runs one-time state migrations and an index backfill on first boot.
+      start_period: 300s
       retries: 3
     logging:
       driver: json-file
