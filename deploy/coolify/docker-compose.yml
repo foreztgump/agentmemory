@@ -12,6 +12,9 @@ services:
     # Keeps an engine leak inside this container's cgroup instead of pushing the
     # whole host into swap and global OOM kills of unrelated services.
     mem_limit: "${AGENTMEMORY_MEM_LIMIT:-1536m}"
+    depends_on:
+      valkey:
+        condition: service_healthy
     # Coolify treats the compose file as the single source of truth: a variable
     # set in the dashboard only reaches the container if it is referenced here.
     environment:
@@ -30,6 +33,11 @@ services:
       # Per-observation compression is one LLM call per tool use; summaries and
       # consolidation cover recall at a fraction of the request volume.
       AGENTMEMORY_AUTO_COMPRESS: "${AGENTMEMORY_AUTO_COMPRESS:-false}"
+      # On this host the iii 0.22.1 file backend never became ready within the
+      # CLI's 15 s startup window (six attempts, two data sets); the Redis
+      # backend boots in seconds and keeps state out of the engine process.
+      AGENTMEMORY_STATE_BACKEND: "redis"
+      AGENTMEMORY_REDIS_URL: "redis://valkey:6379"
     expose:
       - "3111"
     volumes:
@@ -47,5 +55,26 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # appendonly because the default snapshot policy can lose minutes of writes;
+  # noeviction because an LRU policy would silently drop memories at the cap.
+  valkey:
+    image: valkey/valkey:9
+    restart: unless-stopped
+    command: valkey-server --appendonly yes --appendfsync everysec --maxmemory ${VALKEY_MAXMEMORY:-1gb} --maxmemory-policy noeviction
+    mem_limit: "${VALKEY_MEM_LIMIT:-1536m}"
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   agentmemory-data:
+  valkey-data:
