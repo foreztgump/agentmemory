@@ -51,6 +51,17 @@ RUN set -eu; \
     fi; \
     echo "patched embedding model -> ${VOYAGE_EMBEDDING_MODEL} in $patched bundle(s)"
 
+# The CLI waits a hardcoded 15 s for the worker to report ready, then kills
+# the engine and exits. On the Datalix VM, restoring the search index for a
+# few thousand memories takes longer than that, so a populated store never
+# boots and the container restart-loops. Raise the wait; the grep gate fails
+# the build if upstream renames the call instead of silently dropping the fix.
+RUN set -eu; \
+    cli=/opt/agentmemory/node_modules/@agentmemory/agentmemory/dist/cli.mjs; \
+    grep -q 'waitForAgentmemoryReady(15e3)' "$cli" \
+      || { echo "FATAL: waitForAgentmemoryReady(15e3) absent from $cli; re-check the worker readiness timeout" >&2; exit 1; }; \
+    sed -i 's/waitForAgentmemoryReady(15e3)/waitForAgentmemoryReady(18e4)/g; s/did not become ready within 15s/did not become ready within 180s/g' "$cli"
+
 ENV AGENTMEMORY_III_VERSION=${III_VERSION} \
     TINI_SUBREAPER=1
 
