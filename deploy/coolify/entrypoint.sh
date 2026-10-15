@@ -120,6 +120,14 @@ fi
 AGENTMEMORY_SECRET="$(cat "$HMAC_FILE")"
 export AGENTMEMORY_SECRET
 
+# Every container start begins a fresh process tree, so any pidfile in the
+# runtime dir is stale. A restart (host reboot, the watchdog below, OOM) keeps
+# the container layer, and the old worker.pid usually names a live PID, often
+# the CLI's own. The CLI then believes a worker is running, never starts one,
+# and the container loops on "worker did not become ready".
+RUNTIME_DIR="$(getent passwd "${RUN_AS%%:*}" | cut -d: -f6)/.agentmemory"
+rm -f "$RUNTIME_DIR/worker.pid" "$RUNTIME_DIR/iii.pid"
+
 # The CLI spawns iii-engine as a detached child and never supervises it. If the
 # engine dies after boot, the CLI stays up, so the container sits at
 # "unhealthy" with :3111 refusing connections — and Docker never restarts an
