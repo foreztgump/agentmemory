@@ -9,7 +9,7 @@ In Coolify, set the base directory to `/` and the Compose path to
 `/deploy/coolify/docker-compose.yml`. The stack builds upstream's shared
 `deploy/Dockerfile` from the repository root.
 
-This branch (`voyage4-only`) serves the main instance. Coolify's Traefik routes the domain set as `https://<fqdn>:3111` to the container; Cloudflare Access sits in front, so clients go through a proxy that adds the Access service-token headers.
+This branch (`chore/coolify-0.9.31-main`) serves the main instance. Coolify's Traefik routes the domain set as `https://<fqdn>:3111` to the container; Cloudflare Access sits in front, so clients go through a proxy that adds the Access service-token headers. Auto-deploy is on for this application, so every push to the branch rebuilds and redeploys it.
 
 ## What runs
 
@@ -47,13 +47,19 @@ Behaviour settings in use:
 |---|---|---|
 | `AGENTMEMORY_AUTO_COMPRESS` | `false` | Compression costs one LLM call per tool use. Summaries and consolidation give recall at a fraction of the calls. |
 | `CONSOLIDATION_ENABLED` | `true` | Distils session summaries into semantic facts and procedures. The semantic step waits for at least 5 session summaries. |
-| `AGENTMEMORY_CONSOLIDATION_COOLDOWN_MS`, `CONSOLIDATION_INTERVAL_MS` | `21600000`, `86400000` on high-traffic stacks | Session-end consolidation otherwise runs every 5 min, and repeated runs can write reworded duplicate facts (upstream #1486). |
-| `AGENTMEMORY_MEM_LIMIT` | `2560m` (compose default) | The worker keeps every vector in memory (about 4 KB per document) and Node caps its heap at about half the container limit. At 1536m the heap cap was 830 MB with 610 MB in use at 88k documents. |
+| `AGENTMEMORY_CONSOLIDATION_COOLDOWN_MS`, `CONSOLIDATION_INTERVAL_MS` | `21600000`, `86400000` | Session-end consolidation otherwise runs every 5 min, and repeated runs can write reworded duplicate facts (upstream #1486). |
+| `MAX_OBS_PER_SESSION` | `2000` | Each capture lists the whole session before it checks this cap. At 5000, two sessions passed 4,000 observations and every capture from them timed out at 180 s. Captures past the cap are dead-lettered; end an agent session that reaches it rather than raising it. |
+| `AGENTMEMORY_FINALIZE_IDLE_MS` | `900000` | A session is finalized and summarized after 15 idle minutes instead of 2, so fewer summary passes (about 14 s each) run. |
+| `AUTO_FORGET_INTERVAL_MS` | `86400000` | Auto-forget lists every observation in the store. Hourly runs deleted nothing on a store under 180 days old. |
+| `AGENTMEMORY_AUDIT_RETENTION_MONTHS` | `1` | The default `0` keeps the audit log forever. A daily sweep drops calendar months older than the previous one. |
+| `AGENTMEMORY_VECTOR_BACKFILL`, `AGENTMEMORY_VECTOR_BACKFILL_MAX` | `all`, `30000` | Embeds documents that lack a vector on each boot. The cap applies per boot, and the default 500 needed dozens of restarts for buddy's 28k gap. |
+| `AGENTMEMORY_MEM_LIMIT` | main `3200m`, buddy `2g` | The worker keeps every vector in memory (about 4 KB per document) and Node caps its heap at about 60 % of the container limit: 830 MB at 1536m, 1.54 GB at 2560m, 1.88 GB at 3200m. Main ran 2.0-2.1 GB RSS at 91k documents. |
+| `VALKEY_MAXMEMORY`, `VALKEY_MEM_LIMIT` | main `5gb`, `6g`; buddy `3gb`, `3584m` | On 2026-10-27 main used 1.02 GB and grew about 50 MB a day; buddy used 0.76 GB and grew about 25 MB a day. Main reaches 5 GB around mid-January 2027. Raise both values together before then. |
 | `LESSON_DECAY_ENABLED` | `false` | Decay lowers an unreinforced lesson by 0.05 a week and soft-deletes it at 0.1, so unused lessons disappear in about three months (upstream #1065). |
 
 ## Old and stale memories
 
-- Auto-forget runs hourly and stays on. It deletes memories past their `forgetAfter`, deletes observations older than 180 days with importance ≤ 2, and hides the older of two memories that share a concept and are more than 90 % similar. `POST /agentmemory/auto-forget` with `{"dryRun":true}` shows what it would do.
+- Auto-forget runs daily (`AUTO_FORGET_INTERVAL_MS`) and stays on. It deletes memories past their `forgetAfter`, deletes observations older than 180 days with importance ≤ 2, and hides the older of two memories that share a concept and are more than 90 % similar. `POST /agentmemory/auto-forget` with `{"dryRun":true}` shows what it would do.
 - Nothing ages regular memories: search has no recency term and does not read `strength`. Retire an outdated fact when you save its replacement. A new memory more than 70 % similar to an existing one in the same project supersedes it. For a fact that expires, use `POST /agentmemory/remember` with `ttlDays`; the MCP `memory_save` tool has no TTL field.
 - `mem::evict` and `mem::retention-evict` delete permanently and have no timer. Do not run them until upstream #1005 and #1157 are fixed: eviction leaves stale counters and search entries behind. If you must, export first and use `dryRun`.
 
@@ -62,6 +68,7 @@ Behaviour settings in use:
 - **Deploy** rebuilds the image: `POST /api/v1/deploy?uuid=<app>&force=true`. Use it for any change to the `Dockerfile` or entrypoint.
 - **Restart** reuses the existing image: `POST /api/v1/applications/<app>/restart`. Use it for variable changes only.
 - Coolify's edge rejects the default curl user agent (error 1010); send a browser `User-Agent`.
+- Coolify runs compose with `--project-directory` at the repository root, so the build context in `docker-compose.yml` is `.`, not `../..`.
 
 ```bash
 curl "https://<host>/agentmemory/livez"
@@ -79,6 +86,16 @@ curl -H "Authorization: Bearer $AGENTMEMORY_SECRET" -H "Accept: application/json
 4. Watch `/agentmemory/status`: `indexPersistence` should report buckets, and `index.vectorDocuments` should match the count before the upgrade.
 5. Optional: graph indexes for existing graph data are built only on request, with `agentmemory graph-index migrate --allow-legacy-scan --json` run in the container. Discovery reads every legacy graph scope at once, so run it at a quiet time. Keyword and vector search work without it.
 
+## Known limits, left to upstream
+
+These need code changes in agentmemory. The deployment tracks upstream releases rather than patching them.
+
+- `mem::observe` lists every observation in the session for each capture, before it checks `MAX_OBS_PER_SESSION`. Cost grows with session length, and a refused capture costs as much as a stored one.
+- Each session stop lists the whole session and runs the heuristic graph pass even with `GRAPH_EXTRACTION_ENABLED=false`, and writes an audit row naming every observation ID (up to about 120 KB).
+- The Voyage provider embeds search queries with `input_type: "document"`; Voyage recommends `"query"` for queries.
+- Short prompt observations (for example "yes proceed to push") often rank first in semantic search, above relevant lessons and memories.
+- `RERANK_ENABLED=true` needs `@huggingface/transformers`, an optional dependency that `deploy/Dockerfile` prunes.
+
 ## Moving data between backends
 
 agentmemory does not copy data when `AGENTMEMORY_STATE_BACKEND` changes; the new backend starts empty. `migrate-state.sh` copies a store through the REST API:
@@ -93,7 +110,9 @@ To migrate a file-backed stack: back up the volume, deploy the Valkey stack, cop
 
 ## Resources
 
-Measured on the buddy store (28,037 documents, 508 memories): the file backend held 2.65 GB, almost all of it in the engine process. On Valkey the same data used 0.34 GB engine, 0.39 GB worker and 0.28 GB Valkey. A store of 4,061 memories runs at about 0.5 GB plus 50 MB Valkey.
+Measured on the buddy store (28,037 documents, 508 memories): the file backend held 2.65 GB, almost all of it in the engine process. On Valkey the same data used 0.34 GB engine, 0.39 GB worker and 0.28 GB Valkey.
+
+On 2026-10-27, after the 0.9.31 upgrade: main held 91k documents (86k observations, 4.7k memories) at 2.0-2.1 GB container RSS and 1.02 GB Valkey, capturing about 5,000 observations a day; buddy held 47k documents at 1.2 GB RSS and 0.76 GB Valkey.
 
 ## Backups
 
