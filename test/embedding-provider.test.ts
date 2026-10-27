@@ -5,6 +5,7 @@ import {
 } from "../src/providers/embedding/index.js";
 import { GeminiEmbeddingProvider } from "../src/providers/embedding/gemini.js";
 import { OpenAIEmbeddingProvider } from "../src/providers/embedding/openai.js";
+import { VoyageEmbeddingProvider } from "../src/providers/embedding/voyage.js";
 import type { EmbeddingProvider } from "../src/types.js";
 
 describe("createEmbeddingProvider", () => {
@@ -248,5 +249,36 @@ describe("withDimensionGuard", () => {
       }),
     );
     expect(withoutImage.embedImage).toBeUndefined();
+  });
+});
+
+describe("VoyageEmbeddingProvider", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env["VOYAGE_MODEL"];
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+  });
+
+  async function requestedModel(): Promise<string> {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 }),
+    );
+    await new VoyageEmbeddingProvider("test-key").embed("hello");
+    return JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string).model;
+  }
+
+  it("defaults to voyage-code-3", async () => {
+    expect(await requestedModel()).toBe("voyage-code-3");
+  });
+
+  it("respects VOYAGE_MODEL env var", async () => {
+    process.env["VOYAGE_MODEL"] = "voyage-code-4";
+    expect(await requestedModel()).toBe("voyage-code-4");
   });
 });

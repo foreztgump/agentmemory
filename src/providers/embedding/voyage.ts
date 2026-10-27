@@ -3,15 +3,18 @@ import { getEnvVar } from "../../config.js";
 import { fetchWithTimeout } from "../_fetch.js";
 
 const API_URL = "https://api.voyageai.com/v1/embeddings";
+const DEFAULT_MODEL = "voyage-code-3";
 
 export class VoyageEmbeddingProvider implements EmbeddingProvider {
   readonly name = "voyage";
   readonly dimensions = 1024;
   private apiKey: string;
+  private model: string;
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || getEnvVar("VOYAGE_API_KEY") || "";
     if (!this.apiKey) throw new Error("VOYAGE_API_KEY is required");
+    this.model = getEnvVar("VOYAGE_MODEL") || DEFAULT_MODEL;
   }
 
   async embed(text: string): Promise<Float32Array> {
@@ -27,7 +30,7 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "voyage-code-3",
+        model: this.model,
         input: texts,
         input_type: "document",
       }),
