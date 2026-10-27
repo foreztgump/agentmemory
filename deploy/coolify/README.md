@@ -9,7 +9,7 @@ In Coolify, set the base directory to `/` and the Compose path to
 `/deploy/coolify/docker-compose.yml`. The stack builds upstream's shared
 `deploy/Dockerfile` from the repository root.
 
-This branch (`voyage4-only`) serves the main instance. Coolify's Traefik routes the domain set as `https://<fqdn>:3111` to the container; Cloudflare Access sits in front, so clients go through a proxy that adds the Access service-token headers.
+This branch serves agentmemory-buddy. A `cloudflared` service in the stack dials out to Cloudflare, so Traefik is bypassed and the host publishes no port. `CF_TUNNEL_TOKEN`, `VIEWER_ALLOWED_HOSTS` and `VIEWER_ALLOWED_ORIGINS` are required; the viewer listens on `3113` behind a Cloudflare Access application. Viewer live updates now use SSE on the REST port (`/agentmemory/viewer/events`); port 3112 is unused.
 
 ## What runs
 

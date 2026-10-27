@@ -21,8 +21,10 @@ services:
       III_TELEMETRY_ENABLED: "false"
       AGENTMEMORY_VIEWER_HOST: 0.0.0.0
       SERVICE_FQDN_AGENTMEMORY_3111: "${SERVICE_FQDN_AGENTMEMORY_3111:-}"
-      VIEWER_ALLOWED_HOSTS: "${VIEWER_ALLOWED_HOSTS:-localhost:3113,127.0.0.1:3113,[::1]:3113}"
-      VIEWER_ALLOWED_ORIGINS: "${VIEWER_ALLOWED_ORIGINS:-http://localhost:3113,http://127.0.0.1:3113}"
+      # The viewer is served through the tunnel behind a Cloudflare Access
+      # application, so its public Host and origin must be allowlisted here.
+      VIEWER_ALLOWED_HOSTS: "${VIEWER_ALLOWED_HOSTS:?}"
+      VIEWER_ALLOWED_ORIGINS: "${VIEWER_ALLOWED_ORIGINS:?}"
       # Pinned rather than auto-detected: detection ranks Gemini and OpenAI above
       # Voyage, so adding an unrelated key would switch the embedding backend.
       EMBEDDING_PROVIDER: "voyage"
@@ -136,6 +138,7 @@ services:
       RERANK_ENABLED: "${RERANK_ENABLED:-}"
     expose:
       - "3111"
+      - "3113"
     volumes:
       - agentmemory-data:/data
     healthcheck:
@@ -165,6 +168,28 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Routing bypasses Coolify's Traefik entirely: the tunnel dials out to
+  # Cloudflare, so the host needs no inbound ports. Ingress hostnames are
+  # configured remotely against the tunnel and resolve `agentmemory` over the
+  # network Coolify creates for this stack. No `networks:` key on purpose: a
+  # second custom network makes routing pick an unreachable IP.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.8.3
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${CF_TUNNEL_TOKEN:?}"
+    # Waiting on the health check keeps the tunnel from advertising an origin
+    # that would 502 while the worker is still loading its index on boot.
+    depends_on:
+      agentmemory:
+        condition: service_healthy
     logging:
       driver: json-file
       options:
