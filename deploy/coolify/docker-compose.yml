@@ -28,7 +28,10 @@ services:
       # Pinned rather than auto-detected: detection ranks Gemini and OpenAI above
       # Voyage, so adding an unrelated key would switch the embedding backend.
       EMBEDDING_PROVIDER: "voyage"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      # Blank on purpose: provider detection prefers OpenAI and MiniMax keys over
+      # Anthropic, so either one in the app's variables would move summaries
+      # off the CLIProxy endpoint.
+      OPENAI_API_KEY: ""
       OPENAI_API_KEY_FOR_LLM: "${OPENAI_API_KEY_FOR_LLM:-}"
       OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
       OPENAI_MODEL: "${OPENAI_MODEL:-}"
@@ -48,7 +51,7 @@ services:
       COHERE_MODEL: "${COHERE_MODEL:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       OPENROUTER_MODEL: "${OPENROUTER_MODEL:-}"
-      MINIMAX_API_KEY: "${MINIMAX_API_KEY:-}"
+      MINIMAX_API_KEY: ""
       MINIMAX_MODEL: "${MINIMAX_MODEL:-}"
       OLLAMA_HOST: "${OLLAMA_HOST:-}"
       LLM_PROVIDER: "${LLM_PROVIDER:-}"
