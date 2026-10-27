@@ -4,6 +4,16 @@ services:
       context: ../..
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
+    # Caps the stack's engine and workers inside this container's cgroup so a
+    # leak cannot push the host into swap. Node sizes the worker heap from this
+    # limit (about half of it), and the in-memory vector index grows with the
+    # store, so raise it as the store grows.
+    mem_limit: "${AGENTMEMORY_MEM_LIMIT:-2560m}"
+    depends_on:
+      valkey:
+        condition: service_healthy
+    # Coolify treats the compose file as the single source of truth: a variable
+    # set in the dashboard only reaches the container if it is referenced here.
     environment:
       AGENTMEMORY_DATA_DIR: /data
       HOME: /data/home
@@ -11,10 +21,11 @@ services:
       III_TELEMETRY_ENABLED: "false"
       AGENTMEMORY_VIEWER_HOST: 0.0.0.0
       SERVICE_FQDN_AGENTMEMORY_3111: "${SERVICE_FQDN_AGENTMEMORY_3111:-}"
-      SERVICE_FQDN_AGENTMEMORY_3113: "${SERVICE_FQDN_AGENTMEMORY_3113:-}"
       VIEWER_ALLOWED_HOSTS: "${VIEWER_ALLOWED_HOSTS:-localhost:3113,127.0.0.1:3113,[::1]:3113}"
       VIEWER_ALLOWED_ORIGINS: "${VIEWER_ALLOWED_ORIGINS:-http://localhost:3113,http://127.0.0.1:3113}"
-      EMBEDDING_PROVIDER: "${EMBEDDING_PROVIDER:-}"
+      # Pinned rather than auto-detected: detection ranks Gemini and OpenAI above
+      # Voyage, so adding an unrelated key would switch the embedding backend.
+      EMBEDDING_PROVIDER: "voyage"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENAI_API_KEY_FOR_LLM: "${OPENAI_API_KEY_FOR_LLM:-}"
       OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
@@ -25,12 +36,12 @@ services:
       OPENAI_EMBEDDING_DIMENSIONS: "${OPENAI_EMBEDDING_DIMENSIONS:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-}"
-      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-}"
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-haiku-5-5}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GEMINI_MODEL: "${GEMINI_MODEL:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
-      VOYAGE_API_KEY: "${VOYAGE_API_KEY:-}"
-      VOYAGE_MODEL: "${VOYAGE_MODEL:-}"
+      VOYAGE_API_KEY: "${VOYAGE_API_KEY:?}"
+      VOYAGE_MODEL: "${VOYAGE_MODEL:-voyage-code-4}"
       COHERE_API_KEY: "${COHERE_API_KEY:-}"
       COHERE_MODEL: "${COHERE_MODEL:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
@@ -46,7 +57,7 @@ services:
       MAX_OBS_PER_SESSION: "${MAX_OBS_PER_SESSION:-}"
       CONSOLIDATION_ENABLED: "${CONSOLIDATION_ENABLED:-}"
       GRAPH_EXTRACTION_ENABLED: "${GRAPH_EXTRACTION_ENABLED:-}"
-      AGENTMEMORY_AUTO_COMPRESS: "${AGENTMEMORY_AUTO_COMPRESS:-}"
+      AGENTMEMORY_AUTO_COMPRESS: "${AGENTMEMORY_AUTO_COMPRESS:-false}"
       AGENTMEMORY_INJECT_CONTEXT: "${AGENTMEMORY_INJECT_CONTEXT:-}"
       AGENTMEMORY_ALLOW_AGENT_SDK: "${AGENTMEMORY_ALLOW_AGENT_SDK:-}"
       AGENTMEMORY_SESSION_SWEEP_ENABLED: "${AGENTMEMORY_SESSION_SWEEP_ENABLED:-}"
@@ -56,8 +67,10 @@ services:
       AGENTMEMORY_DROP_STALE_INDEX: "${AGENTMEMORY_DROP_STALE_INDEX:-}"
       AGENTMEMORY_AUDIT_RETENTION_MONTHS: "${AGENTMEMORY_AUDIT_RETENTION_MONTHS:-}"
       AGENTMEMORY_AUDIT_MIGRATE_MAX_BYTES: "${AGENTMEMORY_AUDIT_MIGRATE_MAX_BYTES:-}"
-      AGENTMEMORY_STATE_BACKEND: "${AGENTMEMORY_STATE_BACKEND:-}"
-      AGENTMEMORY_REDIS_URL: "${AGENTMEMORY_REDIS_URL:-}"
+      # The file backend holds every scope in the engine process; on this host it
+      # measured 2.4 GB of engine RSS against 0.6 GB engine plus Valkey.
+      AGENTMEMORY_STATE_BACKEND: "redis"
+      AGENTMEMORY_REDIS_URL: "redis://valkey:6379"
       AGENTMEMORY_STATE_SAVE_INTERVAL_MS: "${AGENTMEMORY_STATE_SAVE_INTERVAL_MS:-}"
       AGENTMEMORY_SECRET: "${AGENTMEMORY_SECRET:-}"
       AGENT_ID: "${AGENT_ID:-}"
@@ -123,15 +136,35 @@ services:
       RERANK_ENABLED: "${RERANK_ENABLED:-}"
     expose:
       - "3111"
-      - "3113"
     volumes:
       - agentmemory-data:/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3111/agentmemory/livez').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
-      start_period: 60s
+      # First boot after an upgrade migrates the vector index and rebuilds BM25.
+      start_period: 300s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # appendonly because the default snapshot policy can lose minutes of writes;
+  # noeviction because an LRU policy would silently drop memories at the cap.
+  valkey:
+    image: valkey/valkey:9
+    restart: unless-stopped
+    command: valkey-server --appendonly yes --appendfsync everysec --maxmemory ${VALKEY_MAXMEMORY:-1gb} --maxmemory-policy noeviction
+    mem_limit: "${VALKEY_MEM_LIMIT:-1536m}"
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     logging:
       driver: json-file
       options:
@@ -140,3 +173,4 @@ services:
 
 volumes:
   agentmemory-data:
+  valkey-data:
