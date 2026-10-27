@@ -74,9 +74,10 @@ curl -H "Authorization: Bearer $AGENTMEMORY_SECRET" -H "Accept: application/json
 ## Upgrading from 0.9.30
 
 1. Back up `valkey-data` (see Backups). The vector index format is unchanged from 0.9.30, but 0.9.31 writes new records (compression recovery, summary watermarks, graph index controls), so the backup is the way back to 0.9.30.
-2. Switch the application's branch, base directory and Compose path, then deploy (a restart reuses the old image).
-3. Watch `/agentmemory/status`: `indexPersistence` should report buckets, and `index.vectorDocuments` should match the count before the upgrade.
-4. Optional: graph indexes for existing graph data are built only on request, with `agentmemory graph-index migrate --allow-legacy-scan --json` run in the container. Discovery reads every legacy graph scope at once, so run it at a quiet time. Keyword and vector search work without it.
+2. Check Valkey's size: `docker exec <valkey-container> valkey-cli info memory | grep -E 'used_memory_human|maxmemory_human'`. With `noeviction`, writes fail once `used_memory` reaches `maxmemory`. The compose defaults are now `VALKEY_MAXMEMORY=2gb` and `VALKEY_MEM_LIMIT=3g`; an app variable overrides them, so remove or raise any old 1gb/1536m values.
+3. Switch the application's branch, base directory and Compose path, then deploy (a restart reuses the old image).
+4. Watch `/agentmemory/status`: `indexPersistence` should report buckets, and `index.vectorDocuments` should match the count before the upgrade.
+5. Optional: graph indexes for existing graph data are built only on request, with `agentmemory graph-index migrate --allow-legacy-scan --json` run in the container. Discovery reads every legacy graph scope at once, so run it at a quiet time. Keyword and vector search work without it.
 
 ## Moving data between backends
 

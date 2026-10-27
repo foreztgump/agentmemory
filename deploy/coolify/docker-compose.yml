@@ -158,12 +158,16 @@ services:
         max-file: "3"
 
   # appendonly because the default snapshot policy can lose minutes of writes;
-  # noeviction because an LRU policy would silently drop memories at the cap.
+  # noeviction because an LRU policy would silently drop memories at the cap,
+  # which also means writes fail once the store reaches VALKEY_MAXMEMORY.
+  # An AOF rewrite forks, and copy-on-write pages count against the container
+  # limit, so keep VALKEY_MEM_LIMIT at about 1.5x VALKEY_MAXMEMORY and raise
+  # the two together.
   valkey:
     image: valkey/valkey:9
     restart: unless-stopped
-    command: valkey-server --appendonly yes --appendfsync everysec --maxmemory ${VALKEY_MAXMEMORY:-1gb} --maxmemory-policy noeviction
-    mem_limit: "${VALKEY_MEM_LIMIT:-1536m}"
+    command: valkey-server --appendonly yes --appendfsync everysec --maxmemory ${VALKEY_MAXMEMORY:-2gb} --maxmemory-policy noeviction
+    mem_limit: "${VALKEY_MEM_LIMIT:-3g}"
     volumes:
       - valkey-data:/data
     healthcheck:

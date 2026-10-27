@@ -30,7 +30,7 @@ while :; do
   [ "$code" = 200 ] || { echo "export failed http=$code: $(head -c 400 "$WORK/chunk.json")" >&2; exit 1; }
   got=$(jq '.sessions | length' "$WORK/chunk.json")
   if [ "$first" = 1 ]; then
-    cp "$WORK/chunk.json" "$WORK/full-first-chunk.json"
+    version=$(jq -r '.version' "$WORK/chunk.json")
     first=0
   else
     jq --argjson keep "$SESSION_KEYS" 'with_entries(select(.key as $k | $keep | index($k))) + {memories: []}' \
@@ -47,18 +47,25 @@ echo "chunked export copied $total sessions"
 
 # Sessions too large to export alongside the shared collections are rebuilt
 # from the per-session observation list, which carries the same fields.
-curl -sS -m 300 -H "$AUTH" "$SRC/agentmemory/sessions" > "$WORK/src-sessions.json"
-curl -sS -m 300 -H "$DST_AUTH" "$DST/agentmemory/sessions" > "$WORK/dst-sessions.json"
+get() {
+  local out=$1 auth=$2 code
+  shift 2
+  code=$(curl -sS -m 300 -o "$out" -w '%{http_code}' -H "$auth" "$@")
+  [ "$code" = 200 ] || { echo "GET failed http=$code: $(head -c 400 "$out")" >&2; exit 1; }
+}
+get "$WORK/src-sessions.json" "$AUTH" "$SRC/agentmemory/sessions"
+get "$WORK/dst-sessions.json" "$DST_AUTH" "$DST/agentmemory/sessions"
 jq -r --slurpfile d "$WORK/dst-sessions.json" '($d[0].sessions | map(.id)) as $have | .sessions[] | select(.id as $i | $have | index($i) | not) | .id' \
   "$WORK/src-sessions.json" > "$WORK/missing.txt"
 echo "reconcile: $(wc -l < "$WORK/missing.txt") sessions missing at destination"
 while read -r sid; do
-  curl -sS -m 300 -G -H "$AUTH" --data-urlencode "sessionId=$sid" "$SRC/agentmemory/observations" > "$WORK/obs.json"
-  jq -n --arg sid "$sid" --slurpfile s "$WORK/src-sessions.json" --slurpfile o "$WORK/obs.json" '{
-      version: "0.9.30", exportedAt: (now | todate),
+  get "$WORK/obs.json" "$AUTH" -G --data-urlencode "sessionId=$sid" "$SRC/agentmemory/observations"
+  jq -n --arg sid "$sid" --arg version "$version" --slurpfile s "$WORK/src-sessions.json" --slurpfile o "$WORK/obs.json" '{
+      version: $version, exportedAt: (now | todate),
       sessions: [$s[0].sessions[] | select(.id == $sid)],
       observations: {($sid): $o[0].observations}, summaries: [], memories: []}' > "$WORK/one.json"
   import_file "$WORK/one.json"
   echo "reconciled $sid ($(jq '.observations | length' "$WORK/obs.json") observations)"
 done < "$WORK/missing.txt"
-curl -sS -m 300 -H "$DST_AUTH" "$DST/agentmemory/sessions" | jq -r '"destination now has \(.sessions | length) sessions"'
+get "$WORK/dst-sessions.json" "$DST_AUTH" "$DST/agentmemory/sessions"
+jq -r '"destination now has \(.sessions | length) sessions"' "$WORK/dst-sessions.json"
