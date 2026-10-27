@@ -1,7 +1,9 @@
 services:
   agentmemory:
+    # Coolify runs compose with --project-directory set to the repository root,
+    # so the context is relative to the root, not to this file.
     build:
-      context: ../..
+      context: .
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
     # Caps the stack's engine and workers inside this container's cgroup so a
