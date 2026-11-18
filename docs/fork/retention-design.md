@@ -123,7 +123,7 @@ Each candidate carries the reason and the protection checks it passed. The plan 
 
 ### 4.4 Soft delete
 
-Soft delete moves the row out of its live scope into a trash scope `mem:retention:trash:<runId>`, value `{ scope, key, row, stage, reason }`. To every upstream reader the row is gone, exactly as after a delete, so no upstream reader needs a "skip deleted" check. That is the main reason to prefer a trash scope over an in-place `deletedAt` flag, which every reader of observations and memories would have to learn.
+Soft delete moves the row out of its live scope into a trash scope `mem:retention:trash:<runId>`, value `{ scope, key, row, stage, reason, vector }`, where `vector` is the stored embedding read before removal (through the vector port), so a restore never re-embeds. To every upstream reader the row is gone, exactly as after a delete, so no upstream reader needs a "skip deleted" check. That is the main reason to prefer a trash scope over an in-place `deletedAt` flag, which every reader of observations and memories would have to learn.
 
 In the same step, per item:
 - Remove the keyword entry and the vector through the existing calls `getSearchIndex().remove(id)` and `vectorIndexRemove(id)` (`functions/search.ts`). In the fork these are the `KeywordIndexPort` and `VectorStorePort` from `design/sonnet/design.md` §5.1, which enqueue `del` and `vec-del` ops in the `SearchOutbox`; the reconcile pass deletes any index entry whose record is missing (design §6.6), so a lost op is repaired. Retention never talks to Qdrant directly.
@@ -139,7 +139,7 @@ Demote (stage C) does not move the row. It removes it from both indexes and reco
 
 ### 4.5 Restore
 
-`restore(runId)` moves every trash entry back to its scope, re-adds index entries (the existing `restoreIndexEntries`, `observe.ts:51-64`, already re-adds keyword and vector for an observation), clears tombstones, re-increments counters. Restoring a vector re-embeds it: a deleted vector cannot be undeleted in Qdrant. Restores are rare; the cost is one embedding call per restored item. Restore by item id is also supported.
+`restore(runId)` moves every trash entry back to its scope, re-adds index entries (the existing `restoreIndexEntries`, `observe.ts:51-64`, already re-adds keyword and vector for an observation), clears tombstones, re-increments counters. The vector comes back from the trash entry, so a restore makes no embedding call (a vector is about 4 KB at 1024 float dims; it stays on disk in Kvrocks for the grace period only). Restore by item id is also supported.
 
 ### 4.6 Hard delete
 
@@ -285,4 +285,4 @@ Each criterion states behaviour and the check that proves it. No file paths; tho
 2. **Research 06 versus v0.9.33.** The per-session cap refuses captures in v0.9.33; research 06 describes newer upstream code that deletes the oldest. The next rebase will change L1's shape; the fix (raise the cap) works for both.
 3. **No study measures digest-then-delete-raw against keep-raw** (research 07, gaps). That is why the recall check, the 10% first-run cap and the trim-before-delete order exist. Trim alone may free enough disk that stage O can stay off; the dry-run report's bytes per stage answers this.
 4. **Spec AC6** says a deleted memory disappears from graph results. Today graph items cite observations, not memories, so a deleted memory has no graph items of its own. Retention's stale marking keys on observations. The owner may want to confirm AC6 means "graph items from the deleted memory's source observations".
-5. **Re-embedding on restore.** Restored vectors cost one Voyage call each. If restores turn out common, the search worker could keep deleted vectors with a payload flag for the grace period; that is a port change and is not proposed now.
+5. **Vectors in trash.** Trash entries keep the vector so restore never re-embeds (orchestrator review, 2026-11-17). This needs the vector port to expose a read of one stored vector; the in-memory `VectorIndex` and the Qdrant worker both can.
