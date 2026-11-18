@@ -1,4 +1,5 @@
 import type { StateKV } from "./kv.js";
+import { collectAll } from "./kv.js";
 import { KV } from "./schema.js";
 import { getGraphGeneration, pinGraphStateGeneration } from "./graph-generation.js";
 import { getGraphIndexStatus } from "./graph-retrieval-index.js";
@@ -56,7 +57,7 @@ function isLiveLesson(lesson: Lesson | null | undefined): boolean {
 }
 
 async function listOrEmpty<T>(kv: StateKV, scope: string): Promise<T[]> {
-  const rows = await kv.list<T>(scope).catch(() => [] as T[]);
+  const rows = await collectAll<T>(kv, scope).catch(() => [] as T[]);
   return Array.isArray(rows) ? rows : [];
 }
 

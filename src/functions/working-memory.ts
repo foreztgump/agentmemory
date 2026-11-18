@@ -84,7 +84,7 @@ export function registerWorkingMemoryFunctions(
 
   sdk.registerFunction("mem::core-list", 
     async () => {
-      const entries = await kv.list<CoreMemoryEntry>(CORE_SCOPE);
+      const entries = await collectAll<CoreMemoryEntry>(kv, CORE_SCOPE);
       entries.sort((a, b) => b.importance - a.importance);
       return {
         success: true,
@@ -103,7 +103,7 @@ export function registerWorkingMemoryFunctions(
       const now = Date.now();
       let usedTokens = 0;
 
-      const coreEntries = await kv.list<CoreMemoryEntry>(CORE_SCOPE);
+      const coreEntries = await collectAll<CoreMemoryEntry>(kv, CORE_SCOPE);
 
       const pinned = coreEntries.filter((e) => e.pinned);
       const unpinned = coreEntries
@@ -196,7 +196,7 @@ export function registerWorkingMemoryFunctions(
       const budget = data?.budget || tokenBudget;
       const coreBudget = Math.floor(budget * 0.3);
 
-      const entries = await kv.list<CoreMemoryEntry>(CORE_SCOPE);
+      const entries = await collectAll<CoreMemoryEntry>(kv, CORE_SCOPE);
       let totalTokens = entries.reduce(
         (sum, e) => sum + estimateTokens(e.content),
         0,

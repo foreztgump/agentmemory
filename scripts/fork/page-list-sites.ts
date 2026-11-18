@@ -8,14 +8,17 @@
 //   npx tsx scripts/fork/page-list-sites.ts --write    rewrite the growing-scope sites in place
 //
 // A site is "growing" when its scope argument is rooted at `KV.<name>` (a property, or a call such
-// as `KV.auditMonth(x)`) and SCOPE_CLASS[name] is paged-only or point-read-only. A call whose scope
-// is held in a variable, or is not a KV scope, is printed as unclassified and left for a person.
-// src/fork/ and src/state/kv.ts are skipped: they implement the paging.
+// as `KV.auditMonth(x)`), or is the string a static KV scope holds, and SCOPE_CLASS[name] is
+// paged-only or point-read-only. A call whose scope is held in a variable, or is not a KV scope, is
+// printed as unclassified and left for a person. A site that cannot be converted is listed in
+// ALLOWED_SITES with its reason; the rewrite skips it and test/fork-paged-list-sites.test.ts
+// accepts it. src/fork/ and src/state/kv.ts are skipped: they implement the paging.
 
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { KV } from "../../src/state/schema.js";
 import { SCOPE_CLASS, type ScopeClass } from "../../src/fork/kv/scope-classes.js";
 
 export type SiteKind = ScopeClass | "unclassified";
@@ -37,6 +40,39 @@ const KV_MODULE = join(repoRoot, "src/state/kv.js");
 
 export const GROWING: ReadonlySet<SiteKind> = new Set<SiteKind>(["paged-only", "point-read-only"]);
 
+export interface AllowedSite {
+  file: string;
+  scope: string;
+  reason: string;
+}
+
+export const ALLOWED_SITES: readonly AllowedSite[] = [
+  {
+    file: "src/mcp/standalone.ts",
+    scope: '"mem:memories"',
+    reason: "InMemoryKV keeps every row in this process, so a list reads no engine state and has no iterate",
+  },
+  {
+    file: "src/mcp/standalone.ts",
+    scope: '"mem:sessions"',
+    reason: "InMemoryKV keeps every row in this process, so a list reads no engine state and has no iterate",
+  },
+  {
+    file: "src/state/index-persistence.ts",
+    scope: "vectorBucketScope(bucket)",
+    reason: "a vector bucket holds at most bucketSize rows, and the load runs once at start",
+  },
+];
+
+export function allowedReason(site: Pick<ListSite, "file" | "scope">): string | null {
+  const file = relative(repoRoot, site.file).split(sep).join("/");
+  return ALLOWED_SITES.find((a) => a.file === file && a.scope === site.scope)?.reason ?? null;
+}
+
+const SCOPE_BY_VALUE = new Map<string, keyof typeof SCOPE_CLASS>(
+  Object.entries(KV).flatMap(([name, value]) => (typeof value === "string" ? [[value, name as keyof typeof SCOPE_CLASS]] : [])),
+);
+
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -52,6 +88,7 @@ export function scannedFiles(root = repoRoot): string[] {
 }
 
 function kvRoot(expr: ts.Expression): string | null {
+  if (ts.isStringLiteralLike(expr)) return SCOPE_BY_VALUE.get(expr.text) ?? null;
   let node: ts.Expression = expr;
   for (;;) {
     if (ts.isCallExpression(node)) node = node.expression;
@@ -129,7 +166,7 @@ export function rewriteFile(file: string): number {
   let text = readFileSync(file, "utf-8");
   let changed = 0;
   for (;;) {
-    const sites = findListSites([file]).filter((s) => GROWING.has(s.kind));
+    const sites = findListSites([file]).filter((s) => GROWING.has(s.kind) && !allowedReason(s));
     const outermost = sites.filter((s) => !sites.some((o) => o !== s && o.start <= s.start && s.end <= o.end));
     if (outermost.length === 0) break;
     for (const s of outermost.sort((a, b) => b.start - a.start)) {
@@ -152,13 +189,19 @@ function report(sites: ListSite[], title: string): void {
   }
 }
 
+/** Every call that lists a growing or unknown scope in one read and is not in ALLOWED_SITES. */
+export function unpagedSites(files?: string[]): ListSite[] {
+  return findListSites(files).filter((s) => (GROWING.has(s.kind) || s.kind === "unclassified") && !allowedReason(s));
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const write = process.argv.includes("--write");
   const sites = findListSites();
-  const growing = sites.filter((s) => GROWING.has(s.kind));
+  const growing = sites.filter((s) => GROWING.has(s.kind) && !allowedReason(s));
   report(growing, write ? "rewriting" : "growing-scope sites");
+  report(sites.filter((s) => allowedReason(s)), "allowed sites, left as they are");
   report(sites.filter((s) => s.kind === "bounded"), "bounded-scope sites, left as they are");
-  report(sites.filter((s) => s.kind === "unclassified"), "unclassified sites, handle by hand");
+  report(sites.filter((s) => s.kind === "unclassified" && !allowedReason(s)), "unclassified sites, handle by hand");
   if (write) {
     const files = [...new Set(growing.map((s) => s.file))];
     const changed = files.reduce((n, f) => n + rewriteFile(f), 0);
