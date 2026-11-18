@@ -1,0 +1,75 @@
+# Offline replica of a production agentmemory stack (agentmemory + Valkey 9),
+# mirroring deploy/coolify/docker-compose.yml on the stack's deploy branch.
+# Driven by bench/fork/replica.sh; do not start it by hand.
+# The network is internal: no container can reach the internet, so dummy keys
+# never leave the host and no embedding or LLM call can succeed.
+name: ${REPLICA_PROJECT:-amreplica}
+
+services:
+  valkey:
+    image: valkey/valkey:9
+    # Production runs with AOF. replica.sh starts the first load with
+    # VALKEY_APPENDONLY=no so Valkey reads dump.rdb, turns AOF on with CONFIG SET,
+    # then recreates the container so it loads from the AOF.
+    command: valkey-server --appendonly ${VALKEY_APPENDONLY:-yes} --appendfsync everysec --maxmemory ${VALKEY_MAXMEMORY:-3gb} --maxmemory-policy noeviction
+    mem_limit: "${VALKEY_MEM_LIMIT:-4g}"
+    memswap_limit: "${VALKEY_MEM_LIMIT:-4g}"
+    networks: [replica]
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      # ping answers LOADING while the dataset loads; only PONG means ready.
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 300
+
+  agentmemory:
+    image: ${AM_IMAGE:?set AM_IMAGE}
+    mem_limit: "${AM_MEM_LIMIT:-2560m}"
+    # No swap, so a store that does not fit is OOM-killed instead of slowing down.
+    memswap_limit: "${AM_MEM_LIMIT:-2560m}"
+    # Never restart: a restart after an OOM kill would hide the kill and reset memory.peak.
+    restart: "no"
+    profiles: [app]
+    networks: [replica]
+    environment:
+      AGENTMEMORY_DATA_DIR: /data
+      HOME: /data/home
+      III_COMPOSE_STATE_DIR: /data/compose-state
+      III_TELEMETRY_ENABLED: "false"
+      AGENTMEMORY_VIEWER_HOST: 0.0.0.0
+      AGENTMEMORY_STATE_BACKEND: redis
+      AGENTMEMORY_REDIS_URL: redis://valkey:6379
+      AGENTMEMORY_SECRET: replica-dummy-secret
+      # Empty unless the bench asks for it. With "voyage" the persisted vectors
+      # load into RAM at boot, as in production before vector search was paused;
+      # the dummy key and the internal network make every embed call fail.
+      EMBEDDING_PROVIDER: "${REPLICA_EMBEDDING_PROVIDER:-}"
+      VOYAGE_API_KEY: replica-dummy-voyage-key
+      VOYAGE_MODEL: voyage-code-4
+      OPENAI_API_KEY: ""
+      MINIMAX_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      AGENTMEMORY_AUTO_COMPRESS: "false"
+      CONSOLIDATION_ENABLED: "false"
+      AUTO_FORGET_ENABLED: "false"
+      AGENTMEMORY_SESSION_SWEEP_ENABLED: "false"
+    volumes:
+      - agentmemory-data:/data
+    depends_on:
+      valkey:
+        condition: service_healthy
+
+networks:
+  replica:
+    internal: true
+
+# Created and removed by replica.sh, which fills them before compose starts.
+volumes:
+  valkey-data:
+    external: true
+    name: ${REPLICA_PROJECT:-amreplica}_valkey-data
+  agentmemory-data:
+    external: true
+    name: ${REPLICA_PROJECT:-amreplica}_agentmemory-data
