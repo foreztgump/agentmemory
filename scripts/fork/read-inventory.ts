@@ -35,17 +35,21 @@ if (!args.map || !args.boot || !args.day) {
   process.exit(2);
 }
 
-// Functions the replay driver calls, directly or through one event per call.
+// Functions whose reads follow the replay driver's calls: the ones it calls, the events
+// those calls fire, and mem::summary-repair, which the 30 s recovery timer runs once
+// per pending summary the driver's sessions leave, so its count tracks sessions.
 const DRIVEN = new Set([
   "api::observe", "mem::observe", "api::context", "mem::context", "api::search", "mem::search",
   "api::smart-search", "mem::smart-search", "api::session::start", "api::session::end", "mem::summarize",
   "api::summarize", "mem::auto-forget", "api::auto-forget", "mem::consolidate-pipeline",
   "api::consolidate-pipeline", "mem::session-sweep", "mem::diagnostic::recent-searches-sweep",
   "mem::lesson-decay-sweep", "mem::insight-decay-sweep", "mem::audit-retention-sweep", "mem::capture",
-  "event::session::stopped", "mem::summary-repair",
+  "event::session::stopped", "mem::summary-repair", "mem::slot-reflect", "mem::graph-extract",
+  "mem::auto-crystallize", "mem::skill-extract",
 ]);
 
 // mem:obs:<session> is bounded per session; these sites read every session (or many) per call.
+// Lines are in the source the --map was built from (d148219 for the 2026-11-18 run).
 const WALKS_SESSIONS = new Set([
   "src/functions/search.ts:438", "src/functions/search.ts:641", "src/functions/auto-forget.ts:163",
   "src/functions/context.ts:231", "src/functions/consolidate.ts:102", "src/state/graph-generation.ts:102",
@@ -66,22 +70,37 @@ function owner(source: string, fn: string): string {
   const file = basename(source.split(":")[0]!);
   if (source === "src/functions/search.ts:432" || source === "src/functions/search.ts:438") return "status / health (index reconcile)";
   if (file === "search.ts") return "search (boot index rebuild)";
-  if (file === "paged-scan.ts") return fn === "-" ? "capture (sweep timers)" : fn === "mem::capture" ? "capture" : "status / health";
+  if (file === "paged-scan.ts" && fn === "-") return "capture (sweep timers)";
+  if (file === "paged-scan.ts") return fn === "mem::capture" ? "capture" : "status / health";
   if (fn.startsWith("mem::diagnose") || fn.startsWith("mem::heal")) return "diagnostics";
   if (fn === "mem::export") return "export";
   return OWNERS[file] ?? "?";
 }
 
-const load = (path: string) => JSON.parse(readFileSync(path, "utf8")) as WholeReadInventory;
+function load(path: string): WholeReadInventory {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as WholeReadInventory;
+  if (parsed?.v !== 1 || !Array.isArray(parsed.reads) || typeof parsed.writtenAt !== "string") {
+    console.error(`${path} is not a v1 scope-guard inventory`);
+    process.exit(2);
+  }
+  return parsed;
+}
 const sourceMap = new SourceMap(JSON.parse(readFileSync(args.map, "utf8")));
 
 const classOf = new Map<string, string>();
+const families: Array<[prefix: string, scope: string]> = [];
 for (const [key, value] of Object.entries(KV)) {
   const scope = typeof value === "function" ? (value as (...a: string[]) => string)("*", "*") : value;
   classOf.set(scope, SCOPE_CLASS[key as keyof typeof SCOPE_CLASS]);
+  if (typeof value === "function") families.push([scope.slice(0, scope.indexOf("*")), scope]);
 }
+families.sort((a, b) => b[0].length - a[0].length);
 
-const collapse = (collection: string) => collection.replace(/^mem:obs:.*$/, "mem:obs:*");
+// The guard already writes ids as *; this also folds ids that contain ":" into their family.
+function collapse(collection: string): string {
+  if (classOf.has(collection)) return collection;
+  return families.find(([prefix]) => collection.startsWith(prefix))?.[1] ?? collection;
+}
 
 function resolve(site: string): { fn: string; source: string } {
   const parts = site.split(" ");
@@ -89,12 +108,13 @@ function resolve(site: string): { fn: string; source: string } {
   const fn = parts[0] ?? "-";
   const line = Number(location.split(":").pop());
   if (!Number.isFinite(line)) return { fn, source: location };
-  for (let column = 0; column < 400; column++) {
+  for (let column = 0; column < 4000; column++) {
     const entry = sourceMap.findEntry(line - 1, column) as { generatedLine?: number; originalSource?: string; originalLine?: number };
     if (entry.generatedLine === line - 1 && entry.originalSource) {
       return { fn, source: `${entry.originalSource.replace(/^.*?\/src\//, "src/")}:${(entry.originalLine ?? 0) + 1}` };
     }
   }
+  console.error(`warning: no source-map entry for ${location}; its owner and verdict may be wrong`);
   return { fn, source: location };
 }
 
@@ -109,6 +129,10 @@ const day = load(args.day);
 const extra = args.extra ? load(args.extra) : day;
 const windowMinutes = (Date.parse(day.writtenAt) - Date.parse(boot.writtenAt)) / 60_000;
 const timerScale = args["timer-scale"] ? Number(args["timer-scale"]) : 1440 / windowMinutes;
+if (!(windowMinutes > 0) || !Number.isFinite(timerScale) || timerScale <= 0) {
+  console.error(`unusable window (${windowMinutes} min) or --timer-scale (${args["timer-scale"]}); it must be a positive number`);
+  process.exit(2);
+}
 const index = (inventory: WholeReadInventory) => new Map(inventory.reads.map((r) => [`${r.collection}|${r.op}|${r.site}`, r]));
 const atBoot = index(boot);
 const atDay = index(day);
@@ -138,7 +162,8 @@ for (const [key, last] of index(extra)) {
 for (const row of rows.values()) {
   const unpaged = row.scopeClass === "point-read-only" || (row.scopeClass === "paged-only" && row.op === "list") ||
     WALKS_SESSIONS.has(row.source);
-  row.convert = !unpaged ? "no" : row.dayCalls > 0 ? "yes" : "on demand";
+  if (!unpaged) row.convert = "no";
+  else row.convert = row.dayCalls > 0 ? "yes" : "on demand";
 }
 
 const all = [...rows.values()];
@@ -173,6 +198,6 @@ table(
 table(
   "On-demand reads (one call to each feature)",
   "| Collection | Op | Call site | Owner | Scope | Calls | Max items | Max reply MB | TEE-1160 |",
-  all.filter((r) => r.extraCalls > 0 && r.dayCalls === 0).sort((a, b) => b.maxBytes - a.maxBytes),
+  all.filter((r) => r.extraCalls > 0 && r.dayCalls === 0 && r.fn !== "-" && !r.fn.startsWith("event::")).sort((a, b) => b.maxBytes - a.maxBytes),
   (r) => [r.collection, r.op, site(r), r.owner, growth(r), n(r.extraCalls), n(r.maxItems), mb(r.maxBytes), r.convert],
 );
