@@ -47,6 +47,16 @@ Changing the model or the dimension does not re-embed stored vectors. Vectors fr
 
 `test/fork-deploy-config.test.ts` checks these settings. It fails if a rebase changes how they select the LLM or the embedding model.
 
+## Scope guard (measurement)
+
+`AGENTMEMORY_SCOPE_GUARD=warn` records every read of a whole collection: `list`, `listKeys` and `iterate`, which includes `collectAll`. It is off by default.
+
+Each record holds the collection with ids replaced by `*` (`mem:obs:*`), the call site, the number of calls, the most items and bytes one reply returned, and the totals. The call site is the iii function that was running, then the first stack frame outside the state layer. Start Node with `--enable-source-maps` to get source file names instead of `index.mjs` lines.
+
+The server writes the records to `scope-guard-inventory.json` in the data directory every 30 seconds, sorted by largest reply. It also logs one warning per call site per minute.
+
+`scripts/fork/replay-day.ts` drives a compressed day of traffic against a running server so the inventory fills.
+
 ## Rebasing
 
 See [rebase-runbook.md](rebase-runbook.md).
