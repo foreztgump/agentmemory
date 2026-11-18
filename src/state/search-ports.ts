@@ -87,63 +87,53 @@ export interface SearchRuntimeDeps {
   embeddingProvider: EmbeddingProvider | null;
 }
 
-export interface SearchRuntime {
-  readonly backend: string;
-  keyword: KeywordIndexPort;
-  vector: VectorStorePort | null;
-  openPersistence(): IndexPersistencePort;
+/** Ports are the defaults; the memory runtime keeps its concrete classes so existing callers stay synchronous. */
+export interface SearchRuntime<
+  K extends KeywordIndexPort = KeywordIndexPort,
+  V extends VectorStorePort = VectorStorePort,
+  P extends IndexPersistencePort = IndexPersistencePort,
+> {
+  readonly backend: SearchBackend;
+  readonly keyword: K;
+  readonly vector: V | null;
+  openPersistence(): P;
 }
 
-export type SearchRuntimeFactory = (deps: SearchRuntimeDeps) => MaybePromise<SearchRuntime>;
+export type MemorySearchRuntime = SearchRuntime<SearchIndex, VectorIndex, IndexPersistence>;
 
 export const SEARCH_BACKEND_ENV = "AM_SEARCH_BACKEND";
-const DEFAULT_BACKEND = "memory";
+const SEARCH_BACKENDS = ["memory"] as const;
+export type SearchBackend = (typeof SEARCH_BACKENDS)[number];
 
-let memoryKeyword: SearchIndex | null = null;
-function memoryKeywordIndex(): SearchIndex {
-  if (!memoryKeyword) memoryKeyword = new SearchIndex();
-  return memoryKeyword;
+export function configuredSearchBackend(env: Record<string, string | undefined> = { [SEARCH_BACKEND_ENV]: getEnvVar(SEARCH_BACKEND_ENV) }): SearchBackend {
+  const raw = env[SEARCH_BACKEND_ENV]?.trim() || "memory";
+  const backend = SEARCH_BACKENDS.find((name) => name === raw);
+  if (!backend) {
+    throw new Error(`${SEARCH_BACKEND_ENV}=${raw} is not a search backend this build supports (${SEARCH_BACKENDS.join(", ")})`);
+  }
+  return backend;
 }
 
-function createMemoryRuntime(deps: SearchRuntimeDeps): SearchRuntime {
+let current: MemorySearchRuntime | null = null;
+
+export function createSearchRuntime(
+  deps: SearchRuntimeDeps,
+  backend: SearchBackend = configuredSearchBackend(),
+): MemorySearchRuntime {
   const vector = deps.embeddingProvider ? new VectorIndex() : null;
-  return {
-    backend: DEFAULT_BACKEND,
-    keyword: memoryKeywordIndex(),
+  current = {
+    backend,
+    keyword: current?.keyword ?? new SearchIndex(),
     vector,
     openPersistence: () => new IndexPersistence(deps.kv, vector, { requireRecoveryPlan: true }),
   };
-}
-
-const factories = new Map<string, SearchRuntimeFactory>([[DEFAULT_BACKEND, createMemoryRuntime]]);
-let current: SearchRuntime | null = null;
-
-export function registerSearchBackend(name: string, factory: SearchRuntimeFactory): void {
-  factories.set(name, factory);
-}
-
-export function configuredSearchBackend(): string {
-  return getEnvVar(SEARCH_BACKEND_ENV)?.trim() || DEFAULT_BACKEND;
-}
-
-export async function createSearchRuntime(
-  deps: SearchRuntimeDeps,
-  backend: string = configuredSearchBackend(),
-): Promise<SearchRuntime> {
-  const factory = factories.get(backend);
-  if (!factory) {
-    throw new Error(
-      `${SEARCH_BACKEND_ENV}=${backend} is not a known search backend (known: ${[...factories.keys()].join(", ")})`,
-    );
-  }
-  current = await factory(deps);
   return current;
 }
 
 /** Before createSearchRuntime() runs (unit tests, early boot) this is a memory runtime with no vector store. */
-export function getSearchRuntime(): SearchRuntime {
+export function getSearchRuntime(): MemorySearchRuntime {
   if (!current) {
-    current = { backend: DEFAULT_BACKEND, keyword: memoryKeywordIndex(), vector: null, openPersistence: noPersistence };
+    current = { backend: "memory", keyword: new SearchIndex(), vector: null, openPersistence: noPersistence };
   }
   return current;
 }
