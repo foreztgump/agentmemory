@@ -1,5 +1,6 @@
 import { VectorIndex, base64ToFloat32, float32ToBase64, type VectorEntry } from "./vector-index.js";
 import type { StateKV } from "./kv.js";
+import type { IndexPersistencePort } from "./search-ports.js";
 import { KV } from "./schema.js";
 import { logger } from "../logger.js";
 import { safeAudit } from "../functions/audit.js";
@@ -199,7 +200,7 @@ function emptyLegStatus(): IndexLegStatus {
   return { lastSavedAt: null, lastError: null, lastErrorAt: null, dirtySince: null };
 }
 
-export class IndexPersistence {
+export class IndexPersistence implements IndexPersistencePort {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lastFailureLogAt = 0;
   private running: Promise<void> | null = null;
