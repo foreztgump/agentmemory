@@ -94,11 +94,12 @@ await Promise.all(Array.from({ length: Number(args.concurrency) }, async () => {
 }));
 const acceptedS = (performance.now() - started) / 1000;
 
+let countFailures = 0;
 async function storedOrZero(): Promise<number> {
   try {
     return await stored();
   } catch (error) {
-    console.error(`valkey count failed: ${(error as Error).message}`);
+    if (++countFailures === 1) console.error(`valkey count failed: ${(error as Error).message}`);
     return 0;
   }
 }
