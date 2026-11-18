@@ -28,13 +28,21 @@ let failures = 0;
 console.log(`model=${model}`);
 for (const dimension of dimensions) {
   for (const dtype of dtypes) {
-    const response = await fetch(`${base}/embeddings`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({ input: ["hello"], model, input_type: "document", output_dimension: dimension, output_dtype: dtype }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const text = await response.text();
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetch(`${base}/embeddings`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({ input: ["hello"], model, input_type: "document", output_dimension: dimension, output_dtype: dtype }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      text = await response.text();
+    } catch (error) {
+      failures++;
+      console.log(`dim=${dimension} dtype=${dtype} status=request-failed error=${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
     if (!response.ok) {
       failures++;
       console.log(`dim=${dimension} dtype=${dtype} status=${response.status} error=${text.slice(0, 200).replace(/\s+/g, " ")}`);
