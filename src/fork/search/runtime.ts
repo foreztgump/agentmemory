@@ -1,11 +1,12 @@
 import { logger } from "../../logger.js";
+import { SHUTDOWN_FLUSH_TIMEOUT_MS } from "../../shutdown.js";
 import type { IndexPersistenceStatus, PendingReplayResult, VectorLoadResult } from "../../state/index-persistence.js";
 import { registerSearchBackend, type IndexPersistencePort, type SearchRuntime } from "../../state/search-ports.js";
 import { iiiSearchClient, type SearchWorkerClient } from "./client.js";
 import { DocLedger, SearchOutbox } from "./outbox.js";
 import { RemoteKeywordIndex, RemoteVectorStore, StatsCache } from "./remote-index.js";
 
-const SHUTDOWN_DRAIN_MS = 5000;
+const SHUTDOWN_DRAIN_MS = SHUTDOWN_FLUSH_TIMEOUT_MS - 100;
 
 /**
  * Disk mode has no index file to load, replay or save: Qdrant is the index

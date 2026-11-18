@@ -46,13 +46,14 @@ async function add(obs: Observation): Promise<void> {
 async function flush(): Promise<void> {
   if (batch.length === 0) return;
   const result = await engine.apply(batch);
-  if (result.failed > 0 || result.applied !== batch.length) throw new Error(`apply: ${JSON.stringify(result)}`);
+  if (result.failed.length > 0 || result.applied !== batch.length) throw new Error(`apply: ${JSON.stringify(result)}`);
   written += batch.length;
   batch = [];
 }
 
 const started = performance.now();
 const planted = plant(new Generator(profile, profile.indexable, seed));
+if (count < planted.observations.length) throw new Error(`--count ${count} is below the ${planted.observations.length} planted observations the eval cases need`);
 for (const obs of planted.observations) await add(obs);
 const gen = new Generator(profile, count, seed + 1);
 let generated = planted.observations.length;

@@ -38,6 +38,7 @@ import type { SearchLayer } from "./state/search-layer.js";
 import { HybridSearch } from "./state/hybrid-search.js";
 import { createSearchRuntime } from "./state/search-ports.js";
 import { VectorIndex } from "./state/vector-index.js";
+// Registers the optional disk backend before the search runtime is selected.
 import "./fork/search/runtime.js";
 import { SHUTDOWN_FLUSH_TIMEOUT_MS, SHUTDOWN_HARD_EXIT_MS, runStartupCleanup, settleWithin } from "./shutdown.js";
 import { registerPrivacyFunction, withWriteScrubbing } from "./functions/privacy.js";

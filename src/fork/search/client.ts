@@ -26,6 +26,7 @@ export interface SearchWorkerClient {
 }
 
 const READ_TIMEOUT_MS = 10_000;
+const SEARCH_TIMEOUT_MS = 3000;
 const WRITE_TIMEOUT_MS = 60_000;
 
 export function iiiSearchClient(sdk: IIIClient): SearchWorkerClient {
@@ -33,8 +34,8 @@ export function iiiSearchClient(sdk: IIIClient): SearchWorkerClient {
     sdk.trigger<unknown, T>({ function_id, payload, timeoutMs });
   return {
     apply: (ops) => call<ApplyResult>(SEARCH_FN.apply, { ops }, WRITE_TIMEOUT_MS),
-    keyword: async (query, limit, layer) => (await call<HitsResult>(SEARCH_FN.keyword, { query, limit, layer })).hits,
-    vector: async (f32b64, limit, layer) => (await call<HitsResult>(SEARCH_FN.vector, { f32b64, limit, layer })).hits,
+    keyword: async (query, limit, layer) => (await call<HitsResult>(SEARCH_FN.keyword, { query, limit, layer }, SEARCH_TIMEOUT_MS)).hits,
+    vector: async (f32b64, limit, layer) => (await call<HitsResult>(SEARCH_FN.vector, { f32b64, limit, layer }, SEARCH_TIMEOUT_MS)).hits,
     stats: () => call<StatsResult>(SEARCH_FN.stats, {}),
     sessionCounts: async () => (await call<SessionCountsResult>(SEARCH_FN.sessionCounts, {})).counts,
     scanMissingVectors: (cursor, limit) => call<ScanMissingResult>(SEARCH_FN.scanMissingVectors, { cursor, limit }),

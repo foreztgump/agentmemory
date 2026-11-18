@@ -61,6 +61,10 @@ export class Qdrant {
       optimizers_config: { default_segment_number: 2 },
       on_disk_payload: true,
     });
+    await this.createPayloadIndexes();
+  }
+
+  private async createPayloadIndexes(): Promise<void> {
     for (const [field_name, field_schema] of [
       ["layer", "keyword"],
       ["session_id", "keyword"],
@@ -72,12 +76,15 @@ export class Qdrant {
   }
 
   async ensure(): Promise<void> {
-    if (await this.exists()) return;
-    try {
-      await this.create();
-    } catch (error) {
-      if (!(error instanceof QdrantError && error.status === 409)) throw error;
+    if (!(await this.exists())) {
+      try {
+        await this.create();
+        return;
+      } catch (error) {
+        if (!(error instanceof QdrantError && error.status === 409)) throw error;
+      }
     }
+    await this.createPayloadIndexes();
   }
 
   async drop(): Promise<void> {

@@ -2,7 +2,6 @@ import { base64ToFloat32 } from "../../state/vector-index.js";
 import { isSearchLayer, isSearchResultLayer, type SearchLayer, type SearchResultLayer } from "../../state/search-layer.js";
 import type {
   ApplyResult,
-  ClearScope,
   ContentRev,
   HealthResult,
   Hit,
@@ -118,16 +117,22 @@ export class SearchEngine {
           operations.push({ delete: { points: [id] } });
           rev.set(op.id, null);
           break;
-        case "vec":
+        case "vec": {
+          const dense = Array.from(base64ToFloat32(op.f32b64));
+          if (dense.length !== this.qdrant.config.dimensions) {
+            failed.push({ id: op.id, error: `vector length ${dense.length} does not match dimensions ${this.qdrant.config.dimensions}` });
+            continue;
+          }
           if (revOf(op.id) !== op.rev) {
             fenced.push(op.id);
             continue;
           }
           operations.push(
-            { update_vectors: { points: [{ id, vector: { dense: Array.from(base64ToFloat32(op.f32b64)) } }] } },
+            { update_vectors: { points: [{ id, vector: { dense } }] } },
             { set_payload: { payload: { dense: true }, points: [id] } },
           );
           break;
+        }
         case "vec-del":
           if (revOf(op.id) === null) break;
           operations.push(
@@ -227,7 +232,8 @@ export class SearchEngine {
     return { items, ...(res.next_page_offset ? { next: res.next_page_offset } : {}) };
   }
 
-  async clear(scope: ClearScope): Promise<void> {
+  async clear(scope: unknown): Promise<void> {
+    if (scope !== "all" && scope !== "vectors") throw new Error("clear scope must be all or vectors");
     if (scope === "all") {
       await this.ready();
       await this.qdrant.drop();

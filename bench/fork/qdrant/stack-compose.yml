@@ -21,11 +21,17 @@ services:
       QDRANT__TELEMETRY_DISABLED: "true"
     ports:
       - "127.0.0.1:${STACK_QDRANT_PORT:-16335}:6333"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200 '"]
+      interval: 2s
+      retries: 30
   agentmemory:
     image: ${AM_IMAGE:?set AM_IMAGE}
     mem_limit: 1536m
     depends_on:
       valkey:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     environment:
       AGENTMEMORY_SECRET: stack-dummy-secret
@@ -38,6 +44,6 @@ services:
       AM_SEARCH_BACKEND: "${STACK_SEARCH_BACKEND:-disk}"
       AM_QDRANT_URL: http://qdrant:6333
       AM_QDRANT_API_KEY: stack-dummy-qdrant-key
-      AM_SEARCH_DIMENSIONS: "384"
+      AM_SEARCH_DIMENSIONS: "${STACK_SEARCH_DIMENSIONS:-384}"
     ports:
       - "127.0.0.1:${STACK_REST_PORT:-13111}:3111"

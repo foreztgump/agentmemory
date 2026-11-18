@@ -33,7 +33,7 @@ function runEntrypoint(env: Record<string, string>): { status: "ok"; compose: an
 
 describe("am-search worker in the Docker runtime", () => {
   it("is not started in memory mode", () => {
-    for (const backend of [undefined, "memory"]) {
+    for (const backend of [undefined, "memory", " memory "]) {
       const result = runEntrypoint(backend ? { AM_SEARCH_BACKEND: backend } : {});
       expect(result.status).toBe("ok");
       if (result.status === "ok") expect(result.compose.containers["am-search"]).toBeUndefined();
@@ -52,10 +52,19 @@ describe("am-search worker in the Docker runtime", () => {
     expect(result.compose.containers.state.config_override.adapter.name).toBe("redis");
   });
 
-  it("refuses disk mode without a Qdrant URL", () => {
-    const result = runEntrypoint({ AM_SEARCH_BACKEND: "disk" });
+  it.each([undefined, "", "  ", "\t\n"])("refuses disk mode with Qdrant URL %j", (url) => {
+    const result = runEntrypoint({ AM_SEARCH_BACKEND: " disk ", ...(url === undefined ? {} : { AM_QDRANT_URL: url }) });
     expect(result.status).toBe("failed");
     if (result.status === "failed") expect(result.stderr).toContain("AM_QDRANT_URL");
+  });
+
+  it.each(["qdrant", " disks ", "", "  "])("refuses unknown backend %j", (backend) => {
+    const result = runEntrypoint({ AM_SEARCH_BACKEND: backend });
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") {
+      expect(result.stderr).toContain("AM_SEARCH_BACKEND must be memory or disk");
+      expect(result.stderr).not.toContain("AM_QDRANT_URL");
+    }
   });
 });
 
@@ -76,7 +85,13 @@ describe("am-search worker in the generated worker compose", () => {
     const compose = parse(renderWorkerCompose(options({ AM_SEARCH_BACKEND: "disk", AM_QDRANT_URL: "http://127.0.0.1:6333", OPENAI_API_KEY: "sk-test" })));
     expect(compose.containers.agentmemory.environment.AM_SEARCH_BACKEND).toBe("disk");
     expect(compose.containers["am-search"].scripts.run).toBe("'/opt/node/bin/node' 'dist/fork/worker/main.mjs'");
-    expect(compose.containers["am-search"].environment).toMatchObject({ AM_SEARCH_BACKEND: "disk", AM_QDRANT_URL: "http://127.0.0.1:6333", III_ENGINE_PORT: "49534" });
+    expect(compose.containers["am-search"].environment).toMatchObject({ AM_SEARCH_BACKEND: "disk", AM_QDRANT_URL: "http://127.0.0.1:6333", III_ENGINE_PORT: "49534", III_TELEMETRY_ENABLED: "false", MALLOC_ARENA_MAX: "2" });
     expect(compose.containers["am-search"].environment.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("omits the Linux allocator setting on other platforms", () => {
+    const compose = parse(renderWorkerCompose({ ...options({ AM_SEARCH_BACKEND: "disk", AM_QDRANT_URL: "http://127.0.0.1:6333" }), linux: false }));
+    expect(compose.containers["am-search"].environment.III_TELEMETRY_ENABLED).toBe("false");
+    expect(compose.containers["am-search"].environment.MALLOC_ARENA_MAX).toBeUndefined();
   });
 });

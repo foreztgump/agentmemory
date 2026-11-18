@@ -96,9 +96,14 @@ export class SearchOutbox {
       this.slots.clear();
       this.bytes = 0;
     } else {
+      this.bytes = 0;
       for (const [id, slot] of this.slots) {
         slot.vec = undefined;
         if (!slot.doc) this.slots.delete(id);
+        else {
+          slot.bytes = slotBytes(slot);
+          this.bytes += slot.bytes;
+        }
       }
     }
     const merged: ClearScope = scope === "all" || this.pendingClear?.scope === "all" ? "all" : "vectors";
@@ -212,6 +217,14 @@ export class SearchOutbox {
 
   /** A failed batch goes back to the front; anything queued for the same ids since then wins. */
   private requeue(batch: Array<[string, Slot]>): void {
+    if (this.pendingClear?.scope === "all") return;
+    if (this.pendingClear?.scope === "vectors") {
+      batch = batch.filter(([, slot]) => {
+        slot.vec = undefined;
+        slot.bytes = slotBytes(slot);
+        return slot.doc !== undefined;
+      });
+    }
     const newer = this.slots;
     this.slots = new Map(batch);
     this.bytes = batch.reduce((n, [, slot]) => n + slot.bytes, 0);

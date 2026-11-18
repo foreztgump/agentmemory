@@ -28,7 +28,7 @@ const handlers: Record<(typeof SEARCH_FN)[keyof typeof SEARCH_FN], (data: never)
   [SEARCH_FN.sessionCounts]: async () => ({ counts: await engine.sessionCounts() }),
   [SEARCH_FN.scanMissingVectors]: async (data: Partial<ScanMissingRequest>) => engine.scanMissingVectors(data?.cursor, data?.limit),
   [SEARCH_FN.clear]: async (data: Partial<ClearRequest>) => {
-    await engine.clear(data?.scope === "vectors" ? "vectors" : "all");
+    await engine.clear(data?.scope);
     return { ok: true };
   },
   [SEARCH_FN.health]: async () => engine.health(),
