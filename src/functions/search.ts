@@ -5,6 +5,7 @@ import type { IndexPersistenceStatus } from "../state/index-persistence.js";
 import type { CompressedObservation, Memory, SearchResult, Session } from '../types.js'
 import { KV } from '../state/schema.js'
 import { StateKV, collectAll } from '../state/kv.js'
+import { trackedUnindexedObservations } from '../fork/index-reconcile.js'
 import { getSearchResultLayer, isSearchLayer, matchesSearchLayer, type SearchLayer, type SearchResultLayer } from "../state/search-layer.js";
 import type { SearchIndex, SearchIndexRevision } from '../state/search-index.js'
 import { getSearchRuntime } from '../state/search-ports.js'
@@ -429,6 +430,8 @@ export async function findUnindexedObservations(
   kv: StateKV,
 ): Promise<{ sessions: number; missing: CompressedObservation[] }> {
   const idx = getSearchIndex()
+  const tracked = await trackedUnindexedObservations(kv, idx, keywordRebuildEpoch)
+  if (tracked) return tracked
   const sessions = await kv.list<Session>(KV.sessions)
   const indexed = idx.observationCountsBySession()
   const missing: CompressedObservation[] = []

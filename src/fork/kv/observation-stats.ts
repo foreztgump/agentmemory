@@ -15,8 +15,9 @@ const READY_KEY = "\u0000ready";
 const STATS = Symbol.for("agentmemory.fork.observationStats");
 
 type UpdateOp = { type: string; path: string; value?: unknown };
+export type WriteListener = (scope: string, key: string, deleted: boolean) => void;
 
-function sessionOf(scope: string): string | null {
+export function sessionOf(scope: string): string | null {
   return scope.startsWith(OBS_PREFIX) && scope.length > OBS_PREFIX.length ? scope.slice(OBS_PREFIX.length) : null;
 }
 
@@ -41,7 +42,25 @@ function shift(base: SessionSourceTotals, removed: SessionSourceTotals, added: S
  * in-process lock (the redis backend's kv.update already assumes one writer process).
  */
 export class ObservationStats {
+  private readonly listeners = new Set<WriteListener>();
+
   constructor(private readonly base: StateKV) {}
+
+  /** Calls `listener` after every successful set, update and delete on any scope. Returns the unsubscribe function. */
+  onWrite(listener: WriteListener): () => void {
+    this.listeners.add(listener);
+    return () => void this.listeners.delete(listener);
+  }
+
+  private notify(scope: string, key: string, deleted: boolean): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(scope, key, deleted);
+      } catch (error) {
+        logger.warn("observation stats write listener failed", { error: String(error) });
+      }
+    }
+  }
 
   private lock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     return withKeyedLock(`obs-stats:${sessionId}`, fn);
@@ -61,9 +80,19 @@ export class ObservationStats {
     return this.lock(sessionId, () => this.recountLocked(sessionId));
   }
 
-  async afterChange<T>(scope: string, key: string, write: () => Promise<T>, read: () => Promise<unknown>): Promise<T> {
+  async afterChange<T>(
+    scope: string,
+    key: string,
+    write: () => Promise<T>,
+    read: () => Promise<unknown>,
+    deleted = false,
+  ): Promise<T> {
     const sessionId = sessionOf(scope);
-    if (sessionId === null) return write();
+    if (sessionId === null) {
+      const result = await write();
+      this.notify(scope, key, deleted);
+      return result;
+    }
     return this.lock(sessionId, async () => {
       const before = await this.loadLocked(sessionId);
       const oldRow = await this.base.get(scope, key);
@@ -71,6 +100,7 @@ export class ObservationStats {
       const newRow = await read();
       const after = shift(before, contribution(oldRow), contribution(newRow));
       await this.storeLocked(sessionId, after, before.rows);
+      this.notify(scope, key, deleted);
       return result;
     });
   }
@@ -163,7 +193,7 @@ export function withObservationStats<K extends StateKV>(kv: K): K {
   wrapped.update = <T>(scope: string, key: string, ops: UpdateOp[]) =>
     stats.afterChange(scope, key, () => update.call(wrapped, scope, key, ops) as Promise<T>, () => get.call(wrapped, scope, key));
   wrapped.delete = (scope: string, key: string) =>
-    stats.afterChange(scope, key, () => remove.call(wrapped, scope, key), async () => null);
+    stats.afterChange(scope, key, () => remove.call(wrapped, scope, key), async () => null, true);
   return wrapped;
 }
 
