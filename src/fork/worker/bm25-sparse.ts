@@ -21,16 +21,31 @@ export function termId(term: string): number {
   return h;
 }
 
+// The tokenizer keeps a trailing ". / \\ ] ^ _", so "deploy." ends a sentence as
+// its own term. SearchIndex still matches the query "deploy" through prefix
+// expansion at half the idf; Qdrant has no prefix search, so the bare form is
+// indexed beside it at half weight.
+const TRAILING_PUNCTUATION = /[./\\\]^_]+$/u;
+const PREFIX_WEIGHT = 0.5;
+
 export function docSparse(fields: TermSource, avgdl: number): Sparse {
   const terms = extractTerms(fields);
-  const tf = new Map<number, number>();
-  for (const t of terms) {
-    const id = termId(t);
-    tf.set(id, (tf.get(id) ?? 0) + 1);
-  }
+  const counts = new Map<string, number>();
+  for (const t of terms) counts.set(t, (counts.get(t) ?? 0) + 1);
   const norm = K1 * (1 - B + (B * terms.length) / avgdl);
-  const indices = [...tf.keys()];
-  return { indices, values: indices.map((id) => (tf.get(id)! * (K1 + 1)) / (tf.get(id)! + norm)) };
+  const weight = (tf: number) => (tf * (K1 + 1)) / (tf + norm);
+  const weights = new Map<number, number>();
+  for (const [term, tf] of counts) {
+    const id = termId(term);
+    weights.set(id, (weights.get(id) ?? 0) + weight(tf));
+  }
+  for (const [term, tf] of counts) {
+    const bare = term.replace(TRAILING_PUNCTUATION, "");
+    if (bare === term || bare.length < 2 || counts.has(bare)) continue;
+    const id = termId(bare);
+    weights.set(id, Math.max(weights.get(id) ?? 0, PREFIX_WEIGHT * weight(tf)));
+  }
+  return { indices: [...weights.keys()], values: [...weights.values()] };
 }
 
 export function querySparse(query: string): Sparse {

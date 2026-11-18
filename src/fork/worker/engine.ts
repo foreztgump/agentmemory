@@ -59,7 +59,17 @@ function opError(op: unknown): string | null {
 }
 
 export class SearchEngine {
+  private ensured: Promise<void> | null = null;
+
   constructor(private readonly qdrant: Qdrant, private readonly avgdl: number) {}
+
+  /** Every call waits for the collection and its payload indexes; a facet before the index exists fails. */
+  private ready(): Promise<void> {
+    return (this.ensured ??= this.qdrant.ensure().catch((error) => {
+      this.ensured = null;
+      throw error;
+    }));
+  }
 
   /**
    * Applies ops in order in one Qdrant batch. A vector is stored only when
@@ -82,6 +92,7 @@ export class SearchEngine {
       if (op.k === "doc" || op.k === "del") writtenFirst.add(op.id);
       else if (!writtenFirst.has(op.id)) lookup.add(op.id);
     }
+    await this.ready();
     const stored = await this.storedRevs([...lookup]);
     const rev = new Map<string, ContentRev | null>();
     const revOf = (id: string) => (rev.has(id) ? rev.get(id)! : stored.get(id) ?? null);
@@ -149,6 +160,7 @@ export class SearchEngine {
     if (typeof query !== "string") return [];
     const sparse = querySparse(query);
     if (sparse.indices.length === 0) return [];
+    await this.ready();
     const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", `${this.qdrant.path}/points/query`, {
       query: sparse,
       using: "bm25",
@@ -161,6 +173,7 @@ export class SearchEngine {
 
   async vector(f32b64: unknown, limit: unknown, layer: unknown, oversampling: number): Promise<Hit[]> {
     if (typeof f32b64 !== "string") return [];
+    await this.ready();
     const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", `${this.qdrant.path}/points/query`, {
       query: Array.from(base64ToFloat32(f32b64)),
       using: "dense",
@@ -173,6 +186,7 @@ export class SearchEngine {
   }
 
   async stats(): Promise<StatsResult> {
+    await this.ready();
     const byLayer = (value: SearchResultLayer) => ({ must: [{ key: "layer", match: { value } }] });
     const [docs, vectors, memories, lessons, missingVectors] = await Promise.all([
       this.qdrant.count(),
@@ -185,6 +199,7 @@ export class SearchEngine {
   }
 
   async sessionCounts(): Promise<Array<[string, number]>> {
+    await this.ready();
     const res = await this.qdrant.call<{ hits: Array<{ value: string; count: number }> }>("POST", `${this.qdrant.path}/facet`, {
       key: "session_id",
       filter: { must: [{ key: "layer", match: { value: "observation" } }] },
@@ -195,6 +210,7 @@ export class SearchEngine {
   }
 
   async scanMissingVectors(cursor: unknown, limit: unknown): Promise<ScanMissingResult> {
+    await this.ready();
     const res = await this.qdrant.call<{ points: RecordPoint[]; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
       filter: MISSING_VECTOR_FILTER,
       limit: clampLimit(limit),
@@ -213,10 +229,13 @@ export class SearchEngine {
 
   async clear(scope: ClearScope): Promise<void> {
     if (scope === "all") {
+      await this.ready();
       await this.qdrant.drop();
-      await this.qdrant.create();
+      this.ensured = null;
+      await this.ready();
       return;
     }
+    await this.ready();
     const filter = { must: [{ key: "dense", match: { value: true } }] };
     await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, {
       operations: [
@@ -229,7 +248,7 @@ export class SearchEngine {
   async health(): Promise<HealthResult> {
     const { collection } = this.qdrant.config;
     try {
-      await this.qdrant.ensure();
+      await this.ready();
       const info = await this.qdrant.call<{ status: string; config: { params: { vectors: { dense?: { size: number } } } } }>("GET", this.qdrant.path);
       const dimensions = info.config.params.vectors.dense?.size ?? 0;
       return { ok: info.status !== "red", collection, dimensions, status: info.status };

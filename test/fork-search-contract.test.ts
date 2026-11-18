@@ -108,6 +108,18 @@ describe.each(backends)("search port contract: %s", (_name, make, skip) => {
     expect(ids(await b.keyword.search("auth", 10))).toContain("obs_auth");
   });
 
+  it.skipIf(skip)("matches a word that ends a sentence or a path", async () => {
+    add(obs("obs_punct", "rollout notes", "the canary moved to kafka. logs went to tmp/"));
+    await b.settle();
+    try {
+      expect(ids(await b.keyword.search("kafka", 10))).toEqual(["obs_punct"]);
+      expect(ids(await b.keyword.search("tmp", 10))).toEqual(["obs_punct"]);
+    } finally {
+      b.keyword.remove("obs_punct");
+      await b.settle();
+    }
+  });
+
   it.skipIf(skip)("returns nothing for a query with no indexable terms", async () => {
     expect(await b.keyword.search("a", 10)).toEqual([]);
   });
