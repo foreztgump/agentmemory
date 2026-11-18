@@ -3,15 +3,34 @@ import { getEnvVar } from "../../config.js";
 import { fetchWithTimeout } from "../_fetch.js";
 
 const API_URL = "https://api.voyageai.com/v1/embeddings";
+const DEFAULT_MODEL = "voyage-code-3";
+const DEFAULT_DIMENSIONS = 1024;
+const OUTPUT_DIMENSIONS = [256, 512, 1024, 2048];
+
+function parseOutputDimension(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const value = Number(raw.trim());
+  if (!OUTPUT_DIMENSIONS.includes(value)) {
+    throw new Error(
+      `VOYAGE_OUTPUT_DIMENSION must be one of ${OUTPUT_DIMENSIONS.join(", ")}, got: ${raw}`,
+    );
+  }
+  return value;
+}
 
 export class VoyageEmbeddingProvider implements EmbeddingProvider {
   readonly name = "voyage";
-  readonly dimensions = 1024;
+  readonly dimensions: number;
   private apiKey: string;
+  private model: string;
+  private outputDimension: number | undefined;
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || getEnvVar("VOYAGE_API_KEY") || "";
     if (!this.apiKey) throw new Error("VOYAGE_API_KEY is required");
+    this.model = getEnvVar("VOYAGE_MODEL") || DEFAULT_MODEL;
+    this.outputDimension = parseOutputDimension(getEnvVar("VOYAGE_OUTPUT_DIMENSION"));
+    this.dimensions = this.outputDimension ?? DEFAULT_DIMENSIONS;
   }
 
   async embed(text: string): Promise<Float32Array> {
@@ -27,9 +46,10 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "voyage-code-3",
+        model: this.model,
         input: texts,
         input_type: "document",
+        ...(this.outputDimension !== undefined && { output_dimension: this.outputDimension }),
       }),
     });
 
