@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { mulberry32, quantiles } from "../lib/stats.js";
-import { assertOutsideRepo, createCollection, DEFAULT_SHAPE, DIMS, type CollectionShape, qdrant, readVectors, uuidOf, waitGreen, wireVector, type Layer } from "./lib.js";
+import { assertOutsideRepo, createCollection, DEFAULT_SHAPE, DIMS, type CollectionShape, layerFilter, qdrant, readVectors, uuidOf, waitGreen, wireVector, type Layer } from "./lib.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -134,7 +134,7 @@ async function measure(params: Params, filter: Layer | "all") {
       using: "dense",
       limit: K,
       params,
-      ...(filter === "all" ? {} : { filter: { must: [{ key: "layer", match: { value: filter } }] } }),
+      ...(filter === "all" ? {} : { filter: layerFilter(filter) }),
     };
     const t = performance.now();
     const res = await qdrant<{ points: Array<{ id: string }> }>("POST", `/collections/${args.collection}/points/query`, body);

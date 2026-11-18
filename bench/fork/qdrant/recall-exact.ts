@@ -9,7 +9,7 @@
 //     --vectors /home/cownose/am-staging/qdrant-spike/buddy --collection s1_1m --oversampling 2,3,4
 import { parseArgs } from "node:util";
 import { mulberry32 } from "../lib/stats.js";
-import { DIMS, NOISE_SIGMA, noisyCopy, qdrant, readVectors, wireVector } from "./lib.js";
+import { DIMS, layerFilter, NOISE_SIGMA, noisyCopy, qdrant, readVectors, wireVector } from "./lib.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -34,11 +34,12 @@ type Hit = { score: number };
 const search = (query: number[], params: unknown, layer?: string) =>
   qdrant<{ points: Hit[] }>("POST", `/collections/${args.collection}/points/query`, {
     query, using: "dense", limit: K, params,
-    ...(layer ? { filter: { must: [{ key: "layer", match: { value: layer } }] } } : {}),
+    ...(layer ? { filter: layerFilter(layer) } : {}),
   }).then((r) => r.points.map((p) => p.score));
 
 for (const layer of (args.filters ?? "all,observation,memory,lesson").split(",").map((f) => (f === "all" ? undefined : f))) {
   const exact = await Promise.all(queries.map((q) => search(q, { exact: true, quantization: { ignore: true } }, layer)));
+  if (exact.some((hits) => hits.length === 0)) throw new Error(`exact search for layer ${layer ?? "all"} returned no points, so its recall is undefined (is the layer in the collection?)`);
   for (const o of args.oversampling!.split(",")) {
     let sum = 0;
     for (let n = 0; n < queries.length; n++) {

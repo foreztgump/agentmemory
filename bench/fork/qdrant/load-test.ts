@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { parseArgs, promisify } from "node:util";
 import { mulberry32, quantiles } from "../lib/stats.js";
 import { Generator, type Profile } from "../lib/synthetic.js";
-import { DIMS, NOISE_SIGMA, noisyCopy, qdrant, querySparse, readVectors, wireVector } from "./lib.js";
+import { DIMS, layerFilter, NOISE_SIGMA, noisyCopy, parseKinds, qdrant, querySparse, readVectors, wireVector } from "./lib.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -38,7 +38,7 @@ const LAYERS = ["observation", "memory", "lesson"];
 
 // Async, so a sample never stalls the queries in flight.
 async function cgroup(): Promise<Record<string, number>> {
-  const { stdout: out } = await promisify(execFile)("docker", ["exec", args.container!, "sh", "-c", "cd /sys/fs/cgroup; echo current $(cat memory.current); echo peak $(cat memory.peak); grep -E '^(anon|file) ' memory.stat; grep -E '^oom_kill ' memory.events; sed -n 's/.*rios=\\([0-9]*\\).*/rios \\1/p' io.stat | head -1"]);
+  const { stdout: out } = await promisify(execFile)("docker", ["exec", args.container!, "sh", "-c", "cd /sys/fs/cgroup; echo current $(cat memory.current); echo peak $(cat memory.peak); grep -E '^(anon|file) ' memory.stat; grep -E '^oom_kill ' memory.events; sed -n 's/.*rios=\\([0-9]*\\).*/\\1/p' io.stat | awk '{s+=$1} END {print \"rios\", s+0}'"]);
   return Object.fromEntries(out.trim().split("\n").map((l) => l.split(" ")).map(([k, v]) => [k!, Number(v)]));
 }
 
@@ -48,17 +48,17 @@ function denseQuery(): number[] {
 }
 
 function body(kind: string, filtered: boolean): unknown {
-  const filter = filtered ? { must: [{ key: "layer", match: { value: LAYERS[Math.floor(rand() * LAYERS.length)] } }] } : undefined;
+  const filter = filtered ? layerFilter(LAYERS[Math.floor(rand() * LAYERS.length)]!) : undefined;
   const params = { quantization: { rescore: true, oversampling } };
-  const dense = { query: denseQuery(), using: "dense", params, filter };
+  const dense = () => ({ query: denseQuery(), using: "dense", params, filter });
   const terms = Array.from({ length: 2 + Math.floor(rand() * 3) }, () => words.word()).join(" ");
   const sparse = { query: querySparse(terms), using: "bm25", filter };
-  if (kind === "dense") return { ...dense, limit: 10 };
+  if (kind === "dense") return { ...dense(), limit: 10 };
   if (kind === "sparse") return { ...sparse, limit: 10 };
-  return { prefetch: [{ ...dense, limit: 40 }, { ...sparse, limit: 40 }], query: { fusion: "rrf" }, filter, limit: 10 };
+  return { prefetch: [{ ...dense(), limit: 40 }, { ...sparse, limit: 40 }], query: { fusion: "rrf" }, filter, limit: 10 };
 }
 
-const kinds = args.kinds!.split(",");
+const kinds = parseKinds(args.kinds!);
 const before = await cgroup();
 let peakCurrent = before.current ?? 0;
 let maxAnon = before.anon ?? 0;

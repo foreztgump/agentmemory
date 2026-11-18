@@ -1,15 +1,30 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
+import { getSearchResultLayer, type SearchResultLayer } from "../../../src/state/search-layer.js";
 import { queryTerms } from "../../../src/state/term-extraction.js";
 
 export const DIMS = 1024;
 export const NOISE_SIGMA = 0.0151;
 export const K1 = 1.2;
 export const B = 0.75;
-export type Layer = "observation" | "memory" | "lesson" | "image";
+export type Layer = SearchResultLayer;
 
-export function layerOfId(id: string): Layer {
-  return id.startsWith("mem_") ? "memory" : "observation";
+export function layerOfId(id: string, sessionId = ""): Layer {
+  return getSearchResultLayer(id, sessionId);
+}
+
+export function layerFilter(value: string) {
+  return { must: [{ key: "layer", match: { value } }] };
+}
+
+const KINDS = ["dense", "sparse", "hybrid"] as const;
+export type Kind = (typeof KINDS)[number];
+
+export function parseKinds(csv: string): Kind[] {
+  const kinds = csv.split(",").map((k) => k.trim());
+  const bad = kinds.filter((k) => !(KINDS as readonly string[]).includes(k));
+  if (bad.length) throw new Error(`--kinds takes ${KINDS.join(",")}; got ${bad.join(",") || "nothing"}`);
+  return kinds as Kind[];
 }
 
 // Every call the spikes make is idempotent, so one retry covers a keep-alive
@@ -89,12 +104,13 @@ export interface CollectionInfo {
 }
 
 const REPO = resolve(import.meta.dirname, "../../..");
+const REPO_ROOTS = [...new Set([REPO, existsSync(REPO) ? realpathSync(REPO) : REPO])];
 
 // Vectors and anything derived from them are private: refuse a directory inside the repo.
 export function assertOutsideRepo(dir: string): string {
   if (!existsSync(`${REPO}/package.json`)) throw new Error(`repo root guess ${REPO} has no package.json; fix REPO in lib.ts`);
   const abs = existsSync(dir) ? realpathSync(dir) : resolve(dir);
-  if (abs === REPO || abs.startsWith(REPO + sep)) throw new Error(`${abs} is inside the repo: the vectors are private`);
+  if (REPO_ROOTS.some((root) => abs === root || abs.startsWith(root + sep))) throw new Error(`${abs} is inside the repo: the vectors are private`);
   return abs;
 }
 

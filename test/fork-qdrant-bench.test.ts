@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { B, DIMS, docSparse, dot, K1, noisyCopy, normalize, querySparse, termId, uuidOf } from "../bench/fork/qdrant/lib.js";
+import { B, DIMS, docSparse, dot, K1, layerFilter, layerOfId, noisyCopy, normalize, parseKinds, querySparse, termId, uuidOf } from "../bench/fork/qdrant/lib.js";
 import { mulberry32 } from "../bench/fork/lib/stats.js";
 
 describe("Qdrant spike tooling", () => {
@@ -30,5 +30,24 @@ describe("Qdrant spike tooling", () => {
     const id = uuidOf(465_117);
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(parseInt(id.slice(-12), 16)).toBe(465_117);
+  });
+
+  it("classifies ids with the runtime layer classifier", () => {
+    expect(layerOfId("mem_abc")).toBe("memory");
+    expect(layerOfId("lsn_abc")).toBe("lesson");
+    expect(layerOfId("obs_abc")).toBe("observation");
+    expect(layerOfId("plain-id")).toBe("observation");
+    expect(layerOfId("plain-id", "lesson")).toBe("lesson");
+  });
+
+  it("builds the layer filter Qdrant expects", () => {
+    expect(layerFilter("memory")).toEqual({ must: [{ key: "layer", match: { value: "memory" } }] });
+  });
+
+  it("accepts only the known query kinds", () => {
+    expect(parseKinds("dense,sparse,hybrid")).toEqual(["dense", "sparse", "hybrid"]);
+    expect(parseKinds("sparse")).toEqual(["sparse"]);
+    expect(() => parseKinds("dense,bm25")).toThrow(/bm25/);
+    expect(() => parseKinds("")).toThrow();
   });
 });
