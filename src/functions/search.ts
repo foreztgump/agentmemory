@@ -6,7 +6,8 @@ import type { CompressedObservation, Memory, SearchResult, Session } from '../ty
 import { KV } from '../state/schema.js'
 import { StateKV, collectAll } from '../state/kv.js'
 import { getSearchResultLayer, isSearchLayer, matchesSearchLayer, type SearchLayer, type SearchResultLayer } from "../state/search-layer.js";
-import { SearchIndex, type SearchIndexRevision } from '../state/search-index.js'
+import type { SearchIndex, SearchIndexRevision } from '../state/search-index.js'
+import { getSearchRuntime } from '../state/search-ports.js'
 import { VectorIndex } from '../state/vector-index.js'
 import type { EmbeddingProvider } from '../types.js'
 import { memoryToObservation, observationEmbedText } from '../state/memory-utils.js'
@@ -21,7 +22,6 @@ import {
   isVectorBackfillAllEnabled,
 } from "../config.js";
 
-let index: SearchIndex | null = null
 let vectorIndex: VectorIndex | null = null
 let currentEmbeddingProvider: EmbeddingProvider | null = null
 
@@ -91,8 +91,7 @@ export function setPendingVectorBackfillCount(n: number): void {
 }
 
 export function getSearchIndex(): SearchIndex {
-  if (!index) index = new SearchIndex()
-  return index
+  return getSearchRuntime().keyword
 }
 
 export function setVectorIndex(idx: VectorIndex | null): void {

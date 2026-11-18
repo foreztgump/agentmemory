@@ -32,10 +32,9 @@ import {
 } from "./providers/index.js";
 import { StateKV } from "./state/kv.js";
 import { assertStateReady, waitForStateReady } from "./state/state-readiness.js";
-import { VectorIndex } from "./state/vector-index.js";
 import type { SearchLayer } from "./state/search-layer.js";
 import { HybridSearch } from "./state/hybrid-search.js";
-import { IndexPersistence } from "./state/index-persistence.js";
+import { createSearchRuntime } from "./state/search-ports.js";
 import { SHUTDOWN_FLUSH_TIMEOUT_MS, SHUTDOWN_HARD_EXIT_MS, runStartupCleanup, settleWithin } from "./shutdown.js";
 import { registerPrivacyFunction, withWriteScrubbing } from "./functions/privacy.js";
 import { withRegistrationDefaults } from "./runtime/registration.js";
@@ -282,7 +281,8 @@ async function main() {
   const metricsStore = new MetricsStore(kv);
   const dedupMap = new DedupMap();
 
-  const vectorIndex = embeddingProvider ? new VectorIndex() : null;
+  const searchRuntime = createSearchRuntime({ kv, embeddingProvider });
+  const vectorIndex = searchRuntime.vector;
 
   setVectorIndex(vectorIndex);
   setEmbeddingProvider(embeddingProvider);
@@ -472,7 +472,7 @@ async function main() {
 
   const healthMonitor = registerHealthMonitor(sdk, kv);
 
-  const indexPersistence = new IndexPersistence(kv, vectorIndex, { requireRecoveryPlan: true });
+  const indexPersistence = searchRuntime.openPersistence();
   setIndexPersistence(indexPersistence);
 
   const loaded = await indexPersistence.load().catch((err) => {
