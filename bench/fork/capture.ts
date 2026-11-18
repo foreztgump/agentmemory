@@ -35,9 +35,12 @@ function event(i: number) {
   const hookType = pickWeighted(hookWeights, rand());
   const size = Math.max(40, Math.round(sampleQuantile(profile.hookTypes[hookType].originalBytes, rand())));
   const text = `bench event ${runId} ${i} ${corpus.text(size, rand)}`;
-  const data = hookType === "post_tool_use" || hookType === "post_tool_failure"
-    ? { tool_name: "Bash", tool_input: { command: `echo ${i}` }, tool_output: text }
-    : hookType === "prompt_submit" ? { prompt: text } : { text };
+  let data: Record<string, unknown> = { text };
+  if (hookType === "post_tool_use" || hookType === "post_tool_failure") {
+    data = { tool_name: "Bash", tool_input: { command: `echo ${i}` }, tool_output: text };
+  } else if (hookType === "prompt_submit") {
+    data = { prompt: text };
+  }
   return {
     hookType,
     sessionId: sessions[i % sessions.length],
@@ -73,14 +76,18 @@ const started = performance.now();
 await Promise.all(Array.from({ length: Number(args.concurrency) }, async () => {
   while (next < count) {
     const i = next++;
-    const res = await fetch(`${args.url}/agentmemory/observe`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${args.secret}`, "content-type": "application/json" },
-      body: JSON.stringify(event(i)),
-      signal: AbortSignal.timeout(60_000),
-    });
-    statuses[res.status] = (statuses[res.status] ?? 0) + 1;
-    await res.arrayBuffer();
+    try {
+      const res = await fetch(`${args.url}/agentmemory/observe`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${args.secret}`, "content-type": "application/json" },
+        body: JSON.stringify(event(i)),
+        signal: AbortSignal.timeout(60_000),
+      });
+      statuses[res.status] = (statuses[res.status] ?? 0) + 1;
+      await res.arrayBuffer();
+    } catch {
+      statuses.error = (statuses.error ?? 0) + 1;
+    }
   }
 }));
 const acceptedS = (performance.now() - started) / 1000;

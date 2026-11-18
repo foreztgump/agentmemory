@@ -43,8 +43,10 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
+// Entries are taken in key order, so the pick does not depend on how the
+// weights object was built.
 export function pickWeighted<T extends string>(weights: Record<T, number>, u: number): T {
-  const entries = Object.entries(weights) as [T, number][];
+  const entries = (Object.entries(weights) as [T, number][]).sort(([a], [b]) => Number(a > b) - Number(a < b));
   const total = entries.reduce((sum, [, w]) => sum + w, 0);
   let target = u * total;
   for (const [key, w] of entries) {

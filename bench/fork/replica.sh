@@ -2,7 +2,7 @@
 # Restore an offline replica of an agentmemory stack from a nightly backup.
 #
 #   replica.sh up <backup-dir|dump.rdb|none>  fresh volumes, load the snapshot, start agentmemory, wait until ready
-#   replica.sh valkey <backup-dir|dump.rdb>  same, but stop before starting agentmemory
+#   replica.sh valkey <backup-dir|dump.rdb|none>  same, but stop before starting agentmemory
 #   replica.sh app                       start agentmemory on the loaded Valkey and wait until ready
 #   replica.sh restart-valkey            restart Valkey and wait until it has loaded its AOF
 #   replica.sh counts                    record counts per KV scope family
@@ -35,7 +35,7 @@ snapshot_rdb() {
   if [[ -f "$src" ]]; then echo "$src"; return; fi
   [[ -d "$src" ]] || die "no backup at $src"
   local zst
-  zst="$(find "$src" -maxdepth 1 -name '*valkey.rdb.zst' | head -1)"
+  zst="$(find "$src" -maxdepth 1 -name '*valkey.rdb.zst' -print -quit)"
   [[ -n "$zst" ]] || die "no *valkey.rdb.zst in $src"
   local out="$src/.decompressed/dump.rdb"
   if [[ ! -s "$out" || "$zst" -nt "$out" ]]; then
@@ -50,7 +50,7 @@ snapshot_rdb() {
 data_tar() {
   local src="$1"
   [[ -d "$src" ]] || return 0
-  find "$src" -maxdepth 1 -name '*agentmemory-data.tar.zst' | head -1
+  find "$src" -maxdepth 1 -name '*agentmemory-data.tar.zst' -print -quit
 }
 
 # The image's iii compose downloads its state and http workers on first boot,
@@ -73,7 +73,11 @@ prefetch_workers() {
     docker logs "${REPLICA_PROJECT}-prefetch" 2>&1 | grep -q 'Downloads Complete' && break
     sleep 2
   done
-  docker logs "${REPLICA_PROJECT}-prefetch" 2>&1 | grep -q 'Downloads Complete' || die "worker prefetch failed"
+  if ! docker logs "${REPLICA_PROJECT}-prefetch" 2>&1 | grep -q 'Downloads Complete'; then
+    docker logs "${REPLICA_PROJECT}-prefetch" 2>&1 | tail -5 >&2
+    docker rm -f "${REPLICA_PROJECT}-prefetch" >/dev/null
+    die "worker prefetch failed"
+  fi
   docker rm -f "${REPLICA_PROJECT}-prefetch" >/dev/null
   docker run --rm --network none -v "$cache:/cache" valkey/valkey:9 sh -c "echo '$image_id' > /cache/image-id"
 }
@@ -100,9 +104,16 @@ load_valkey() {
     valkey/valkey:9 sh -c 'mkdir -p /data/compose-state && cp -a /cache/compose-state/packages /data/compose-state/ &&
       rm -rf /data/worker-compose.runtime.lock && cp -a /cache/worker-compose.runtime.lock /data/'
   VALKEY_APPENDONLY=no "${COMPOSE[@]}" up -d --wait valkey >&2
-  until [[ "$(vcli info persistence | tr -d '\r' | awk -F: '$1=="loading"{print $2}')" == "0" ]]; do sleep 1; done
+  local deadline=$((SECONDS + READY_TIMEOUT_S))
+  until [[ "$(vcli info persistence | tr -d '\r' | awk -F: '$1=="loading"{print $2}')" == "0" ]]; do
+    ((SECONDS < deadline)) || die "valkey still loading after ${READY_TIMEOUT_S}s"
+    sleep 1
+  done
   vcli config set appendonly yes >/dev/null
-  while vcli info persistence | tr -d '\r' | grep -q '^aof_rewrite_in_progress:1'; do sleep 1; done
+  while vcli info persistence | tr -d '\r' | grep -q '^aof_rewrite_in_progress:1'; do
+    ((SECONDS < deadline)) || die "valkey AOF rewrite still running after ${READY_TIMEOUT_S}s"
+    sleep 1
+  done
   restart_valkey
   log "valkey loaded $(vcli dbsize | tr -d '\r') keys, AOF on"
 }
@@ -143,7 +154,7 @@ wait_ready() {
   client_up
   deadline=$((SECONDS + READY_TIMEOUT_S))
   while ((SECONDS < deadline)); do
-    state="$(docker inspect -f '{{.State.Status}} {{.State.OOMKilled}}' "$(container agentmemory)")"
+    state="$(docker inspect -f '{{.State.Status}} {{.State.OOMKilled}}' "$(container agentmemory)" 2>/dev/null || echo missing)"
     [[ "$state" == running* ]] || die "agentmemory stopped ($state)"
     if client node bench/fork/ready.mjs "$BASE_URL" "$SECRET" 2>/dev/null; then
       log "agentmemory ready"
@@ -175,9 +186,9 @@ down() {
 }
 
 case "${1:-}" in
-  up) [[ $# -ge 2 ]] || die "usage: replica.sh up <backup-dir|dump.rdb>"; : "${AM_IMAGE:?set AM_IMAGE}"; load_valkey "$2"; app; counts ;;
+  up) [[ $# -ge 2 ]] || die "usage: replica.sh up <backup-dir|dump.rdb|none>"; : "${AM_IMAGE:?set AM_IMAGE}"; load_valkey "$2"; app; counts ;;
   prefetch) prefetch_workers ;;
-  valkey) [[ $# -ge 2 ]] || die "usage: replica.sh valkey <backup-dir|dump.rdb>"; load_valkey "$2" ;;
+  valkey) [[ $# -ge 2 ]] || die "usage: replica.sh valkey <backup-dir|dump.rdb|none>"; load_valkey "$2" ;;
   app) app ;;
   restart-valkey) restart_valkey ;;
   wait) wait_ready ;;

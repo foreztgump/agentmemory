@@ -21,6 +21,8 @@ replica() { "$HERE/replica.sh" "$@"; }
 VALKEY="${REPLICA_PROJECT}-valkey-1"
 
 mkdir -p "$OUT"
+rm -f "$OUT/counts.txt"
+trap 'replica stop' ERR
 replica valkey none
 echo "make-synthetic: writing $COUNT observations" >&2
 (cd "$REPO" && node --import tsx bench/fork/generate.ts --count "$COUNT" --profile "$PROFILE") |

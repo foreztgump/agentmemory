@@ -6,16 +6,16 @@
   "sessions": 2979,
   "types": {
     "other": 249752,
-    "web_fetch": 823,
     "command_run": 33276,
-    "error": 2298,
     "file_read": 28541,
     "search": 13643,
-    "none": 25,
     "file_edit": 12023,
-    "conversation": 4230,
     "subagent": 9629,
-    "file_write": 3352
+    "conversation": 4230,
+    "file_write": 3352,
+    "error": 2298,
+    "web_fetch": 823,
+    "none": 25
   },
   "hookTypes": {
     "assistant_message": {
