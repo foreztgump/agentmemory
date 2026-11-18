@@ -79,8 +79,8 @@ function callerFrame(): string {
   const lines = (new Error().stack ?? "").split("\n").slice(1);
   for (const line of lines) {
     if (/callerFrame|StateKV\.|collectAll|node:|node_modules/.test(line)) continue;
-    const match = line.match(/([^/\\\s(]+):(\d+):\d+\)?\s*$/);
-    if (match) return `${basename(match[1]!)}:${match[2]}`;
+    const match = line.match(/at (?:async )?(?:(\S+) \()?(.+?):(\d+):\d+\)?\s*$/);
+    if (match) return `${match[1] ? `${match[1]} ` : ""}${basename(match[2]!)}:${match[3]}`;
   }
   return "unknown";
 }

@@ -1,0 +1,31 @@
+# Small local stack for testing scripts/fork/replay-day.ts with the scope guard on.
+# docker compose -p tee1156 -f scripts/fork/replay-local.compose.yml up -d --build
+# docker compose -p tee1156 -f scripts/fork/replay-local.compose.yml down -v
+services:
+  valkey:
+    image: valkey/valkey:9
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    mem_limit: 512m
+    networks: [internal]
+  agentmemory:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    depends_on: [valkey]
+    mem_limit: 1536m
+    environment:
+      AGENTMEMORY_STATE_BACKEND: redis
+      AGENTMEMORY_REDIS_URL: redis://valkey:6379
+      AGENTMEMORY_SCOPE_GUARD: warn
+      AGENTMEMORY_SECRET: "${REPLAY_SECRET:-local-replay-secret}"
+    ports:
+      - "127.0.0.1:${REPLAY_REST_PORT:-31111}:3111"
+    volumes:
+      - data:/data
+    networks: [internal, egress]
+networks:
+  internal:
+    internal: true
+  egress: {}
+volumes:
+  data:
