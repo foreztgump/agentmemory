@@ -34,6 +34,8 @@ describe("search runtime", () => {
     expect(createSearchRuntime({ kv, embeddingProvider: null }).vector).toBeNull();
     const runtime = createSearchRuntime({ kv, embeddingProvider: provider });
     expect(runtime.vector).toBeInstanceOf(VectorIndex);
-    expect(runtime.openPersistence()).toBeInstanceOf(IndexPersistence);
+    const persistence = runtime.openPersistence();
+    expect(persistence).toBeInstanceOf(IndexPersistence);
+    expect(runtime.openPersistence()).toBe(persistence);
   });
 });
