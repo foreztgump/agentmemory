@@ -47,6 +47,8 @@ describe("scope guard", () => {
     expect(normalizeScope(KV.teamUsers("t1", "u2"))).toBe("mem:team:*:users:*");
     expect(normalizeScope(KV.obsSessionIndex(7))).toBe("mem:idx:obs:*");
     expect(normalizeScope(KV.memories)).toBe("mem:memories");
+    expect(normalizeScope(KV.auditMonths)).toBe("mem:audit:months");
+    expect(normalizeScope(KV.auditMonth("2026-11"))).toBe("mem:audit:*");
     expect(normalizeScope("mem:index:bm25:vec:12")).toBe("mem:index:bm25:vec:*");
   });
 
@@ -94,6 +96,14 @@ describe("scope guard", () => {
     await kv.listKeys(KV.memories);
     await kv.list(KV.config);
     expect(inventory.snapshot().reads.map((r) => [r.collection, r.op])).toEqual([[KV.memories, "listKeys"]]);
+  });
+
+  it("records a listPage as a read of every key, with the page as the reply", async () => {
+    const inventory = new ScopeReadInventory();
+    const kv = new GuardedStateKV(fakeSdk(seeded(KV.memories, 5)) as never, {}, inventory);
+    const page = await kv.listPage(KV.memories, { limit: 2 });
+    expect(page.items).toHaveLength(2);
+    expect(inventory.snapshot().reads[0]).toMatchObject({ op: "listPage", maxItems: 5, maxBytes: bytesOf(page.items) });
   });
 
   it("returns the same values as an unguarded StateKV", async () => {

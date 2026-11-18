@@ -4,7 +4,7 @@
 // auto-forget.
 //
 // Usage:
-//   AGENTMEMORY_SECRET=... npx tsx scripts/fork/replay-day.ts \
+//   AGENTMEMORY_SECRET=... npx tsx scripts/fork/replay-day.ts --replica \
 //     --url http://127.0.0.1:3111 --container <agentmemory container> \
 //     [--obs-per-day 20000] [--factor 24] [--sessions-per-day 60] \
 //     [--searches-per-day 600] [--project replay]
@@ -27,17 +27,29 @@ const { values: args } = parseArgs({
     "sessions-per-day": { type: "string", default: "60" },
     "searches-per-day": { type: "string", default: "600" },
     project: { type: "string", default: "replay" },
+    replica: { type: "boolean", default: false },
   },
 });
+
+if (!args.replica) {
+  console.error("replay-day writes data and runs auto-forget. Pass --replica to confirm --url is a replica or a test stack.");
+  process.exit(2);
+}
 
 const DAY_S = 86_400;
 const base = args.url!.replace(/\/$/, "");
 const factor = Number(args.factor);
 const obsPerDay = Number(args["obs-per-day"]);
-const sessionsPerDay = Math.max(1, Number(args["sessions-per-day"]));
+const sessionsPerDay = Math.max(1, Number(args["sessions-per-day"]) || 1);
 const searchesPerDay = Number(args["searches-per-day"]);
 const project = args.project!;
 const durationS = DAY_S / factor;
+for (const [name, value] of Object.entries({ factor, "obs-per-day": obsPerDay, "searches-per-day": searchesPerDay })) {
+  if (!Number.isFinite(value) || value < 0 || (name === "factor" && value < 1)) {
+    console.error(`--${name} must be a number${name === "factor" ? " >= 1" : " >= 0"}`);
+    process.exit(2);
+  }
+}
 const secret = process.env.AGENTMEMORY_SECRET;
 const headers: Record<string, string> = {
   "content-type": "application/json",
@@ -88,13 +100,14 @@ finally { await sdk.shutdown(); }
 `;
 
 async function triggerInContainer(name: string, fn: string): Promise<void> {
-  if (!args.container) return tally(`${name} (skipped: no --container)`, true);
+  if (!args.container) return tally(`${name} (skipped: no --container)`, false, "skipped");
   try {
     await promisify(execFile)("docker", ["exec", "-e", `REPLAY_FN=${fn}`, "-w", "/opt/agentmemory", args.container,
       "node", "--input-type=module", "-e", ENGINE_TRIGGER], { timeout: 150_000 });
     tally(name, true);
   } catch (error) {
-    tally(name, false, String((error as { stderr?: string }).stderr || error).split("\n").find((line) => /Error/.test(line)));
+    const text = String((error as { stderr?: string }).stderr || error);
+    tally(name, false, text.split("\n").find((line) => /Error/.test(line)) ?? text);
   }
 }
 
@@ -174,6 +187,7 @@ while (elapsedDayS() < DAY_S) {
       }));
     }
     nextObsAt += obsIntervalMs;
+    if (inFlight.size > 64) await Promise.race(inFlight);
   }
   while (nextSearchAt <= now) {
     const query = phrase(3);
@@ -182,6 +196,7 @@ while (elapsedDayS() < DAY_S) {
     else if (kind === 1) track(post("search", "/agentmemory/search", { query, limit: 10 }));
     else track(post("context", "/agentmemory/context", { sessionId, project }));
     nextSearchAt += searchIntervalMs;
+    if (inFlight.size > 64) await Promise.race(inFlight);
   }
   for (const timer of timers) {
     if (elapsedDayS() < nextTimerAt.get(timer.name)!) continue;

@@ -15,6 +15,7 @@ if (!key) {
 }
 
 function describe(vector: unknown[]): string {
+  if (vector.length === 0) return "empty";
   const numbers = vector.filter((v): v is number => typeof v === "number");
   if (numbers.length !== vector.length) return "non-numeric";
   const integers = numbers.every(Number.isInteger);
@@ -39,12 +40,14 @@ for (const dimension of dimensions) {
       console.log(`dim=${dimension} dtype=${dtype} status=${response.status} error=${text.slice(0, 200).replace(/\s+/g, " ")}`);
       continue;
     }
-    const body = JSON.parse(text) as { data?: Array<{ embedding?: unknown[] }>; model?: string; usage?: { total_tokens?: number } };
-    const vector = body.data?.[0]?.embedding ?? [];
+    const body = JSON.parse(text) as { data?: Array<{ embedding?: unknown }>; model?: string; usage?: { total_tokens?: number } };
+    const raw = body.data?.[0]?.embedding;
+    const vector = typeof raw === "string" ? [...Buffer.from(raw, "base64")] : Array.isArray(raw) ? raw : [];
+    const shape = typeof raw === "string" ? "base64 string, decoded bytes " : "";
     const expected = dtype === "binary" ? dimension / 8 : dimension;
     console.log(
       `dim=${dimension} dtype=${dtype} status=200 length=${vector.length} expected=${expected} ` +
-        `${describe(vector)} model=${body.model ?? "?"} tokens=${body.usage?.total_tokens ?? "?"}`,
+        `${shape}${describe(vector)} model=${body.model ?? "?"} tokens=${body.usage?.total_tokens ?? "?"}`,
     );
   }
 }
