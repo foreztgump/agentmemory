@@ -5,7 +5,7 @@ name: CI
 # `workflow_dispatch` gives a manual re-run button for flake debugging.
 on:
   push:
-    branches: [main]
+    branches: [main, disk]
     paths-ignore:
       - "README.md"
       - "CHANGELOG.md"
@@ -18,7 +18,7 @@ on:
       - "**/*.md"
       - "**/*.mdx"
   pull_request:
-    branches: [main]
+    branches: [main, disk]
     paths-ignore:
       - "README.md"
       - "CHANGELOG.md"
