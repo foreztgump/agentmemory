@@ -46,10 +46,14 @@ if (migrate.status >= 400) throw new Error(`graph/index/migrate ${migrate.status
 let index: { ready?: boolean; state?: string } = {};
 for (let i = 0; i < 300 && !index.ready; i++) {
   await new Promise((r) => setTimeout(r, 1000));
-  index = await (await fetch(`${args.url}/agentmemory/graph/index`, {
-    headers: { authorization: `Bearer ${args.secret}` },
-    signal: AbortSignal.timeout(30_000),
-  })).json();
+  try {
+    index = await (await fetch(`${args.url}/agentmemory/graph/index`, {
+      headers: { authorization: `Bearer ${args.secret}` },
+      signal: AbortSignal.timeout(30_000),
+    })).json();
+  } catch (error) {
+    console.error(`graph index poll ${i + 1}/300 failed: ${(error as Error).message}`);
+  }
 }
 if (!index.ready) throw new Error(`graph index not ready: ${JSON.stringify(index)}`);
 console.log(JSON.stringify({ seeds: graphSeeds.length, nodes, edges, graphIndex: index.state }));
