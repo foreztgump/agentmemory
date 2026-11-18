@@ -57,6 +57,10 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 
 `scripts/fork/replay-day.ts` drives a compressed day of traffic against a running server so the inventory fills.
 
+## Baseline and benchmarks
+
+[baseline/README.md](baseline/README.md) records the in-memory system's numbers on a replica of buddy's stack and on synthetic stores, and how to re-run them. The scripts are in `bench/fork/`, and `bench/fork/ceilings.json` fails a run that regresses.
+
 ## Rebasing
 
 See [rebase-runbook.md](rebase-runbook.md).
