@@ -1,6 +1,6 @@
 # Baseline: the in-memory system on buddy's replica
 
-Date: 2026-11-17. Issue: TEE-1155. Every later change to the fork is judged against these numbers.
+Date: 2026-11-17 to 2026-11-18. Issue: TEE-1155. Every later change to the fork is judged against these numbers.
 
 The numbers come from upstream v0.9.33 plus the fork's TEE-1153 settings commit (`bfc9cb5`): records in Valkey, and the keyword index, vectors and lesson index in the agentmemory process. Production buddy runs v0.9.31. This baseline uses the code that later issues change, not the code in production.
 
@@ -8,17 +8,19 @@ The numbers come from upstream v0.9.33 plus the fork's TEE-1153 settings commit 
 
 | Run | Fits? | Boot to ready | agentmemory boot peak | agentmemory steady (anon) | Search p50 / p95 | Capture | Recall@10 / MRR |
 |---|---|---|---|---|---|---|---|
-| buddy, keyword-only, 2560m | yes | 51.9 s | 1,625 MiB | 1,553 MiB | 19.4 / 43.7 ms | 100 obs/s | 0.86 / 0.735 |
+| buddy, keyword-only, 2560m | yes | 38.5 s | 1,827 MiB | 1,710 MiB | 8.9 / 38.6 ms | 147.4 obs/s | 0.86 / 0.735 |
 | buddy, vectors loaded, 2560m | **no**: OOM-killed during boot | — | 2,561 MiB (the limit) | — | — | — | — |
-| buddy, vectors loaded, 5g | yes | 60.2 s | 4,335 MiB | 4,175 MiB | 16.7 / 58.4 ms | 93.5 obs/s | 0.86 / 0.735 |
-| synthetic 250k, 2560m | yes | 52.9 s | 1,539 MiB | 1,346 MiB | 112.6 / 437.6 ms | 84.7 obs/s | 1.00 / 0.90, graph 10/10 |
+| buddy, vectors loaded, 5g | yes | 55.9 s | 4,291 MiB | 4,127 MiB | 9.7 / 31.2 ms | 132.4 obs/s | 0.86 / 0.735 |
+| synthetic 250k, 2560m | yes | 43.5 s | 1,561 MiB | 1,187 MiB | 43.1 / 292.2 ms | 174.9 obs/s | 1.00 / 0.90, graph 10/10 |
 | synthetic 500k, 2560m | **no**: worker heap out of memory, 6 crashes in 15 min | — | 1,599 MiB | — | — | — | — |
-| synthetic 500k, 6g | yes | 64.7 s | 2,381 MiB | 2,134 MiB | 268 / 650 ms | 170.1 obs/s | 1.00 / 0.90, graph 10/10 |
-| synthetic 1M, 6g | **no**: worker heap out of memory, 12 crashes in 15 min | — | 2,430 MiB | — | — | — | — |
+| synthetic 500k, 6g | yes | 64.7 s | 2,381 MiB | 2,167 MiB | 312.7 / 744.6 ms | 148.3 obs/s | 1.00 / 0.90, graph 10/10 |
+| synthetic 1M, 6g | **no**: worker heap out of memory, 11 crashes in 15 min | — | 2,434 MiB | — | — | — | — |
+
+The rows that fit come from the final end-to-end run of `bench/fork/baseline.sh` on 2026-11-18. [Repeatability](#repeatability) lists the earlier runs.
 
 Main findings:
 
-- **Buddy's vectors do not fit in production's 2,560 MiB limit.** With an embedding provider set, the boot loads 242,653 vectors into the process and the container is OOM-killed at its limit. With a 5 GB limit it needs 4.3 GB at boot and 4.2 GB steady. Without vectors (how buddy runs today) it needs 1.6 GB.
+- **Buddy's vectors do not fit in production's 2,560 MiB limit.** With an embedding provider set, the boot loads 242,653 vectors into the process and the container is OOM-killed at its limit. With a 5 GB limit it needs 4.3 GB at boot and 4.1 GB steady. Without vectors (how buddy runs today) it needs 1.7 to 1.8 GB.
 - **The keyword-only system stops fitting between 357k and 500k observations at the production limit, and at 1M it never starts.** The cause is the Node heap limit, not the container limit. Node sets the agentmemory worker's heap limit to 1,472 MiB under a 2,560 MiB container and to 2,240 MiB under 6 GB. The in-memory keyword index for 1M observations (about 640k indexed documents) does not fit in 2,240 MiB. The worker crashes with `JavaScript heap out of memory`, the engine restarts it, and the next keyword rebuild crashes again. A larger container does not fix this.
 - **Recall@10 on buddy's own data is 0.86 and MRR is 0.735.** Memories recall at 1.00 and observations at 0.825. Loading vectors did not change either number, because the query embedding fails offline and search falls back to keyword and graph.
 - **Buddy's graph cannot return evidence through an edge.** No edge has an endpoint backed by a stored observation, so the private tier has no graph-only cases. Graph-only behaviour is covered by the synthetic tier only. See [Graph](#graph).
@@ -156,24 +158,24 @@ Indexed observations: title p50 11 characters, narrative p50 323 and p90 400 cha
 
 ### Results
 
-Each result file is kept under `/home/cownose/am-staging/bench-results/`.
+These are from the final end-to-end run of `bench/fork/baseline.sh` on 2026-11-18. The result files are in `/home/cownose/am-staging/bench-results/final/`.
 
 | Metric | buddy keyword 2560m | buddy vectors 5g | synthetic 250k 2560m | synthetic 500k 6g |
 |---|---:|---:|---:|---:|
-| `boot.seconds` | 51.9 | 60.2 | 52.9 | 64.7 |
-| `boot.peakMiB.agentmemory` | 1,625 | 4,335 | 1,539 | 2,381 |
-| `boot.peakMiB.valkey` | 3,969 | 3,574 | 588 | 1,162 |
-| `steady.MiB.agentmemory` | 1,614 | 4,241 | 1,402 | 2,202 |
-| `steady.anonMiB.agentmemory` | 1,553 | 4,175 | 1,346 | 2,134 |
-| `steady.MiB.valkey` | 2,225 | 2,244 | 450 | 891 |
-| `steady.anonMiB.valkey` | 2,209 | 2,216 | 440 | 870 |
-| `run.peakMiB.agentmemory` | 1,742 | 4,578 | 1,559 | 2,439 |
-| `run.peakMiB.valkey` | 3,969 | 3,574 | 588 | 1,162 |
-| `search p50 ms` | 19.4 | 16.7 | 112.6 | 268.0 |
-| `search p95 ms` | 43.7 | 58.4 | 437.6 | 649.9 |
-| `capture.storedPerSecond` | 100.0 | 93.5 | 84.7 | 170.1 |
-| `recall@10` | 0.86 | 0.86 | 1.00 | 1.00 |
-| `MRR` | 0.7347 | 0.7347 | 0.90 | 0.90 |
+| `boot.seconds` | 38.5 | 55.9 | 43.5 | 64.7 |
+| `boot.peakMiB.agentmemory` | 1,827 | 4,291 | 1,561 | 2,381 |
+| `boot.peakMiB.valkey` | 3,967 | 3,793 | 589 | 1,162 |
+| `steady.MiB.agentmemory` | 1,793 | 4,217 | 1,232 | 2,230 |
+| `steady.anonMiB.agentmemory` | 1,710 | 4,127 | 1,187 | 2,167 |
+| `steady.MiB.valkey` | 2,243 | 2,595 | 509 | 890 |
+| `steady.anonMiB.valkey` | 2,214 | 2,213 | 440 | 871 |
+| `run.peakMiB.agentmemory` | 1,886 | 4,539 | 1,576 | 2,448 |
+| `run.peakMiB.valkey` | 3,967 | 3,793 | 590 | 1,162 |
+| search p50 ms | 8.9 | 9.7 | 43.1 | 312.7 |
+| search p95 ms | 38.6 | 31.2 | 292.2 | 744.6 |
+| `capture.storedPerSecond` | 147.4 | 132.4 | 174.9 | 148.3 |
+| recall@10 | 0.86 | 0.86 | 1.00 | 1.00 |
+| MRR | 0.7347 | 0.7347 | 0.90 | 0.90 |
 | graph cases passed | n/a | n/a | 10 of 10 | 10 of 10 |
 | `index.bm25Documents` | 229,476 | 229,476 | 159,565 | 320,043 |
 | `index.vectorDocuments` | 0 | 242,653 | 0 | 0 |
@@ -184,23 +186,25 @@ The runs that did not fit:
 |---|---|
 | buddy, vectors, 2560m | The container was OOM-killed during boot. `memory.peak` was 2,561 MiB, the limit. |
 | synthetic 500k, 2560m | Not ready after 15 minutes. The worker hit `JavaScript heap out of memory` 6 times. Container peak 1,599 MiB. |
-| synthetic 1M, 6g | Not ready after 15 minutes. 12 heap out-of-memory crashes. Container peak 2,430 MiB. While the 1M snapshot was being built, a second attempt ran for 30 minutes with 22 crashes and a peak of 2,444 MiB. |
+| synthetic 1M, 6g | Not ready after 15 minutes, in both runs: 12 and 11 heap out-of-memory crashes, container peaks 2,430 and 2,434 MiB. While a 1M snapshot was being built, one more attempt ran for 30 minutes with 22 crashes and a peak of 2,444 MiB. |
 | synthetic 3M | Not run. The generator produces it (4.95 GB of Valkey commands in 59 s, 161 MB of RAM), but 1M already does not start. |
 
 ### Repeatability
 
-The host was shared, so time and throughput numbers vary between runs. Memory and recall are stable.
+The host was shared, so time and throughput numbers vary between runs. Memory varies by up to 10%, and recall did not vary at all. The last run in each cell is the final matrix run.
 
-| Metric | buddy keyword runs | synthetic 250k runs |
-|---|---|---|
-| `boot.seconds` | 41.9, 41.8, 51.9 | 52.9, 42.3 |
-| `boot.peakMiB.agentmemory` | 1,774, 1,780, 1,625 | 1,539, 1,590 |
-| `steady.anonMiB.agentmemory` | 1,553 | 1,346, 1,198 |
-| search p50 / p95 ms | 7.8 / 29.6, 7.1 / 26.5, 19.4 / 43.7 | 112.6 / 437.6, 60.4 / 331.0 |
-| `capture.storedPerSecond` | 183.0, 161.6, 100.0 | 84.7, 138.3 |
-| recall@10 / MRR | 0.86 / 0.7347 every run | 1.00 / 0.90 every run |
+| Metric | buddy keyword | buddy vectors 5g | synthetic 250k | synthetic 500k 6g |
+|---|---|---|---|---|
+| `boot.seconds` | 41.9, 41.8, 51.9, 38.5 | 60.2, 55.9 | 52.9, 42.3, 43.5 | 64.7, 64.7 |
+| `boot.peakMiB.agentmemory` | 1,774, 1,780, 1,625, 1,827 | 4,335, 4,291 | 1,539, 1,590, 1,561 | 2,381, 2,381 |
+| `steady.anonMiB.agentmemory` | 1,553, 1,710 | 4,175, 4,127 | 1,346, 1,198, 1,187 | 2,134, 2,167 |
+| search p50 / p95 ms | 7.8 / 29.6, 7.1 / 26.5, 19.4 / 43.7, 8.9 / 38.6 | 16.7 / 58.4, 9.7 / 31.2 | 112.6 / 437.6, 60.4 / 331.0, 43.1 / 292.2 | 268.0 / 649.9, 312.7 / 744.6 |
+| `capture.storedPerSecond` | 183.0, 161.6, 100.0, 147.4 | 93.5, 132.4 | 84.7, 138.3, 174.9 | 170.1, 148.3 |
+| recall@10 / MRR | 0.86 / 0.7347 every run | 0.86 / 0.7347 every run | 1.00 / 0.90 every run | 1.00 / 0.90 every run |
 
-The first two buddy runs used an earlier restore procedure: Valkey still had the snapshot import in its `memory.peak`, and agentmemory sometimes started while Valkey was loading. They are shown for spread only. The ceilings use the highest memory and time from any run.
+- The first two buddy keyword runs used an earlier restore procedure. Valkey's `memory.peak` still included the snapshot import, and agentmemory sometimes started while Valkey was loading. The `steady.anonMiB` metric did not exist yet in those runs.
+- The first two synthetic 250k runs and the first 500k run used snapshots built before the generator's weighted picks were made independent of key order. Those snapshots have the same distributions, but different observations carry each type label.
+- The ceilings use the highest memory and time, and the lowest throughput, from any of these runs.
 
 The synthetic search latency is higher than buddy's because the generated vocabulary follows a Zipf distribution, so the common words in the synthetic queries match far more documents than buddy's rarer query terms. Compare synthetic latency only with other synthetic runs.
 
@@ -219,7 +223,7 @@ Baseline: recall@10 1.00, MRR 0.90 (keyword 1.00, graph 0.50, because B ranks se
 
 ### Private tier (buddy's data, not in git)
 
-`bench/fork/private-cases.ts` builds the cases from the replica into `/home/cownose/am-staging/eval-private/buddy-2026-11-16.json`. The case file holds private text and stays outside the repository. Building the cases twice gives identical files.
+`bench/fork/private-cases.ts` builds the cases from a fresh restore (`replica.sh valkey`, before agentmemory writes anything) into `/home/cownose/am-staging/eval-private/buddy-2026-11-16.json`. The case file holds private text and stays outside the repository. Building the cases twice gives identical files.
 
 - 80 observation cases and 20 memory cases. Seeded sampling picks a record, and the query is its four rarest title and narrative terms that occur in 2 to 200 records, in seeded order. Every record with the same text counts as a hit.
 - 0 graph cases, see the next section.
@@ -245,14 +249,16 @@ Each memory or time ceiling has recall and index floors next to it. A change tha
 
 The `synthetic-1m` entry holds the project's targets, such as ready in under 60 seconds, not regression ceilings. The in-memory baseline fails it by design. When a build first boots 1M, replace that entry with ceilings from its numbers.
 
-All four regression entries pass on the baseline results:
+`bench/fork/baseline.sh` exited 0 on the final run: all four regression entries passed, and `synthetic-1m` missed its targets as expected. Every earlier result also passes its entry. `--check-only` checks a saved result without running anything:
 
 ```
-$ node --import tsx bench/fork/bench.ts --name buddy-keyword --check-only buddy-keyword.json      # PASS 12 limits
-$ node --import tsx bench/fork/bench.ts --name buddy-vectors --check-only buddy-vectors-5g.json   # PASS 11 limits
-$ node --import tsx bench/fork/bench.ts --name synthetic-250k --check-only synthetic-250k.json    # PASS 13 limits
-$ node --import tsx bench/fork/bench.ts --name synthetic-500k-6g --check-only synthetic-500k-6g.json  # PASS 13 limits
+$ node --import tsx bench/fork/bench.ts --name buddy-keyword --check-only final/buddy-keyword.json   # PASS 12 limits
+$ node --import tsx bench/fork/bench.ts --name buddy-vectors --check-only final/buddy-vectors.json   # PASS 11 limits
+$ node --import tsx bench/fork/bench.ts --name synthetic-250k --check-only final/synthetic-250k.json   # PASS 13 limits
+$ node --import tsx bench/fork/bench.ts --name synthetic-500k-6g --check-only final/synthetic-500k-6g.json   # PASS 13 limits
 ```
+
+A ceiling set below the baseline fails the run. For example, `--ceiling boot.peakMiB.agentmemory=1000` on the synthetic 250k run printed `FAIL boot.peakMiB.agentmemory: measured 1590, limit <= 1000` and exited 1.
 
 ## How to re-run
 
