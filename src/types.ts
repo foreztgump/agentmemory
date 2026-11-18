@@ -1096,6 +1096,10 @@ export interface SessionSourceTotals {
 /** KV.obsStats row: one session's totals, kept in step with mem:obs:<session> by the fork KV wrapper. */
 export interface SessionObservationStats extends SessionSourceTotals {
   updatedAt: string;
+  /** Rows with a timestamp and `(importance ?? 5) <= 2`. Absent on rows written before it was tracked. */
+  lowImportanceRows?: number;
+  /** Earliest timestamp among those rows. A lower bound: never raised when a row goes. Null when there are none. */
+  lowImportanceOldestMs?: number | null;
 }
 
 /**

@@ -10,6 +10,7 @@ import { GuardedStateKV, ScopeReadInventory } from "../src/fork/scope-guard.js";
 import {
   observationStatsOf,
   registerObservationStatsRepair,
+  repairObservationStatsOnce,
   withObservationStats,
 } from "../src/fork/kv/observation-stats.js";
 import {
@@ -292,5 +293,76 @@ describe("capture inbox paging", () => {
     expect(h.rows("ses_inbox")).toBe(2);
     const whole = h.inventory.snapshot().reads.filter((r) => r.collection.startsWith("mem:capture") && r.op === "list");
     expect(whole).toEqual([]);
+  });
+});
+
+describe("low-importance stats", () => {
+  const DAY = 86_400_000;
+  const at = (ageDays: number) => new Date(Date.now() - ageDays * DAY).toISOString();
+  const lowRow = (id: string, ageDays: number | null, importance: number | undefined) =>
+    ({
+      id, sessionId: "ses_low", ...(ageDays === null ? {} : { timestamp: at(ageDays) }), type: "file_edit", title: id,
+      facts: [], narrative: "n", concepts: [], files: [], ...(importance === undefined ? {} : { importance }),
+    }) as unknown as CompressedObservation;
+  const low = (h: ReturnType<typeof harness>) => observationStatsOf(h.kv)!.lowImportance("ses_low");
+
+  it("counts exactly, lowers the oldest bound on add, never raises it on remove, and clears at zero", async () => {
+    const h = harness();
+    const ts = (id: string) => new Date((h.store.get(KV.observations("ses_low"))!.get(id) as CompressedObservation).timestamp).getTime();
+    await h.kv.set(KV.observations("ses_low"), "a", lowRow("a", 100, 1));
+    await h.kv.set(KV.observations("ses_low"), "keep", lowRow("keep", 400, 5));
+    await h.kv.set(KV.observations("ses_low"), "none", lowRow("none", 400, undefined));
+    await h.kv.set(KV.observations("ses_low"), "nots", lowRow("nots", null, 1));
+    expect(await low(h)).toEqual({ rows: 1, oldestMs: ts("a") });
+
+    await h.kv.set(KV.observations("ses_low"), "b", lowRow("b", 300, 2));
+    expect(await low(h)).toEqual({ rows: 2, oldestMs: ts("b") });
+
+    const oldest = ts("b");
+    await h.kv.delete(KV.observations("ses_low"), "b");
+    expect(await low(h)).toEqual({ rows: 1, oldestMs: oldest });
+    await observationStatsOf(h.kv)!.recount("ses_low");
+    expect(await low(h)).toEqual({ rows: 1, oldestMs: ts("a") });
+
+    await h.kv.update(KV.observations("ses_low"), "a", [{ type: "set", path: "importance", value: 5 }]);
+    expect(await low(h)).toEqual({ rows: 0, oldestMs: null });
+    await h.kv.update(KV.observations("ses_low"), "keep", [{ type: "set", path: "importance", value: 1 }]);
+    expect(await low(h)).toEqual({ rows: 1, oldestMs: ts("keep") });
+    await h.kv.set(KV.observations("ses_low"), "keep", lowRow("keep", 400, 3));
+    expect(await low(h)).toEqual({ rows: 0, oldestMs: null });
+  });
+
+  it("reports a stored row without the fields as unknown until a recount, and an empty session as zero", async () => {
+    const h = harness();
+    await h.kv.set(KV.observations("ses_low"), "a", lowRow("a", 100, 1));
+    const stored = h.store.get(KV.obsStats)!.get("ses_low") as Record<string, unknown>;
+    delete stored.lowImportanceRows;
+    delete stored.lowImportanceOldestMs;
+    expect(await low(h)).toBeUndefined();
+    await h.kv.set(KV.observations("ses_low"), "b", lowRow("b", 50, 1));
+    expect(await low(h)).toBeUndefined();
+    await observationStatsOf(h.kv)!.recount("ses_low");
+    expect(await low(h)).toMatchObject({ rows: 2 });
+    expect(await observationStatsOf(h.kv)!.lowImportance("ses_never")).toEqual({ rows: 0, oldestMs: null });
+  });
+
+  it("repair fills the fields, and boot repair re-runs once for a marker written before they existed", async () => {
+    const h = harness();
+    await h.kv.set(KV.observations("ses_low"), "a", lowRow("a", 100, 1));
+    const stored = h.store.get(KV.obsStats)!.get("ses_low") as Record<string, unknown>;
+    delete stored.lowImportanceRows;
+    delete stored.lowImportanceOldestMs;
+    h.store.get(KV.obsStats)!.set("\u0000ready", { at: "old", sessions: 1, observations: 1 });
+
+    repairObservationStatsOnce(h.kv);
+    await vi.waitFor(async () => expect(await low(h)).toMatchObject({ rows: 1 }));
+    expect(h.store.get(KV.obsStats)!.get("\u0000ready")).toMatchObject({ v: 2 });
+
+    const marker = h.store.get(KV.obsStats)!.get("\u0000ready");
+    delete (h.store.get(KV.obsStats)!.get("ses_low") as Record<string, unknown>).lowImportanceRows;
+    repairObservationStatsOnce(h.kv);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(h.store.get(KV.obsStats)!.get("\u0000ready")).toBe(marker);
+    expect(await low(h)).toBeUndefined();
   });
 });
