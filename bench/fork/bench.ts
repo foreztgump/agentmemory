@@ -7,6 +7,8 @@
 //   AM_IMAGE=<image> node --import tsx bench/fork/bench.ts --name <ceilings entry> --data <backup-dir|dump.rdb>
 //     --cases <file>... --profile <file> [--embedding voyage] [--am-mem-limit 2560m] [--steady-minutes 5]
 //     [--capture 3000] [--ceiling metric=value]... [--out result.json] [--keep]
+//   node --import tsx bench/fork/bench.ts --name <ceilings entry> --check-only <result.json>
+//     checks a saved result against the ceilings without running anything
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
@@ -45,8 +47,10 @@ function limitsFor(name: string): Limit[] {
     const [metric, value] = override.split("=");
     const limit = limits.find((l) => l.metric === metric);
     if (!limit) throw new Error(`--ceiling names unknown metric ${metric}`);
-    if (limit.max !== undefined) limit.max = Number(value);
-    else limit.min = Number(value);
+    const bound = Number(value);
+    if (value === undefined || value.trim() === "" || !Number.isFinite(bound)) throw new Error(`--ceiling ${metric} needs a numeric value, got "${override}"`);
+    if (limit.max !== undefined) limit.max = bound;
+    else limit.min = bound;
   }
   return limits;
 }
@@ -97,6 +101,7 @@ function cgroupStat(service: string, key: string): number | null {
 const mib = (bytes: number | null) => (bytes === null ? NaN : Math.round(bytes / MiB));
 const measured: Record<string, number> = {};
 const notes: string[] = [];
+let completed = false;
 
 try {
   replica("valkey", args.data);
@@ -153,6 +158,7 @@ try {
   }
   measured["run.peakMiB.agentmemory"] = mib(cgroup("agentmemory", "memory.peak"));
   measured["run.peakMiB.valkey"] = mib(cgroup("valkey", "memory.peak"));
+  completed = true;
 } catch (error) {
   console.error(`bench: ${(error as Error).message}`);
 } finally {
@@ -171,6 +177,7 @@ const result = {
   at: new Date().toISOString(),
   image: `${process.env.AM_IMAGE} ${image}`,
   settings: { amMemLimit: args["am-mem-limit"], embedding: args.embedding || "none", steadyMinutes: Number(args["steady-minutes"]), captureEvents: Number(args.capture) },
+  completed,
   measured,
   notes,
 };
