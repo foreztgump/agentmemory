@@ -66,7 +66,7 @@ export function normalizeScope(scope: string): string {
 
 function itemBytes(values: unknown[]): number {
   let total = 0;
-  for (const value of values) total += Buffer.byteLength(JSON.stringify(value) ?? "null");
+  for (const value of values) total += safeBytes(value);
   return total;
 }
 
