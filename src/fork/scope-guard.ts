@@ -41,7 +41,8 @@ export function getScopeGuardMode(): ScopeGuardMode {
   throw new Error(`AGENTMEMORY_SCOPE_GUARD must be off or warn, got "${raw}"`);
 }
 
-const dynamicScopes: RegExp[] = Object.values(KV)
+const kvValues: unknown[] = Object.values(KV);
+const dynamicScopes: RegExp[] = kvValues
   .filter((value): value is (...args: string[]) => string => typeof value === "function")
   .map((template) => {
     const sample = template(SENTINEL, SENTINEL);
@@ -49,7 +50,7 @@ const dynamicScopes: RegExp[] = Object.values(KV)
     return new RegExp(`^${parts.join("[^:]+")}$`);
   });
 
-const staticScopes = new Set(Object.values(KV).filter((value): value is string => typeof value === "string"));
+const staticScopes = new Set(kvValues.filter((value): value is string => typeof value === "string"));
 
 export function normalizeScope(scope: string): string {
   if (staticScopes.has(scope)) return scope;
