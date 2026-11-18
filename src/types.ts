@@ -1093,6 +1093,13 @@ export interface DecayConfig {
  * disk-size-manager) so TypeScript enforces consistent value shapes
  * instead of every caller using ad-hoc `<number>` generics.
  */
+export interface SessionObservationStats {
+  rows: number;
+  sourceBytes: number;
+  summaryBytes: number;
+  updatedAt: string;
+}
+
 export interface StateScope {
   "system:currentDiskSize": number;
 }

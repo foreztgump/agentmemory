@@ -17,6 +17,7 @@ import { logger } from "../logger.js";
 import { emitLiveEvent } from "../viewer/live-events.js";
 import { withoutObservationSource } from "./observation-source.js";
 import { budgetLiveObservationSource } from "./observation-source-budget.js";
+import { sessionObservationTotals } from "../fork/kv/observation-stats.js";
 import { observationEmbedText } from "../state/memory-utils.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
@@ -84,8 +85,7 @@ export function registerCompressFunction(
       if (!await matchesScope(data, stored)) return { skipped: true as const };
       if (data.expectedRevision && observationRevision(stored) !== data.expectedRevision) return { skipped: true as const };
       if (!needsCompression(stored) && !data.raw) return { skipped: true as const };
-      const rows = await kv.list<CompressedObservation>(KV.observations(sessionId));
-      const fallback = "title" in stored ? stored : budgetLiveObservationSource(buildSyntheticCompression(scrubRecord(stored)), rows);
+      const fallback = "title" in stored ? stored : budgetLiveObservationSource(buildSyntheticCompression(scrubRecord(stored)), await sessionObservationTotals(kv, sessionId, stored));
       const raw = compressionRaw(fallback);
       if (!raw && !("title" in stored)) return { unavailable: true as const };
       const compression: ObservationCompression = {
@@ -183,8 +183,7 @@ export function registerCompressFunction(
       const compressed = await withKeyedLock(`obs:${sessionId}`, async () => {
         const current = await kv.get<StoredObservation>(KV.observations(sessionId), observationId);
         if (!current || observationRevision(current) !== revision || !await matchesScope(data, current)) return null;
-        const rows = await kv.list<CompressedObservation>(KV.observations(sessionId));
-        const bounded = budgetLiveObservationSource(candidate, rows);
+        const bounded = budgetLiveObservationSource(candidate, await sessionObservationTotals(kv, sessionId, current));
         await kv.set(KV.observations(sessionId), observationId, bounded);
         attempt.resultRevision = observationRevision(bounded);
         attempt.revisions.add(attempt.resultRevision);

@@ -19,6 +19,7 @@ import {
 import { restoreIndexEntries } from "./observe.js";
 import { prunePromptLedgers } from "../capture/prompt-ledger.js";
 import { scrubRecord } from "./privacy.js";
+import { countRows, scanRows } from "../fork/kv/paged-scan.js";
 import { runtimeConfigPath } from "../cli/engine-launch.js";
 import { captureDurableAfterMs, engineStateConfigPaths } from "../cli/engine-config.js";
 import {
@@ -56,6 +57,8 @@ export interface InboxRecord {
 }
 
 export type { CompletedEvent } from "../capture/event-record.js";
+
+type InboxEntry = Omit<InboxRecord, "payload">;
 export { captureEventShard } from "../capture/event-record.js";
 
 export type CaptureResult =
@@ -219,7 +222,7 @@ export function registerCaptureFunctions(
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
 
   async function currentInboxSize(): Promise<number> {
-    if (inboxSize === null) inboxSize = (await kv.list<InboxRecord>(KV.captureInbox)).length;
+    if (inboxSize === null) inboxSize = await countRows(kv, KV.captureInbox);
     return inboxSize;
   }
 
@@ -374,8 +377,11 @@ export function registerCaptureFunctions(
     });
   }
 
+  const inboxEntries = () =>
+    scanRows<InboxRecord, InboxEntry>(kv, KV.captureInbox, ({ payload: _payload, ...entry }) => entry);
+
   async function runSweep(): Promise<{ processed: number; recovered: number; deadLettered: number }> {
-    const records = await kv.list<InboxRecord>(KV.captureInbox);
+    const records = await inboxEntries();
     inboxSize = records.length;
     let processed = 0;
     let recovered = 0;
@@ -411,7 +417,7 @@ export function registerCaptureFunctions(
     let removed = 0;
     for (let i = 0; i < EVENT_SHARDS; i++) {
       const scope = KV.captureEvents(i.toString(16).padStart(EVENT_SHARD_CHARS, "0"));
-      const events = await kv.list<CompletedEvent>(scope).catch(() => [] as CompletedEvent[]);
+      const events = await scanRows<CompletedEvent, CompletedEvent>(kv, scope, (ev) => ev).catch(() => [] as CompletedEvent[]);
       if (events.length === 0) continue;
       const sorted = events.filter(Boolean).sort((a, b) => b.completedAt.localeCompare(a.completedAt));
       for (let j = 0; j < sorted.length; j++) {
@@ -422,7 +428,7 @@ export function registerCaptureFunctions(
         }
       }
     }
-    const inbox = await kv.list<InboxRecord>(KV.captureInbox).catch(() => [] as InboxRecord[]);
+    const inbox = await inboxEntries().catch(() => [] as InboxEntry[]);
     const dead = inbox.filter((r) => r && r.status === "dead").sort((a, b) => (b.deadAt ?? "").localeCompare(a.deadAt ?? ""));
     for (let j = 0; j < dead.length; j++) {
       const rec = dead[j]!;
@@ -490,7 +496,7 @@ export function registerCaptureFunctions(
   async function status(): Promise<CaptureStatus> {
     let inbox: CaptureStatus["inbox"] = null;
     try {
-      const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
+      const records = await inboxEntries();
       inboxSize = records.length;
       const live = records.filter((r) => r.status !== "dead");
       const next = live
@@ -524,7 +530,7 @@ export function registerCaptureFunctions(
   sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string }) => capture(input));
 
   sdk.registerFunction("mem::capture-retry", async (input: { eventId?: string; key?: string; all?: boolean } = {}) => {
-    const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
+    const records = await inboxEntries();
     const targets = records.filter((r) => {
       if (input.key) return r.key === input.key;
       if (input.eventId) return r.eventId === input.eventId;
@@ -542,8 +548,10 @@ export function registerCaptureFunctions(
 
   sdk.registerFunction("mem::capture-list", async (input: { status?: InboxState; limit?: number } = {}) => {
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
-    const records = (await kv.list<InboxRecord>(KV.captureInbox))
-      .filter((r) => r && (!input.status || r.status === input.status))
+    const records = (await scanRows<InboxRecord, InboxRecord | null>(kv, KV.captureInbox, (r) =>
+      !input.status || r.status === input.status ? r : null,
+    ))
+      .filter((r): r is InboxRecord => r !== null)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return {
       total: records.length,

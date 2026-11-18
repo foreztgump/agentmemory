@@ -68,6 +68,7 @@ export const KV = {
   captureInbox: "mem:capture:inbox",
   captureEvents: (shard: string) => `mem:capture:events:${shard}`,
   capturePrompts: "mem:capture:prompts",
+  obsStats: "mem:obs-stats",
 } as const;
 
 export function generateId(prefix: string): string {

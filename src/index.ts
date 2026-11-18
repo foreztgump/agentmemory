@@ -32,6 +32,7 @@ import {
 } from "./providers/index.js";
 import { StateKV } from "./state/kv.js";
 import { withScopeGuard } from "./fork/scope-guard.js";
+import { registerObservationStatsRepair, repairObservationStatsOnce, withObservationStats } from "./fork/kv/observation-stats.js";
 import { assertStateReady, waitForStateReady } from "./state/state-readiness.js";
 import type { SearchLayer } from "./state/search-layer.js";
 import { HybridSearch } from "./state/hybrid-search.js";
@@ -267,7 +268,7 @@ async function main() {
   try {
     stateBackend = getStateBackend();
   } catch {}
-  const kv = withScopeGuard(new StateKV(sdk, { backend: stateBackend }), sdk, config.dataDir);
+  const kv = withObservationStats(withScopeGuard(new StateKV(sdk, { backend: stateBackend }), sdk, config.dataDir));
   const stateReadiness = await waitForStateReady(sdk, {
     onWaiting: (error) =>
       bootWarn(`Waiting for the state worker to register state::get and state::list (${error})`),
@@ -297,6 +298,7 @@ async function main() {
   registerPrivacyFunction(sdk);
   registerObserveFunction(sdk, kv, dedupMap, config.maxObservationsPerSession);
   const capture = registerCaptureFunctions(sdk, kv, { restPort: config.restPort });
+  registerObservationStatsRepair(sdk, kv);
   registerImageQuotaCleanup(sdk, kv);
   registerVisionSearchFunctions(sdk, kv, imageEmbeddingProvider);
   if (isSlotsEnabled()) {
@@ -667,6 +669,7 @@ async function main() {
     }
     capture.start();
   })();
+  repairObservationStatsOnce(kv);
 
   const viewerServer = startViewerServer(
     config.viewerPort,

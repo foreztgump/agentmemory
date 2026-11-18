@@ -72,6 +72,7 @@ function seedSession(store: Map<string, Map<string, unknown>>, id: string, statu
     observationCount: 3,
     ...(status === "abandoned" ? { endedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() } : {}),
   });
+  store.set(`mem:obs:${id}`, new Map([0, 1, 2].map((i) => [`obs_seed_${i}`, { id: `obs_seed_${i}`, sessionId: id }])));
 }
 
 describe("observe reactivates abandoned sessions", () => {
