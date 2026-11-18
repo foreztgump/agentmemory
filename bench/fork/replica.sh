@@ -110,6 +110,7 @@ load_valkey() {
     sleep 1
   done
   vcli config set appendonly yes >/dev/null
+  deadline=$((SECONDS + READY_TIMEOUT_S))
   while vcli info persistence | tr -d '\r' | grep -q '^aof_rewrite_in_progress:1'; do
     ((SECONDS < deadline)) || die "valkey AOF rewrite still running after ${READY_TIMEOUT_S}s"
     sleep 1

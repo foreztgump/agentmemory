@@ -32,9 +32,16 @@ done
 [[ -s "$SYNTH/1000000/counts.txt" ]] || SYNTHETIC_GRAPH=0 "$HERE/make-synthetic.sh" 1000000 "$SYNTH/1000000" || failed=1
 bench synthetic-250k --data "$SYNTH/250000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json
 bench synthetic-500k-6g --data "$SYNTH/500000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g
-# The synthetic-1m entry holds targets the in-memory baseline cannot meet, so its
-# result is reported but does not decide the exit status.
-node --import tsx bench/fork/bench.ts --name synthetic-1m --out "$RESULTS/synthetic-1m.json" \
-  --data "$SYNTH/1000000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g ||
-  echo "baseline: synthetic-1m misses its targets (expected until a build boots 1M)" >&2
+# The synthetic-1m entry holds targets the in-memory baseline cannot meet, so a
+# missed target does not decide the exit status. A run that never started the app
+# (no boot peak recorded) is a broken bench and does.
+if ! node --import tsx bench/fork/bench.ts --name synthetic-1m --out "$RESULTS/synthetic-1m.json" \
+  --data "$SYNTH/1000000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g; then
+  if grep -q '"boot.peakMiB.agentmemory"' "$RESULTS/synthetic-1m.json" 2>/dev/null; then
+    echo "baseline: synthetic-1m misses its targets (expected until a build boots 1M)" >&2
+  else
+    echo "baseline: synthetic-1m did not run; see the output above" >&2
+    failed=1
+  fi
+fi
 exit "$failed"

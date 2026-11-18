@@ -85,8 +85,9 @@ await Promise.all(Array.from({ length: Number(args.concurrency) }, async () => {
       });
       statuses[res.status] = (statuses[res.status] ?? 0) + 1;
       await res.arrayBuffer();
-    } catch {
+    } catch (error) {
       statuses.error = (statuses.error ?? 0) + 1;
+      if (statuses.error === 1) console.error(`observe failed: ${(error as Error).message}`);
     }
   }
 }));
