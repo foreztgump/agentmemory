@@ -12,6 +12,7 @@ import { recordAudit } from "./audit.js";
 import { logger } from "../logger.js";
 import { withoutObservationSource } from "./observation-source.js";
 import { scrubRecord } from "./privacy.js";
+import { collectAll } from "../state/kv.js";
 
 const VALID_ITEM_TYPES = new Set(["memory", "pattern", "observation"]);
 
@@ -83,7 +84,7 @@ export function registerTeamFunction(
   sdk.registerFunction("mem::team-feed", 
     async (data?: { limit?: number }) => {
       const limit = data?.limit ?? 20;
-      const items = await kv.list<TeamSharedItem>(KV.teamShared(config.teamId));
+      const items = await collectAll<TeamSharedItem>(kv, KV.teamShared(config.teamId));
 
       const filtered = items.filter((i) => i.visibility === "shared");
       const sorted = filtered
@@ -103,7 +104,7 @@ export function registerTeamFunction(
   );
 
   sdk.registerFunction("mem::team-profile",  async () => {
-    const items = await kv.list<TeamSharedItem>(KV.teamShared(config.teamId));
+    const items = await collectAll<TeamSharedItem>(kv, KV.teamShared(config.teamId));
 
     const members = [...new Set(items.map((i) => i.sharedBy))];
 

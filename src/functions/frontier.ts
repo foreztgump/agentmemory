@@ -2,6 +2,7 @@ import type { IIIClient } from "iii-sdk";
 import type { StateKV } from "../state/kv.js";
 import { KV } from "../state/schema.js";
 import type { Action, ActionEdge, Checkpoint, Lease } from "../types.js";
+import { collectAll } from "../state/kv.js";
 
 export interface FrontierItem {
   action: Action;
@@ -18,10 +19,10 @@ export function registerFrontierFunction(sdk: IIIClient, kv: StateKV): void {
       limit?: number;
       includeLeasedByOthers?: boolean;
     }) => {
-      const actions = await kv.list<Action>(KV.actions);
-      const edges = await kv.list<ActionEdge>(KV.actionEdges);
-      const leases = await kv.list<Lease>(KV.leases);
-      const checkpoints = await kv.list<Checkpoint>(KV.checkpoints);
+      const actions = await collectAll<Action>(kv, KV.actions);
+      const edges = await collectAll<ActionEdge>(kv, KV.actionEdges);
+      const leases = await collectAll<Lease>(kv, KV.leases);
+      const checkpoints = await collectAll<Checkpoint>(kv, KV.checkpoints);
       const now = Date.now();
 
       const activeLeaseMap = new Map<string, Lease>();

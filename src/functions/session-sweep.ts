@@ -11,6 +11,7 @@ import {
   isSessionSweepEnabled,
   getSessionSweepStaleHours,
 } from "../config.js";
+import { collectAll } from "../state/kv.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -41,7 +42,7 @@ export function registerSessionSweepFunction(sdk: IIIClient, kv: StateKV): void 
       const cutoff = Date.now() - getSessionSweepStaleHours() * HOUR_MS;
       let sessions: Session[];
       try {
-        sessions = await kv.list<Session>(KV.sessions);
+        sessions = await collectAll<Session>(kv, KV.sessions);
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         logger.error("Session sweep scan failed", { error });

@@ -479,7 +479,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
 export function createConsolidationStatusReader(kv: StateKV) {
   const counts = singleFlight(async () => {
     const [summaries, memories, semantic, procedural, relations] = await Promise.all([
-      kv.list(KV.summaries).catch(() => []),
+      collectAll(kv, KV.summaries).catch(() => []),
       collectAll<import("../types.js").Memory>(kv, KV.memories).catch(() => []),
       collectAll(kv, KV.semantic).catch(() => []),
       collectAll(kv, KV.procedural).catch(() => []),
@@ -1052,7 +1052,7 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = await collectAll<Session>(kv, KV.sessions);
       sessions.sort((a, b) =>
         (b.startedAt || "").localeCompare(a.startedAt || ""),
       );
@@ -1413,7 +1413,7 @@ export function registerApiTriggers(
       const repo = asNonEmptyString(req.query_params?.["repo"]);
       const rawLimit = parseOptionalInt(req.query_params?.["limit"]);
       const limit = Math.max(1, Math.min(500, rawLimit ?? 100));
-      const all = await kv.list<CommitLink>(KV.commits);
+      const all = await collectAll<CommitLink>(kv, KV.commits);
       const filtered = all
         .filter((c) => !branch || c.branch === branch)
         .filter((c) => !repo || c.repo === repo)
@@ -1436,7 +1436,7 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = await collectAll<Session>(kv, KV.sessions);
       const validSessions = sessions.filter(
         (session): session is Session =>
           !!session &&
@@ -2414,7 +2414,7 @@ export function registerApiTriggers(
         Math.min(100, Number((req.body as { batchSize?: number })?.batchSize) || 25),
       );
       try {
-        const sessions = await kv.list<Session>(KV.sessions);
+        const sessions = await collectAll<Session>(kv, KV.sessions);
         let totalNodes = 0;
         let totalEdges = 0;
         let batchesRun = 0;
@@ -3698,7 +3698,7 @@ export function registerApiTriggers(
       const df = <T>(items: T[], field: "updatedAt" | "createdAt") =>
         items.filter((i) => new Date((i as Record<string, unknown>)[field] as string).getTime() > sinceTime);
       let memories = await collectAll<import("../types.js").Memory>(kv, KV.memories);
-      let actions = await kv.list<import("../types.js").Action>(KV.actions);
+      let actions = await collectAll<import("../types.js").Action>(kv, KV.actions);
       if (project) {
         memories = memories.filter((m) => m.project === project);
         actions = actions.filter((a) => a.project === project);

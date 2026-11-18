@@ -5,7 +5,7 @@ import type {
   TimelineEntry,
 } from "../types.js";
 import { KV } from "../state/schema.js";
-import { StateKV } from "../state/kv.js";
+import { StateKV, collectAll } from "../state/kv.js";
 import { recordAccessBatch } from "./access-tracker.js";
 import { logger } from "../logger.js";
 import { withoutObservationSource } from "./observation-source.js";
@@ -44,7 +44,7 @@ export function registerTimelineFunction(sdk: IIIClient, kv: StateKV): void {
         anchorTime = new Date(searchResults[0].timestamp).getTime();
       }
 
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = await collectAll<Session>(kv, KV.sessions);
       const filtered = data.project
         ? sessions.filter((s) => s.project === data.project)
         : sessions;
@@ -111,7 +111,7 @@ async function findByKeyword(
   keyword: string,
   project?: string,
 ): Promise<CompressedObservation[]> {
-  const sessions = await kv.list<Session>(KV.sessions);
+  const sessions = await collectAll<Session>(kv, KV.sessions);
   const filtered = project
     ? sessions.filter((s) => s.project === project)
     : sessions;

@@ -4,6 +4,7 @@ import { lookupObservationSession } from "../state/obs-index.js";
 import { KV, generateId } from "../state/schema.js";
 import type { Facet, Lesson } from "../types.js";
 import { logger } from "../logger.js";
+import { collectAll } from "../state/kv.js";
 
 interface TargetLiveness {
   observation: boolean;
@@ -65,7 +66,7 @@ export async function deleteFacetsForTargets(
         }
       }),
     );
-    const all = await kv.list<Facet>(KV.facets);
+    const all = await collectAll<Facet>(kv, KV.facets);
     const matches = all.filter(
       (f) =>
         ids.has(f.targetId) &&
@@ -82,9 +83,9 @@ export async function deleteFacetsForTargets(
 }
 
 export async function findOrphanFacets(kv: StateKV): Promise<Facet[]> {
-  const facets = await kv.list<Facet>(KV.facets);
+  const facets = await collectAll<Facet>(kv, KV.facets);
   const actionIds = facets.some((f) => f.targetType === "action")
-    ? new Set((await kv.list<{ id: string }>(KV.actions)).map((a) => a.id))
+    ? new Set((await collectAll<{ id: string }>(kv, KV.actions)).map((a) => a.id))
     : new Set<string>();
   const live = new Map<string, TargetLiveness | null>();
   let observationIds: Set<string> | null | undefined;
@@ -115,7 +116,7 @@ const UNSESSIONED_OBSERVATION_SCOPE = "migrated";
 
 async function listObservationIds(kv: StateKV): Promise<Set<string> | null> {
   try {
-    const sessions = await kv.list<{ id: string }>(KV.sessions);
+    const sessions = await collectAll<{ id: string }>(kv, KV.sessions);
     const scopes = [...new Set([...sessions.map((session) => session.id), UNSESSIONED_OBSERVATION_SCOPE])];
     const ids = new Set<string>();
     for (let start = 0; start < scopes.length; start += OBSERVATION_SCAN_BATCH) {
@@ -184,7 +185,7 @@ export function registerFacetsFunction(sdk: IIIClient, kv: StateKV): void {
       const dimension = data.dimension.trim();
       const value = data.value.trim();
 
-      const existing = await kv.list<Facet>(KV.facets);
+      const existing = await collectAll<Facet>(kv, KV.facets);
       const duplicate = existing.find(
         (f) =>
           f.targetId === data.targetId &&
@@ -222,7 +223,7 @@ export function registerFacetsFunction(sdk: IIIClient, kv: StateKV): void {
         return { success: false, error: "dimension is required" };
       }
 
-      const all = await kv.list<Facet>(KV.facets);
+      const all = await collectAll<Facet>(kv, KV.facets);
       const matches = all.filter((f) => {
         if (f.targetId !== data.targetId || f.dimension !== data.dimension) {
           return false;
@@ -258,7 +259,7 @@ export function registerFacetsFunction(sdk: IIIClient, kv: StateKV): void {
         };
       }
 
-      const all = await kv.list<Facet>(KV.facets);
+      const all = await collectAll<Facet>(kv, KV.facets);
       const filtered = data.targetType
         ? all.filter((f) => f.targetType === data.targetType)
         : all;
@@ -313,7 +314,7 @@ export function registerFacetsFunction(sdk: IIIClient, kv: StateKV): void {
         return { success: false, error: "targetId is required" };
       }
 
-      const all = await kv.list<Facet>(KV.facets);
+      const all = await collectAll<Facet>(kv, KV.facets);
       const targetFacets = all.filter((f) => f.targetId === data.targetId);
 
       const dimMap = new Map<string, string[]>();
@@ -337,7 +338,7 @@ export function registerFacetsFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::facet-stats", 
     async (data: { targetType?: string }) => {
-      const all = await kv.list<Facet>(KV.facets);
+      const all = await collectAll<Facet>(kv, KV.facets);
       const filtered = data.targetType
         ? all.filter((f) => f.targetType === data.targetType)
         : all;
@@ -366,7 +367,7 @@ export function registerFacetsFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::facet-dimensions", 
     async () => {
-      const all = await kv.list<Facet>(KV.facets);
+      const all = await collectAll<Facet>(kv, KV.facets);
 
       const counts = new Map<string, number>();
       for (const f of all) {

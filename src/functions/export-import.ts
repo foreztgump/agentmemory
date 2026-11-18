@@ -172,7 +172,7 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
           stoppedAt: collection,
         };
       };
-      const allSessions = await kv.list<Session>(KV.sessions);
+      const allSessions = await collectAll<Session>(kv, KV.sessions);
       const sessionWindow = maxSessions !== undefined
         ? allSessions.slice(offset, offset + maxSessions)
         : allSessions;
@@ -184,7 +184,7 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
 
       const summaries = sliceCollection(
         "summaries",
-        await kv.list<SessionSummary>(KV.summaries),
+        await collectAll<SessionSummary>(kv, KV.summaries),
       );
       if (!budget.fits(summaries)) return refuse("summaries");
 
@@ -442,7 +442,7 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
         sourceOmitted: 0,
       };
 
-      const replaceSessions = strategy === "replace" ? await kv.list<Session>(KV.sessions) : [];
+      const replaceSessions = strategy === "replace" ? await collectAll<Session>(kv, KV.sessions) : [];
       const sessionKeys = [...obsBuckets, ...importData.sessions.map((session) => session.id),
         ...importData.summaries.map((summary) => summary.sessionId), ...replaceSessions.map((session) => session.id)]
         .map((id) => `obs:${id}`);
@@ -472,22 +472,22 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
             })))));
           }
           const memories = await collectAll<Memory>(kv, KV.memories);
-          const summaries = await kv.list<SessionSummary>(KV.summaries);
-          const actions = await kv.list<Action>(KV.actions);
-          const actionEdges = await kv.list<ActionEdge>(KV.actionEdges);
+          const summaries = await collectAll<SessionSummary>(kv, KV.summaries);
+          const actions = await collectAll<Action>(kv, KV.actions);
+          const actionEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
           const routines = await kv.list<Routine>(KV.routines);
-          const signals = await kv.list<Signal>(KV.signals);
-          const checkpoints = await kv.list<Checkpoint>(KV.checkpoints);
-          const sentinels = await kv.list<Sentinel>(KV.sentinels);
-          const sketches = await kv.list<Sketch>(KV.sketches);
-          const crystals = await kv.list<Crystal>(KV.crystals);
-          const facets = await kv.list<Facet>(KV.facets);
-          const lessons = await kv.list<Lesson>(KV.lessons);
+          const signals = await collectAll<Signal>(kv, KV.signals);
+          const checkpoints = await collectAll<Checkpoint>(kv, KV.checkpoints);
+          const sentinels = await collectAll<Sentinel>(kv, KV.sentinels);
+          const sketches = await collectAll<Sketch>(kv, KV.sketches);
+          const crystals = await collectAll<Crystal>(kv, KV.crystals);
+          const facets = await collectAll<Facet>(kv, KV.facets);
+          const lessons = await collectAll<Lesson>(kv, KV.lessons);
           const insights = await collectAll<Insight>(kv, KV.insights);
           const semanticRows = await collectAll<{ id: string }>(kv, KV.semantic);
           const proceduralRows = await collectAll<{ id: string }>(kv, KV.procedural);
           const profiles = await kv.list<ProjectProfile>(KV.profiles);
-          const accessLogs = await kv.list<AccessLogExport>(KV.accessLog);
+          const accessLogs = await collectAll<AccessLogExport>(kv, KV.accessLog);
           // Collect observation deletes across all sessions, then run them in
           // one bounded pass: a runChunked nested inside a runChunked callback
           // multiplies in-flight deletes to chunk-size squared.

@@ -4,6 +4,7 @@ import { KV } from "../state/schema.js";
 import type { Session } from "../types.js";
 import { execFile } from "node:child_process";
 import { resolve } from "node:path";
+import { collectAll } from "../state/kv.js";
 
 function execAsync(
   cmd: string,
@@ -141,7 +142,7 @@ export function registerBranchAwareFunction(sdk: IIIClient, kv: StateKV): void {
       const projectRoot = worktreeInfo.mainRepoRoot || data.cwd;
       const branch = data.branch || worktreeInfo.branch;
 
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = await collectAll<Session>(kv, KV.sessions);
 
       const matching = sessions.filter((s) => {
         if (s.project === projectRoot || s.cwd === projectRoot) return true;

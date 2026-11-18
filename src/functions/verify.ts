@@ -6,6 +6,7 @@ import type {
   CompressedObservation,
   Session,
 } from "../types.js";
+import { collectAll } from "../state/kv.js";
 
 export function registerVerifyFunction(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction("mem::verify", 
@@ -103,7 +104,7 @@ async function findObservation(
       if (obs) return obs;
     }
   }
-  const sessions = await kv.list<Session>(KV.sessions);
+  const sessions = await collectAll<Session>(kv, KV.sessions);
   for (const session of sessions) {
     if (hintSessionIds?.includes(session.id)) continue;
     const obs = await kv.get<CompressedObservation>(

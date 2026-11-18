@@ -4,6 +4,7 @@ import { KV, generateId } from "../state/schema.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import type { Action, ActionEdge, Checkpoint } from "../types.js";
 import { recordAudit } from "./audit.js";
+import { collectAll } from "../state/kv.js";
 
 export function registerCheckpointsFunction(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction("mem::checkpoint-create", 
@@ -130,9 +131,9 @@ export function registerCheckpointsFunction(sdk: IIIClient, kv: StateKV): void {
 
           let unblockedCount = 0;
           if (data.status === "passed" && checkpoint.linkedActionIds.length > 0) {
-            const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
-            const allCheckpoints = await kv.list<Checkpoint>(KV.checkpoints);
-            const allActions = await kv.list<Action>(KV.actions);
+            const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
+            const allCheckpoints = await collectAll<Checkpoint>(kv, KV.checkpoints);
+            const allActions = await collectAll<Action>(kv, KV.actions);
             const cpMap = new Map(allCheckpoints.map((c) => [c.id, c]));
             const actionMap = new Map(allActions.map((a) => [a.id, a]));
 
@@ -180,7 +181,7 @@ export function registerCheckpointsFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::checkpoint-list", 
     async (data: { status?: string; type?: string }) => {
-      let checkpoints = await kv.list<Checkpoint>(KV.checkpoints);
+      let checkpoints = await collectAll<Checkpoint>(kv, KV.checkpoints);
 
       if (data.status) {
         checkpoints = checkpoints.filter((c) => c.status === data.status);
@@ -200,7 +201,7 @@ export function registerCheckpointsFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::checkpoint-expire", 
     async () => {
-      const checkpoints = await kv.list<Checkpoint>(KV.checkpoints);
+      const checkpoints = await collectAll<Checkpoint>(kv, KV.checkpoints);
       const now = Date.now();
       let expired = 0;
 

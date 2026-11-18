@@ -98,7 +98,7 @@ export async function migrateVectorIndex(
   // loop moves on.
   let sessions: Array<{ id: string }>;
   try {
-    sessions = await kv.list<{ id: string }>(KV.sessions);
+    sessions = await collectAll<{ id: string }>(kv, KV.sessions);
   } catch (err) {
     logger.warn("migrateVectorIndex: failed to list sessions", {
       error: err instanceof Error ? err.message : String(err),

@@ -5,6 +5,7 @@ import { KV } from "./schema.js";
 import { logger } from "../logger.js";
 import { safeAudit } from "../functions/audit.js";
 import { getIndexSaveIntervalMs, getVectorBucketSize } from "../config.js";
+import { collectAll } from "./kv.js";
 
 const FAILURE_LOG_THROTTLE_MS = 60_000;
 const INDEX_PERSISTENCE_FUNCTION_ID = "mem::index-persistence";
@@ -303,7 +304,7 @@ export class IndexPersistence implements IndexPersistencePort {
     if (!vector || this.recoveryError) return result;
     let rows: unknown[];
     try {
-      rows = await this.kv.list<unknown>(KV.vectorPendingLog);
+      rows = await collectAll<unknown>(this.kv, KV.vectorPendingLog);
     } catch (err) {
       this.pendingLogUnknown = true;
       this.pendingLogError = errorMessage(err);

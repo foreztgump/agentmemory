@@ -3,6 +3,7 @@ import type { StateKV } from "../state/kv.js";
 import { KV, generateId } from "../state/schema.js";
 import type { Action, ActionEdge, RoutineRun, MemoryProvider } from "../types.js";
 import { recordAudit } from "./audit.js";
+import { collectAll } from "../state/kv.js";
 
 const FLOW_COMPRESS_SYSTEM = `You are a workflow summarizer. Given a completed action chain, produce a concise summary capturing:
 1. The overall goal and outcome
@@ -43,7 +44,7 @@ export function registerFlowCompressFunction(
           if (action) actionsToCompress.push(action);
         }
       } else if (data.project) {
-        const allActions = await kv.list<Action>(KV.actions);
+        const allActions = await collectAll<Action>(kv, KV.actions);
         actionsToCompress = allActions.filter(
           (a) => a.project === data.project && a.status === "done",
         );
@@ -65,7 +66,7 @@ export function registerFlowCompressFunction(
         };
       }
 
-      const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
+      const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
       const relevantIds = new Set(doneActions.map((a) => a.id));
       const relevantEdges = allEdges.filter(
         (e) =>

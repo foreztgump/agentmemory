@@ -90,7 +90,7 @@ export function registerConsolidateFunction(
     async (data: { project?: string; minObservations?: number }) => {
       const minObs = data.minObservations ?? 10;
 
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = await collectAll<Session>(kv, KV.sessions);
       const filtered = data.project
         ? sessions.filter((s) => s.project === data.project)
         : sessions;

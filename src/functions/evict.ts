@@ -148,9 +148,8 @@ export function registerEvictFunction(sdk: IIIClient, kv: StateKV): void {
       };
 
       let recoveredStaleSessions = 0;
-      const sessions = await kv.list<Session>(KV.sessions).catch(() => []);
-      const summaries = await kv
-        .list<SessionSummary>(KV.summaries)
+      const sessions = await collectAll<Session>(kv, KV.sessions).catch(() => []);
+      const summaries = await collectAll<SessionSummary>(kv, KV.summaries)
         .catch(() => []);
       const summaryIds = new Set(summaries.map((s) => s.sessionId));
 

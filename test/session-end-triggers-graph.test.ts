@@ -37,7 +37,7 @@ describe("api::graph-build endpoint", () => {
   });
 
   it("iterates sessions and calls mem::graph-extract", () => {
-    expect(api).toMatch(/kv\.list<Session>\(KV\.sessions\)/);
+    expect(api).toMatch(/collectAll<Session>\(kv, KV\.sessions\)/);
     expect(api).toMatch(/kv\.list<CompressedObservation>\(KV\.observations\(sid\)\)/);
     expect(api).toMatch(
       /sdk\.trigger\(\{\s*function_id:\s*"mem::graph-extract"/,
