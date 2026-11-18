@@ -53,7 +53,14 @@ class Redis {
     socket.on("data", (chunk: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
       for (;;) {
-        const parsed = parse(this.buffer, 0);
+        let parsed: ReturnType<typeof parse>;
+        try {
+          parsed = parse(this.buffer, 0);
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error(String(error)));
+          socket.destroy();
+          return;
+        }
         if (!parsed) break;
         this.buffer = this.buffer.subarray(parsed.end);
         this.waiting.shift()?.(parsed.value);
@@ -63,6 +70,7 @@ class Redis {
 
   static async open(url: string): Promise<Redis> {
     const parsed = new URL(url);
+    if (parsed.protocol !== "redis:") throw new Error(`only plaintext redis:// URLs are supported, got ${parsed.protocol}`);
     const socket = connect(Number(parsed.port || 6379), parsed.hostname);
     await new Promise<void>((resolve, reject) => socket.once("connect", resolve).once("error", reject));
     const client = new Redis(socket);
