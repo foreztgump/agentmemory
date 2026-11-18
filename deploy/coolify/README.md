@@ -1,7 +1,7 @@
 # Deploy agentmemory on Coolify
 
 This directory deploys agentmemory as a Coolify *Application* built from a
-Docker Compose stack. It runs agentmemory 0.9.31 under iii 0.25 Worker Compose,
+Docker Compose stack. It runs agentmemory 0.9.33 under iii 0.25 Worker Compose,
 keeps state in a Valkey sidecar, embeds with Voyage `voyage-code-4`, and
 writes summaries through an Anthropic-format LLM endpoint.
 
@@ -34,9 +34,16 @@ Volumes:
 ## Changes from upstream
 
 - **Embedding model.** This branch carries a source fix that makes the Voyage provider read `VOYAGE_MODEL` (upstream sends `voyage-code-3` whatever the variable says). The compose file defaults it to `voyage-code-4`. Both models emit 1024 dimensions, and the dimension guard rejects a mismatch, so a wrong model fails closed.
-- **Compose file.** Upstream's `deploy/coolify/docker-compose.yml` plus a Valkey service, memory limits, a 300 s health-check start period, and pinned values for the embedding provider, summary model, compression and state backend.
+- **Compose files.** Upstream's `deploy/coolify/docker-compose.yml` plus a Valkey service, memory limits, a 300 s health-check start period, defaults for the embedding provider, LLM provider, Voyage model and dimension, summary model, compression and worker-ready wait, and a pinned state backend.
+- **Runtime.** `deploy/runtime/supervise.mjs` exits the container when the worker stops serving (see Health and restarts), and the worker's compose `startup_timeout` reads `AGENTMEMORY_READY_TIMEOUT_MS`.
 
-The 0.9.30 build patches (the bundle's `voyage-code-3` literal and the CLI's 15 s worker-ready wait), the stale-pidfile cleanup and the engine watchdog are gone. Compose allows each worker 300 s to start and restarts a worker that exits, and the engine is the container's main process, so an engine crash restarts the container.
+The 0.9.30 build patches (the bundle's `voyage-code-3` literal and the CLI's 15 s worker-ready wait), the stale-pidfile cleanup and the engine watchdog are gone.
+
+## Health and restarts
+
+Compose restarts a worker that exits, up to 5 times a minute. When the agentmemory worker spends that budget, compose marks it failed but keeps the engine and the `http` worker up, so every route returns 404. Docker does not restart a container for being unhealthy. To make the restart policy act, the image runs compose under `deploy/runtime/supervise.mjs`, which probes `/agentmemory/livez` (a route the agentmemory worker serves) and exits with status 1 once the worker has not served it for `AGENTMEMORY_READY_TIMEOUT_MS`. `restart: unless-stopped` then restarts the container.
+
+`AGENTMEMORY_READY_TIMEOUT_MS` (default `300000`, the upstream CLI default) is the worker-ready wait. It sets compose's `startup_timeout` for the worker and the supervisor's limit, and the supervisor logs it at start: `[supervise] agentmemory worker-ready wait: 300000 ms`. Raise it when a boot takes longer, for example while an upgrade migrates the vector index. The health check reports `unhealthy` after 3 failed probes 30 s apart; the supervisor's exit follows when the wait runs out.
 
 ## Configuration
 
@@ -44,9 +51,9 @@ Coolify passes every application variable into the container, and the compose fi
 
 | Variable | Value |
 |---|---|
-| `VOYAGE_API_KEY` | Voyage key. `EMBEDDING_PROVIDER` is pinned to `voyage` in the compose file, so adding an LLM key never switches the embedding backend. |
+| `VOYAGE_API_KEY` | Voyage key. `EMBEDDING_PROVIDER` defaults to `voyage` in the compose file, so adding an LLM key never switches the embedding backend. `VOYAGE_MODEL` defaults to `voyage-code-4` and `VOYAGE_OUTPUT_DIMENSION` to `1024`. |
 | `AGENTMEMORY_SECRET` | 64-hex bearer secret. When unset, the entrypoint uses `/data/secret`. Clients send `Authorization: Bearer <secret>`. |
-| `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` | Key and base URL of an Anthropic-format endpoint, for example a CLIProxy gateway. |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` | Key and base URL of an Anthropic-format endpoint, for example a CLIProxy gateway. `AGENTMEMORY_LLM_PROVIDER` defaults to `anthropic`; since 0.9.33 a key alone turns no LLM on. |
 | `ANTHROPIC_MODEL` | Summary model. Defaults to `claude-haiku-5-5` in the compose file; without it agentmemory uses a Sonnet-class model. |
 
 Behaviour settings in use:

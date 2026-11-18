@@ -25,10 +25,11 @@ services:
       SERVICE_FQDN_AGENTMEMORY_3111: "${SERVICE_FQDN_AGENTMEMORY_3111:-}"
       VIEWER_ALLOWED_HOSTS: "${VIEWER_ALLOWED_HOSTS:-localhost:3113,127.0.0.1:3113,[::1]:3113}"
       VIEWER_ALLOWED_ORIGINS: "${VIEWER_ALLOWED_ORIGINS:-http://localhost:3113,http://127.0.0.1:3113}"
-      # Pinned rather than auto-detected: detection ranks Gemini and OpenAI above
-      # Voyage, so adding an unrelated key would switch the embedding backend.
-      EMBEDDING_PROVIDER: "voyage"
-      AGENTMEMORY_LLM_PROVIDER: "${AGENTMEMORY_LLM_PROVIDER:-}"
+      # Defaulted rather than auto-detected: detection ranks Gemini and OpenAI
+      # above Voyage, so adding an unrelated key would switch the embedding backend.
+      EMBEDDING_PROVIDER: "${EMBEDDING_PROVIDER:-voyage}"
+      # 0.9.33 sends nothing to an LLM until a provider is selected.
+      AGENTMEMORY_LLM_PROVIDER: "${AGENTMEMORY_LLM_PROVIDER:-anthropic}"
       # Blank on purpose: provider detection prefers OpenAI and MiniMax keys over
       # Anthropic, so either one in the app's variables would move summaries
       # off the CLIProxy endpoint.
@@ -48,6 +49,7 @@ services:
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       VOYAGE_API_KEY: "${VOYAGE_API_KEY:?}"
       VOYAGE_MODEL: "${VOYAGE_MODEL:-voyage-code-4}"
+      VOYAGE_OUTPUT_DIMENSION: "${VOYAGE_OUTPUT_DIMENSION:-1024}"
       COHERE_API_KEY: "${COHERE_API_KEY:-}"
       COHERE_MODEL: "${COHERE_MODEL:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
@@ -78,6 +80,9 @@ services:
       AGENTMEMORY_STATE_BACKEND: "redis"
       AGENTMEMORY_REDIS_URL: "redis://valkey:6379"
       AGENTMEMORY_STATE_SAVE_INTERVAL_MS: "${AGENTMEMORY_STATE_SAVE_INTERVAL_MS:-}"
+      # How long the worker may go without serving, at boot or after a crash,
+      # before the container exits and Docker restarts it. Upstream default.
+      AGENTMEMORY_READY_TIMEOUT_MS: "${AGENTMEMORY_READY_TIMEOUT_MS:-300000}"
       AGENTMEMORY_LOCAL_DISPATCH: "${AGENTMEMORY_LOCAL_DISPATCH:-}"
       AGENTMEMORY_SECRET: "${AGENTMEMORY_SECRET:-}"
       AGENT_ID: "${AGENT_ID:-}"
