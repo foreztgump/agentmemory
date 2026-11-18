@@ -74,6 +74,14 @@ function arrayBytes(items: number, itemTotal: number): number {
   return items === 0 ? 2 : itemTotal + items + 1;
 }
 
+function safeBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value) ?? "null");
+  } catch {
+    return 0;
+  }
+}
+
 function jsonBytes(values: unknown[]): number {
   return arrayBytes(values.length, itemBytes(values));
 }
@@ -164,7 +172,7 @@ export class GuardedStateKV extends StateKV {
     const site = this.site();
     const values = await super.list<T>(scope);
     if (Array.isArray(values)) this.note(scope, "list", site, values.length, jsonBytes(values));
-    else this.note(scope, "list", site, 0, Buffer.byteLength(JSON.stringify(values) ?? "null"));
+    else this.note(scope, "list", site, 0, safeBytes(values));
     return values;
   }
 

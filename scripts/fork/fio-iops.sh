@@ -33,4 +33,4 @@ fi
 
 printf '%s' "$json" | jq -r --arg dir "$dir" --arg size "$size" --arg rt "$runtime" --arg qd "$iodepth" '
   .jobs[0].read as $r
-  | "dir=\($dir) size=\($size) runtime_s=\($rt) bs=4k iodepth=\($qd) direct=1 iops=\($r.iops | floor) p99_latency_us=\(($r.clat_ns.percentile["99.000000"] // null) | if . == null then "missing" else (. / 1000 | floor) end) mean_latency_us=\(($r.clat_ns.mean / 1000) | floor)"'
+  | "dir=\($dir) size=\($size) runtime_s=\($rt) bs=4k iodepth=\($qd) direct=1 iops=\($r.iops | floor) p99_latency_us=\(($r.clat_ns.percentile["99.000000"] // null) | if . == null then "missing" else (. / 1000 | floor) end) mean_latency_us=\(($r.clat_ns.mean // null) | if . == null then "missing" else (. / 1000 | floor) end)"'
