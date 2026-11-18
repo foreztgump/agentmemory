@@ -1,6 +1,7 @@
 import type { CompressedObservation } from "../types.js";
 import { getSearchResultLayer, isSearchResultLayer, matchesSearchLayer, type SearchLayer, type SearchResultLayer } from "./search-layer.js";
 import { extractTerms, queryTerms } from "./term-extraction.js";
+import type { KeywordIndexPort } from "./search-ports.js";
 
 interface IndexEntry {
   obsId: string;
@@ -15,7 +16,7 @@ export interface SearchIndexRevision {
   release(): void;
 }
 
-export class SearchIndex {
+export class SearchIndex implements KeywordIndexPort {
   private entries: Map<string, IndexEntry> = new Map();
   private invertedIndex: Map<string, Set<string>> = new Map();
   private docTermCounts: Map<string, Map<string, number>> = new Map();

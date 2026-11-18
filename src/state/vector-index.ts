@@ -1,4 +1,5 @@
 import { matchesSearchLayer, type SearchLayer, type SearchLayerResolver } from "./search-layer.js";
+import type { VectorStorePort } from "./search-ports.js";
 
 export function float32ToBase64(arr: Float32Array): string {
   return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString(
@@ -33,7 +34,7 @@ export type VectorEntry = { embedding: Float32Array; sessionId: string };
 
 export type VectorChangeListener = (obsId: string | null, entry: VectorEntry | null) => void;
 
-export class VectorIndex {
+export class VectorIndex implements VectorStorePort {
   private vectors: Map<string, VectorEntry> = new Map();
   private changes: Map<string, boolean> = new Map();
   private listener: VectorChangeListener | null = null;
