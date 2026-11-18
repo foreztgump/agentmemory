@@ -7,7 +7,7 @@ import { KV } from "../src/state/schema.js";
 import {
   GuardedStateKV,
   ScopeReadInventory,
-  createStateKV,
+  withScopeGuard,
   getScopeGuardMode,
   normalizeScope,
 } from "../src/fork/scope-guard.js";
@@ -123,9 +123,12 @@ describe("scope guard", () => {
     expect(getScopeGuardMode()).toBe("off");
     const sdk = fakeSdk(new Map()) as never;
     const dir = mkdtempSync(join(tmpdir(), "scope-guard-"));
-    expect(createStateKV(sdk, {}, dir)).not.toBeInstanceOf(GuardedStateKV);
+    const plain = new StateKV(sdk, { backend: "redis" });
+    expect(withScopeGuard(plain, sdk, dir)).toBe(plain);
     process.env.AGENTMEMORY_SCOPE_GUARD = "warn";
-    expect(createStateKV(sdk, {}, dir)).toBeInstanceOf(GuardedStateKV);
+    const guarded = withScopeGuard(plain, sdk, dir);
+    expect(guarded).toBeInstanceOf(GuardedStateKV);
+    expect(guarded.backend).toBe("redis");
     process.env.AGENTMEMORY_SCOPE_GUARD = "throw";
     expect(() => getScopeGuardMode()).toThrow(/off or warn/);
   });
