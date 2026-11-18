@@ -1,0 +1,81 @@
+{
+  "_margins": "Set from the 2026-11-17 baseline (docs/fork/baseline/README.md) on a shared workstation. Memory +15% over the highest baseline run; boot time +50%; search latency x2; capture throughput floor at 50% of the lowest run; recall floors at baseline minus 0.02; graph cases and index document counts may not drop at all. Each memory or time ceiling is paired with the recall and index floors, so a change that saves memory by doing less work fails. Lower a ceiling when a later build improves on it.",
+  "buddy-keyword": {
+    "run": "buddy's 2026-11-16 backup, no embedding provider (production buddy runs keyword-only), agentmemory limit 2560m",
+    "limits": [
+      { "metric": "boot.seconds", "max": 78 },
+      { "metric": "boot.peakMiB.agentmemory", "max": 2047 },
+      { "metric": "steady.MiB.agentmemory", "max": 1960 },
+      { "metric": "steady.anonMiB.agentmemory", "max": 1786 },
+      { "metric": "steady.anonMiB.valkey", "max": 2540 },
+      { "metric": "run.peakMiB.agentmemory", "max": 2138 },
+      { "metric": "search.buddy-2026-11-16.p50Ms", "max": 39 },
+      { "metric": "search.buddy-2026-11-16.p95Ms", "max": 88 },
+      { "metric": "capture.storedPerSecond", "min": 50 },
+      { "metric": "recall.buddy-2026-11-16.recallAt10", "min": 0.84 },
+      { "metric": "recall.buddy-2026-11-16.mrr", "min": 0.7147 },
+      { "metric": "index.bm25Documents", "min": 229476 }
+    ]
+  },
+  "buddy-vectors": {
+    "run": "buddy's 2026-11-16 backup with EMBEDDING_PROVIDER=voyage, so the persisted vectors load at boot; agentmemory limit 5g (2560m is OOM-killed during boot)",
+    "limits": [
+      { "metric": "boot.seconds", "max": 90 },
+      { "metric": "boot.peakMiB.agentmemory", "max": 4985 },
+      { "metric": "steady.anonMiB.agentmemory", "max": 4801 },
+      { "metric": "steady.anonMiB.valkey", "max": 2548 },
+      { "metric": "search.buddy-2026-11-16.p50Ms", "max": 34 },
+      { "metric": "search.buddy-2026-11-16.p95Ms", "max": 117 },
+      { "metric": "capture.storedPerSecond", "min": 47 },
+      { "metric": "recall.buddy-2026-11-16.recallAt10", "min": 0.84 },
+      { "metric": "recall.buddy-2026-11-16.mrr", "min": 0.7147 },
+      { "metric": "index.bm25Documents", "min": 229476 },
+      { "metric": "index.vectorDocuments", "min": 242653 }
+    ]
+  },
+  "synthetic-250k": {
+    "run": "synthetic 250,000 observations, no embedding provider, agentmemory limit 2560m",
+    "limits": [
+      { "metric": "boot.seconds", "max": 79 },
+      { "metric": "boot.peakMiB.agentmemory", "max": 1770 },
+      { "metric": "boot.peakMiB.valkey", "max": 676 },
+      { "metric": "steady.anonMiB.agentmemory", "max": 1548 },
+      { "metric": "steady.anonMiB.valkey", "max": 506 },
+      { "metric": "run.peakMiB.agentmemory", "max": 1817 },
+      { "metric": "search.synthetic-cases.p50Ms", "max": 225 },
+      { "metric": "search.synthetic-cases.p95Ms", "max": 1032 },
+      { "metric": "capture.storedPerSecond", "min": 42 },
+      { "metric": "recall.synthetic-cases.recallAt10", "min": 0.98 },
+      { "metric": "recall.synthetic-cases.mrr", "min": 0.88 },
+      { "metric": "recall.synthetic-cases.graphPassed", "min": 10 },
+      { "metric": "index.bm25Documents", "min": 159565 }
+    ]
+  },
+  "synthetic-500k-6g": {
+    "run": "synthetic 500,000 observations, no embedding provider, agentmemory limit 6g (2560m crash-loops on the worker heap limit)",
+    "limits": [
+      { "metric": "boot.seconds", "max": 97 },
+      { "metric": "boot.peakMiB.agentmemory", "max": 2738 },
+      { "metric": "boot.peakMiB.valkey", "max": 1336 },
+      { "metric": "steady.anonMiB.agentmemory", "max": 2454 },
+      { "metric": "steady.anonMiB.valkey", "max": 1001 },
+      { "metric": "run.peakMiB.agentmemory", "max": 2805 },
+      { "metric": "search.synthetic-cases.p50Ms", "max": 536 },
+      { "metric": "search.synthetic-cases.p95Ms", "max": 1300 },
+      { "metric": "capture.storedPerSecond", "min": 85 },
+      { "metric": "recall.synthetic-cases.recallAt10", "min": 0.98 },
+      { "metric": "recall.synthetic-cases.mrr", "min": 0.88 },
+      { "metric": "recall.synthetic-cases.graphPassed", "min": 10 },
+      { "metric": "index.bm25Documents", "min": 320043 }
+    ]
+  },
+  "synthetic-1m": {
+    "run": "synthetic 1,000,000 observations, no embedding provider, agentmemory limit 6g. The in-memory baseline never becomes ready (worker heap out of memory), so every limit fails until a build boots it: these are the project's targets, not regression ceilings.",
+    "limits": [
+      { "metric": "boot.seconds", "max": 60 },
+      { "metric": "steady.anonMiB.agentmemory", "max": 3584 },
+      { "metric": "recall.synthetic-cases.recallAt10", "min": 0.98 },
+      { "metric": "index.bm25Documents", "min": 635000 }
+    ]
+  }
+}
