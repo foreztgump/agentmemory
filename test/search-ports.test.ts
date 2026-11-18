@@ -18,7 +18,8 @@ describe("search runtime", () => {
   it("defaults to the memory backend and rejects unknown ones at boot", () => {
     expect(configuredSearchBackend({})).toBe("memory");
     expect(configuredSearchBackend({ AM_SEARCH_BACKEND: " memory " })).toBe("memory");
-    expect(() => configuredSearchBackend({ AM_SEARCH_BACKEND: "disk" })).toThrow(/AM_SEARCH_BACKEND=disk/);
+    expect(configuredSearchBackend({ AM_SEARCH_BACKEND: "disk" })).toBe("disk");
+    expect(() => configuredSearchBackend({ AM_SEARCH_BACKEND: "qdrant" })).toThrow(/AM_SEARCH_BACKEND=qdrant/);
   });
 
   it("keeps the keyword index callers already reached before boot", () => {
