@@ -1,14 +1,35 @@
 import type { CompressedObservation } from "../types.js";
-import { checkPayloadFrameSize, payloadByteLength, SAFE_PAYLOAD_BYTES, type OversizedPayload } from "../state/frame-guard.js";
+import { oversizedPayloadError, payloadByteLength, SAFE_PAYLOAD_BYTES, type OversizedPayload } from "../state/frame-guard.js";
 import { normalizeObservationSource, OBSERVATION_SOURCE_MAX_BYTES, withoutObservationSource } from "./observation-source.js";
 
 export const SESSION_SOURCE_MAX_BYTES = 8 * 1024 * 1024;
 
+export interface SessionSourceTotals {
+  rows: number;
+  sourceBytes: number;
+  summaryBytes: number;
+}
+
+export const EMPTY_SESSION_TOTALS: SessionSourceTotals = { rows: 0, sourceBytes: 0, summaryBytes: 0 };
+
+export function observationSourceTotals(rows: CompressedObservation[]): SessionSourceTotals {
+  const totals = { ...EMPTY_SESSION_TOTALS };
+  for (const row of rows) {
+    totals.rows++;
+    totals.sourceBytes += row?.source ? payloadByteLength(row.source) + 10 : 0;
+    totals.summaryBytes += payloadByteLength(withoutObservationSource(row));
+  }
+  return totals;
+}
+
 export function budgetLiveObservationSource(
   observation: CompressedObservation,
-  existing: CompressedObservation[],
+  existing: CompressedObservation[] | SessionSourceTotals,
 ): CompressedObservation {
-  const planned = budgetImportedObservationSources([observation], existing);
+  const kept = Array.isArray(existing)
+    ? observationSourceTotals(existing.filter((row) => row.id !== observation.id))
+    : existing;
+  const planned = planObservationSources([{ ...observation, source: normalizeObservationSource(observation.source) }], kept);
   return planned.success ? planned.observations[0]! : withoutObservationSource(observation);
 }
 
@@ -22,16 +43,31 @@ export function budgetImportedObservationSources(
   const written = rows.filter((row) => strategy !== "skip" || !existingById.has(row.id));
   const replacedIds = new Set(written.map((row) => row.id));
   const kept = strategy === "replace" ? [] : existing.filter((row) => !replacedIds.has(row.id));
-  const base = [...kept, ...written.map(withoutObservationSource)];
-  const envelope = { message_type: "invocation_result", invocation_id: "00000000-0000-0000-0000-000000000000", result: base };
-  const oversized = checkPayloadFrameSize(envelope, "observation summaries already exceed one session response; split the import into smaller sessions");
-  if (oversized) return oversized;
+  const planned = planObservationSources(written, observationSourceTotals(kept));
+  return planned.success ? { ...planned, observations: rows } : planned;
+}
 
-  const existingSourceBytes = kept.reduce((sum, row) => sum + (row.source ? payloadByteLength(row.source) + 10 : 0), 0);
+const EMPTY_ENVELOPE_BYTES = payloadByteLength({
+  message_type: "invocation_result",
+  invocation_id: "00000000-0000-0000-0000-000000000000",
+  result: [],
+});
+
+function planObservationSources(
+  written: CompressedObservation[],
+  kept: SessionSourceTotals,
+): { success: true; observations: CompressedObservation[]; sourceTruncated: number; sourceOmitted: number } | OversizedPayload {
+  const writtenSummaryBytes = written.reduce((sum, row) => sum + payloadByteLength(withoutObservationSource(row)), 0);
+  const items = kept.rows + written.length;
+  const envelopeBytes = EMPTY_ENVELOPE_BYTES + kept.summaryBytes + writtenSummaryBytes + Math.max(0, items - 1);
+  if (envelopeBytes > SAFE_PAYLOAD_BYTES) {
+    return oversizedPayloadError(envelopeBytes, "observation summaries already exceed one session response; split the import into smaller sessions");
+  }
+
   const sourceRows = written.filter((row) => row.source !== undefined);
   const available = Math.max(0, Math.min(
-    SESSION_SOURCE_MAX_BYTES - existingSourceBytes,
-    SAFE_PAYLOAD_BYTES - payloadByteLength(envelope) - 64 * 1024,
+    SESSION_SOURCE_MAX_BYTES - kept.sourceBytes,
+    SAFE_PAYLOAD_BYTES - envelopeBytes - 64 * 1024,
   ));
   const incomingSourceBytes = sourceRows.reduce((sum, row) => sum + payloadByteLength(row.source) + 10, 0);
   const perSource = incomingSourceBytes <= available
@@ -50,5 +86,5 @@ export function budgetImportedObservationSources(
     row.source = normalizeObservationSource(source, perSource);
     if (row.source?.truncated) sourceTruncated++;
   }
-  return { success: true, observations: rows, sourceTruncated, sourceOmitted };
+  return { success: true, observations: written, sourceTruncated, sourceOmitted };
 }

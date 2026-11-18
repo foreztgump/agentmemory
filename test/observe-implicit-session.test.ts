@@ -123,6 +123,7 @@ describe("observe implicit session create", () => {
       observationCount: 7,
       firstPrompt: "original first prompt",
     });
+    for (let i = 0; i < 7; i++) await kv.set("mem:obs:ses_existing", `obs_seed_${i}`, { id: `obs_seed_${i}`, sessionId: "ses_existing" });
 
     await sdk.trigger("mem::observe", {
       sessionId: "ses_existing",

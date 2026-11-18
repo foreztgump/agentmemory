@@ -24,6 +24,7 @@ import { observationEmbedText } from "../state/memory-utils.js";
 import { markCompressionDispatchFailed, pendingCompression } from "./compression-state.js";
 import { requestSummaryRefresh } from "./summary-state.js";
 import { scheduleSessionFinalize } from "./session-finalize.js";
+import { sessionObservationTotals } from "../fork/kv/observation-stats.js";
 
 export function extractImage(d: unknown): string | undefined {
   if (!d) return undefined;
@@ -187,8 +188,7 @@ export function registerObserveFunction(
       const promptRef = durable || typeof payload.eventId !== "string" ? obsId : payload.eventId;
 
       return withKeyedLock(`obs:${payload.sessionId}`, async () => {
-        const existing = await kv.list<CompressedObservation>(KV.observations(payload.sessionId));
-        const stored = durable ? existing.find((o) => o?.id === obsId) : undefined;
+        const stored = durable ? await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId) : undefined;
         if (stored) {
           if (livePrompt) await recordLivePrompt(kv, payload.sessionId, livePrompt, promptRef);
           await restoreIndexEntries(stored);
@@ -198,8 +198,9 @@ export function registerObserveFunction(
           recordDedupSkip();
           return { deduplicated: true, sessionId: payload.sessionId };
         }
+        const existing = await sessionObservationTotals(kv, payload.sessionId);
         if (maxObservationsPerSession && maxObservationsPerSession > 0) {
-          if (existing.length >= maxObservationsPerSession) {
+          if (existing.rows >= maxObservationsPerSession) {
             return {
               success: false,
               error: `Session observation limit reached (${maxObservationsPerSession})`,
@@ -307,7 +308,7 @@ export function registerObserveFunction(
             {
               type: "set",
               path: "observationCount",
-              value: (session.observationCount || 0) + 1,
+              value: existing.rows + 1,
             },
           ];
           if (session.status !== "active" && finalizeIdleMs > 0) {
@@ -352,7 +353,7 @@ export function registerObserveFunction(
             startedAt,
             updatedAt: ts,
             status: "active",
-            observationCount: 1,
+            observationCount: existing.rows + 1,
             ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
             ...(trimmedPrompt && trimmedPrompt.length > 0
               ? { firstPrompt: trimmedPrompt }

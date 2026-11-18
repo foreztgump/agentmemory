@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { KV } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
+import { scanRows } from "../fork/kv/paged-scan.js";
 
 export const PROMPT_LEDGER_MAX_KEYS = 1000;
 
@@ -91,9 +92,11 @@ export async function claimBackfillPrompt(kv: StateKV, sessionId: string, prompt
 }
 
 export async function prunePromptLedgers(kv: StateKV, cutoffMs: number, maxLedgers: number): Promise<number> {
-  const ledgers = await kv.list<PromptLedger>(KV.capturePrompts).catch(() => [] as PromptLedger[]);
+  type LedgerAge = Pick<PromptLedger, "sessionId" | "updatedAt">;
+  const ledgers = await scanRows<PromptLedger, LedgerAge>(kv, KV.capturePrompts, ({ sessionId, updatedAt }) => ({ sessionId, updatedAt }))
+    .catch(() => [] as LedgerAge[]);
   const sorted = ledgers
-    .filter((l): l is PromptLedger => !!l && typeof l.sessionId === "string")
+    .filter((l) => typeof l.sessionId === "string")
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   let removed = 0;
   for (let i = 0; i < sorted.length; i++) {

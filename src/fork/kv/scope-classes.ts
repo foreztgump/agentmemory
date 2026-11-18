@@ -75,4 +75,5 @@ export const SCOPE_CLASS = {
   captureInbox: "paged-only",
   captureEvents: "paged-only",
   capturePrompts: "paged-only",
+  obsStats: "point-read-only",
 } as const satisfies Record<keyof typeof KV, ScopeClass>;
