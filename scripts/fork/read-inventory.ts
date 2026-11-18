@@ -88,18 +88,20 @@ function load(path: string): WholeReadInventory {
 const sourceMap = new SourceMap(JSON.parse(readFileSync(args.map, "utf8")));
 
 const classOf = new Map<string, string>();
-const families: Array<[prefix: string, scope: string]> = [];
+const families: Array<[pattern: RegExp, scope: string]> = [];
 for (const [key, value] of Object.entries(KV)) {
   const scope = typeof value === "function" ? (value as (...a: string[]) => string)("*", "*") : value;
   classOf.set(scope, SCOPE_CLASS[key as keyof typeof SCOPE_CLASS]);
-  if (typeof value === "function") families.push([scope.slice(0, scope.indexOf("*")), scope]);
+  if (typeof value === "function") {
+    const parts = scope.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    families.push([new RegExp(`^${parts.join(".+")}$`), scope]);
+  }
 }
-families.sort((a, b) => b[0].length - a[0].length);
 
 // The guard already writes ids as *; this also folds ids that contain ":" into their family.
 function collapse(collection: string): string {
   if (classOf.has(collection)) return collection;
-  return families.find(([prefix]) => collection.startsWith(prefix))?.[1] ?? collection;
+  return families.find(([pattern]) => pattern.test(collection))?.[1] ?? collection;
 }
 
 function resolve(site: string): { fn: string; source: string } {

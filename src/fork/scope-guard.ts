@@ -111,7 +111,7 @@ export class ScopeReadInventory {
     this.restarts = previous ? (previous.restarts ?? 0) + 1 : 0;
     for (const read of previous?.reads ?? []) {
       if (typeof read?.collection !== "string" || typeof read.op !== "string" || typeof read.site !== "string") continue;
-      if (!Number.isFinite(read.calls) || !Number.isFinite(read.bytes)) continue;
+      if (![read.calls, read.items, read.bytes, read.maxItems, read.maxBytes].every(Number.isFinite)) continue;
       this.records.set(recordKey(read.collection, read.op, read.site), { ...read });
     }
   }
