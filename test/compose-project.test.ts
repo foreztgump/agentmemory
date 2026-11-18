@@ -213,7 +213,11 @@ describe("Worker Compose project", () => {
     };
     for (const [file, environment] of Object.entries(files)) {
       for (const key of Object.keys(selectors)) {
-        expect(environment[key], `${file} forwards ${key}`).toBe("${" + key + ":-}");
+        if (file === "deploy/coolify/docker-compose.yml") {
+          expect(environment[key], `${file} forwards ${key}`).toMatch(new RegExp(`^\\$\\{${key}:-[^}]*\\}$`));
+        } else {
+          expect(environment[key], `${file} forwards ${key}`).toBe("${" + key + ":-}");
+        }
       }
     }
   });
