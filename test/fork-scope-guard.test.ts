@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateKV, collectAll } from "../src/state/kv.js";
@@ -10,6 +10,7 @@ import {
   withScopeGuard,
   getScopeGuardMode,
   normalizeScope,
+  readInventory,
 } from "../src/fork/scope-guard.js";
 
 type Call = { function_id: string; payload: { scope: string; key?: string } };
@@ -123,6 +124,25 @@ describe("scope guard", () => {
       const written = JSON.parse(readFileSync(join(dir, "inv.json"), "utf8"));
       expect(written.v).toBe(1);
       expect(written.reads.map((r: { collection: string }) => r.collection)).toEqual(["b", "a"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("carries the inventory across a restart and counts the restart", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scope-guard-"));
+    const file = join(dir, "inv.json");
+    try {
+      const first = new ScopeReadInventory();
+      first.record("a", "list", "s", 2, 10);
+      first.writeTo(file);
+      const second = new ScopeReadInventory(readInventory(file));
+      second.record("a", "list", "s", 5, 4);
+      const snapshot = second.snapshot();
+      expect(snapshot).toMatchObject({ startedAt: first.startedAt, restarts: 1 });
+      expect(snapshot.reads).toMatchObject([{ calls: 2, items: 7, bytes: 14, maxItems: 5, maxBytes: 10 }]);
+      writeFileSync(file, "{not json");
+      expect(readInventory(file)).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { IIIClient } from "iii-sdk";
 import { StateKV, type StateKVOptions } from "../state/kv.js";
@@ -25,6 +25,7 @@ export interface WholeReadRecord {
 export interface WholeReadInventory {
   v: 1;
   startedAt: string;
+  restarts?: number;
   writtenAt: string;
   reads: WholeReadRecord[];
 }
@@ -97,14 +98,23 @@ function callerFrame(): string {
   return "unknown";
 }
 
+const recordKey = (collection: string, op: string, site: string) => `${collection}\u0000${op}\u0000${site}`;
+
 export class ScopeReadInventory {
   private readonly records = new Map<string, WholeReadRecord>();
   private readonly lastWarn = new Map<string, number>();
-  readonly startedAt = new Date().toISOString();
+  readonly startedAt: string;
+  readonly restarts: number;
+
+  constructor(previous?: WholeReadInventory) {
+    this.startedAt = previous?.startedAt ?? new Date().toISOString();
+    this.restarts = previous ? (previous.restarts ?? 0) + 1 : 0;
+    for (const read of previous?.reads ?? []) this.records.set(recordKey(read.collection, read.op, read.site), { ...read });
+  }
 
   record(collection: string, op: WholeReadOp, site: string, items: number, bytes: number): void {
     const now = new Date().toISOString();
-    const key = `${collection}\u0000${op}\u0000${site}`;
+    const key = recordKey(collection, op, site);
     const existing = this.records.get(key);
     if (existing) {
       existing.calls++;
@@ -130,7 +140,7 @@ export class ScopeReadInventory {
     const reads = [...this.records.values()]
       .map((record) => ({ ...record }))
       .sort((a, b) => b.maxBytes - a.maxBytes || b.calls - a.calls);
-    return { v: 1, startedAt: this.startedAt, writtenAt: new Date().toISOString(), reads };
+    return { v: 1, startedAt: this.startedAt, restarts: this.restarts, writtenAt: new Date().toISOString(), reads };
   }
 
   writeTo(file: string): void {
@@ -213,10 +223,19 @@ export class GuardedStateKV extends StateKV {
   }
 }
 
+export function readInventory(file: string): WholeReadInventory | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as WholeReadInventory;
+    return parsed?.v === 1 && Array.isArray(parsed.reads) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function withScopeGuard(kv: StateKV, sdk: IIIClient, dataDir: string): StateKV {
   if (getScopeGuardMode() === "off") return kv;
-  const inventory = new ScopeReadInventory();
   const file = join(dataDir, INVENTORY_FILE);
+  const inventory = new ScopeReadInventory(readInventory(file));
   const dump = () => {
     try {
       inventory.writeTo(file);
