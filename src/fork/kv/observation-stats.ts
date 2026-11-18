@@ -78,7 +78,10 @@ export class ObservationStats {
   private async loadLocked(sessionId: string): Promise<SessionSourceTotals> {
     const stored = await this.base.get<SessionObservationStats>(KV.obsStats, sessionId);
     if (stored) return stored;
-    if (await this.base.get(KV.obsStats, READY_KEY)) return EMPTY_SESSION_TOTALS;
+    if (await this.base.get(KV.obsStats, READY_KEY)) {
+      const session = await this.base.get<{ observationCount?: number }>(KV.sessions, sessionId);
+      if (!session?.observationCount) return EMPTY_SESSION_TOTALS;
+    }
     return this.recountLocked(sessionId);
   }
 
@@ -87,8 +90,7 @@ export class ObservationStats {
     for await (const page of this.base.iterate<CompressedObservation>(KV.observations(sessionId))) {
       totals = shift(totals, EMPTY_SESSION_TOTALS, observationSourceTotals(page));
     }
-    const previous = await this.base.get<SessionObservationStats>(KV.obsStats, sessionId);
-    await this.storeLocked(sessionId, totals, previous?.rows ?? -1);
+    await this.storeLocked(sessionId, totals, -1);
     return totals;
   }
 

@@ -1,14 +1,10 @@
-import type { CompressedObservation } from "../types.js";
+import type { CompressedObservation, SessionSourceTotals } from "../types.js";
 import { oversizedPayloadError, payloadByteLength, SAFE_PAYLOAD_BYTES, type OversizedPayload } from "../state/frame-guard.js";
 import { normalizeObservationSource, OBSERVATION_SOURCE_MAX_BYTES, withoutObservationSource } from "./observation-source.js";
 
 export const SESSION_SOURCE_MAX_BYTES = 8 * 1024 * 1024;
 
-export interface SessionSourceTotals {
-  rows: number;
-  sourceBytes: number;
-  summaryBytes: number;
-}
+export type { SessionSourceTotals };
 
 export const EMPTY_SESSION_TOTALS: SessionSourceTotals = { rows: 0, sourceBytes: 0, summaryBytes: 0 };
 
@@ -59,7 +55,7 @@ function planObservationSources(
 ): { success: true; observations: CompressedObservation[]; sourceTruncated: number; sourceOmitted: number } | OversizedPayload {
   const writtenSummaryBytes = written.reduce((sum, row) => sum + payloadByteLength(withoutObservationSource(row)), 0);
   const items = kept.rows + written.length;
-  const envelopeBytes = EMPTY_ENVELOPE_BYTES + kept.summaryBytes + writtenSummaryBytes + Math.max(0, items - 1);
+  const envelopeBytes = EMPTY_ENVELOPE_BYTES + kept.summaryBytes + kept.sourceBytes + writtenSummaryBytes + Math.max(0, items - 1);
   if (envelopeBytes > SAFE_PAYLOAD_BYTES) {
     return oversizedPayloadError(envelopeBytes, "observation summaries already exceed one session response; split the import into smaller sessions");
   }

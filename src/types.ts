@@ -1087,19 +1087,23 @@ export interface DecayConfig {
   };
 }
 
+export interface SessionSourceTotals {
+  rows: number;
+  sourceBytes: number;
+  summaryBytes: number;
+}
+
+/** KV.obsStats row: one session's totals, kept in step with mem:obs:<session> by the fork KV wrapper. */
+export interface SessionObservationStats extends SessionSourceTotals {
+  updatedAt: string;
+}
+
 /**
  * KV.state scope — long-lived system counters + flags keyed by string.
  * Keep keys/types in sync with the state-scope callers (e.g.,
  * disk-size-manager) so TypeScript enforces consistent value shapes
  * instead of every caller using ad-hoc `<number>` generics.
  */
-export interface SessionObservationStats {
-  rows: number;
-  sourceBytes: number;
-  summaryBytes: number;
-  updatedAt: string;
-}
-
 export interface StateScope {
   "system:currentDiskSize": number;
 }
