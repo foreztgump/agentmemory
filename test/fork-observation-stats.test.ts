@@ -164,6 +164,20 @@ describe("session observation stats", () => {
     expect(await capture(h, "ses_cap", 4)).toMatchObject({ success: false });
   });
 
+  it("recounts a session whose stats row went missing after the ready marker, and repair fixes a drifted session count", async () => {
+    const h = harness();
+    registerObserveFunction(h.sdk as never, h.kv, undefined, 3);
+    registerObservationStatsRepair(h.sdk as never, h.kv);
+    await h.call("mem::obs-stats-repair", {});
+    for (let i = 0; i < 3; i++) await capture(h, "ses_lost", i);
+    h.store.get(KV.obsStats)!.delete("ses_lost");
+    expect(await capture(h, "ses_lost", 3)).toMatchObject({ success: false });
+    await expectConsistent(h, ["ses_lost"]);
+    h.store.get(KV.sessions)!.set("ses_lost", { ...(h.store.get(KV.sessions)!.get("ses_lost") as object), observationCount: 9 });
+    await h.call("mem::obs-stats-repair", { sessionId: "ses_lost" });
+    await expectConsistent(h, ["ses_lost"]);
+  });
+
   it("serializes concurrent captures into one session so the counter stays exact", async () => {
     const h = harness();
     registerObserveFunction(h.sdk as never, h.kv, undefined, 0);
@@ -225,6 +239,23 @@ describe("source budget from session totals", () => {
     expect(totals.sourceBytes).toBeLessThanOrEqual(SESSION_SOURCE_MAX_BYTES);
     expect(rows.at(-1)!.source).toBeUndefined();
     expect(rows.some((r) => r.source?.truncated)).toBe(true);
+  }, 60_000);
+
+  it("counts the kept rows' sources toward the one-response limit, as upstream does", () => {
+    const source = (id: string, narrative: string): CompressedObservation => ({
+      ...buildSyntheticCompression({ id, sessionId: "s", timestamp: "2026-09-30T00:00:00Z", hookType: "post_tool_use", toolOutput: "o".repeat(20_000), raw: {} } as RawObservation),
+      narrative,
+    });
+    const chunk = Math.floor(SAFE_PAYLOAD_BYTES / 4);
+    const base = [0, 1, 2].map((i) => budgetLiveObservationSource(source(`k${i}`, "n".repeat(chunk)), []));
+    const keptBytes = payloadByteLength(base);
+    const next = source("new", "");
+    const nextSummary = payloadByteLength(withoutObservationSource(next));
+    const room = SAFE_PAYLOAD_BYTES - 64 * 1024 - keptBytes - nextSummary - 120;
+    for (const slack of [-20_000, 2_000, 9_000, 15_000, 40_000]) {
+      const rows = [...base, source("pad", "p".repeat(Math.max(0, room - slack - 1500)))];
+      expect(budgetLiveObservationSource(next, observationSourceTotals(rows))).toEqual(upstreamBudget(next, rows));
+    }
   }, 60_000);
 
   it("drops the source when the session summaries would not fit one response", () => {

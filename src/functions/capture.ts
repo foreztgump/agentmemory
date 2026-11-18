@@ -419,7 +419,7 @@ export function registerCaptureFunctions(
       const scope = KV.captureEvents(i.toString(16).padStart(EVENT_SHARD_CHARS, "0"));
       const events = await scanRows<CompletedEvent, CompletedEvent>(kv, scope, (ev) => ev).catch(() => [] as CompletedEvent[]);
       if (events.length === 0) continue;
-      const sorted = events.filter(Boolean).sort((a, b) => b.completedAt.localeCompare(a.completedAt));
+      const sorted = events.sort((a, b) => b.completedAt.localeCompare(a.completedAt));
       for (let j = 0; j < sorted.length; j++) {
         const ev = sorted[j]!;
         if (j >= perShard || Date.parse(ev.deletedAt ?? ev.completedAt) < cutoff) {
@@ -548,18 +548,13 @@ export function registerCaptureFunctions(
 
   sdk.registerFunction("mem::capture-list", async (input: { status?: InboxState; limit?: number } = {}) => {
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
-    const records = (await scanRows<InboxRecord, InboxRecord | null>(kv, KV.captureInbox, (r) =>
-      !input.status || r.status === input.status ? r : null,
+    type ListedEntry = InboxEntry & { preview: string };
+    const records = (await scanRows<InboxRecord, ListedEntry | null>(kv, KV.captureInbox, ({ payload, ...rest }) =>
+      !input.status || rest.status === input.status ? { ...rest, preview: previewPayload(payload) } : null,
     ))
-      .filter((r): r is InboxRecord => r !== null)
+      .filter((r): r is ListedEntry => r !== null)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    return {
-      total: records.length,
-      items: records.slice(0, limit).map(({ payload, ...rest }) => ({
-        ...rest,
-        preview: previewPayload(payload),
-      })),
-    };
+    return { total: records.length, items: records.slice(0, limit) };
   });
 
   sdk.registerFunction("mem::capture-drain", async () => {
