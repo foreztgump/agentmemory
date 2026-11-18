@@ -61,6 +61,10 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 
 [baseline/README.md](baseline/README.md) records the in-memory system's numbers on a replica of buddy's stack and on synthetic stores, and how to re-run them. The scripts are in `bench/fork/`, and `bench/fork/ceilings.json` fails a run that regresses.
 
+## Search engine spikes
+
+[spikes/qdrant.md](spikes/qdrant.md) records the Qdrant memory, recall, latency and point-lifecycle spikes (TEE-1161), the engine decision and the settings for the search worker. The scripts are in `bench/fork/qdrant/`.
+
 ## Rebasing
 
 See [rebase-runbook.md](rebase-runbook.md).
