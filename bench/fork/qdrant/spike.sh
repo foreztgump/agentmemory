@@ -58,6 +58,8 @@ case "${1:-}" in
   down) docker rm -f "$NAME" >/dev/null 2>&1 || true ;;
   purge)
     docker rm -f "$NAME" >/dev/null 2>&1 || true
+    if [[ -e "$DATA" && ! -d "$DATA/collections" ]]; then echo "refusing to delete $DATA: not a Qdrant storage directory" >&2; exit 1; fi
+    echo "deleting $DATA"
     rm -rf "$DATA"
     ;;
   *) sed -n '2,9p' "$0"; exit 2 ;;

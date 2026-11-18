@@ -9,7 +9,7 @@
 //     --vectors /home/cownose/am-staging/qdrant-spike/buddy --collection s1_1m --oversampling 2,3,4
 import { parseArgs } from "node:util";
 import { mulberry32 } from "../lib/stats.js";
-import { DIMS, noisyCopy, qdrant, readVectors, wireVector } from "./lib.js";
+import { DIMS, NOISE_SIGMA, noisyCopy, qdrant, readVectors, wireVector } from "./lib.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -27,7 +27,7 @@ const K = 10;
 const EPSILON = 1e-3;
 const queries = Array.from({ length: Number(args.queries) }, () => {
   const src = Math.floor(rand() * set.size);
-  return wireVector(noisyCopy(set.data.subarray(src * DIMS, (src + 1) * DIMS), 0.0151, rand));
+  return wireVector(noisyCopy(set.data.subarray(src * DIMS, (src + 1) * DIMS), NOISE_SIGMA, rand));
 });
 
 type Hit = { score: number };

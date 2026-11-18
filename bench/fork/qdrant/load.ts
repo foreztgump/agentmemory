@@ -13,14 +13,14 @@ import { extractTerms } from "../../../src/state/term-extraction.js";
 import type { CompressedObservation } from "../../../src/types.js";
 import { mulberry32 } from "../lib/stats.js";
 import { Generator, type Profile } from "../lib/synthetic.js";
-import { createCollection, DEFAULT_SHAPE, DIMS, docSparse, dot, noisyCopy, qdrant, readVectors, uuidOf, waitGreen, wireVector } from "./lib.js";
+import { createCollection, DEFAULT_SHAPE, DIMS, NOISE_SIGMA, docSparse, dot, noisyCopy, qdrant, readVectors, uuidOf, waitGreen, wireVector } from "./lib.js";
 
 const { values: args } = parseArgs({
   options: {
     vectors: { type: "string" },
     collection: { type: "string" },
     count: { type: "string" },
-    sigma: { type: "string", default: "0.0151" },
+    sigma: { type: "string", default: String(NOISE_SIGMA) },
     segments: { type: "string", default: String(DEFAULT_SHAPE.segments) },
     profile: { type: "string", default: "bench/fork/profiles/buddy-2026-11-16.json" },
     "lesson-share": { type: "string", default: String(88 / 249_289) },

@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { mulberry32, quantiles } from "../lib/stats.js";
-import { createCollection, DEFAULT_SHAPE, DIMS, type CollectionShape, qdrant, readVectors, uuidOf, waitGreen, wireVector, type Layer } from "./lib.js";
+import { assertOutsideRepo, createCollection, DEFAULT_SHAPE, DIMS, type CollectionShape, qdrant, readVectors, uuidOf, waitGreen, wireVector, type Layer } from "./lib.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -88,7 +88,7 @@ interface Truth {
   matches: number;
   tied: boolean;
 }
-const truthFile = `${args.vectors}/truth-v2-${queryCount}-${args.lessons}.json`;
+const truthFile = `${assertOutsideRepo(args.vectors)}/truth-v2-${set.size}-${queryCount}-${args.lessons}.json`;
 const truth = new Map<string, Truth[]>(existsSync(truthFile) ? JSON.parse(readFileSync(truthFile, "utf8")) : bruteForce());
 writeFileSync(truthFile, JSON.stringify([...truth]), { mode: 0o600 });
 
@@ -115,6 +115,7 @@ function bruteForce(): Map<string, Truth[]> {
     for (const f of FILTERS) {
       const list = top.get(f)!;
       const matches = Math.min(K, list.length);
+      if (matches === 0) throw new Error(`no corpus vector has layer ${f}; pass --lessons above 0`);
       out.get(f)!.push({ kth: list[matches - 1]![0], matches, tied: list.length > K && list[K]![0] >= list[K - 1]![0] - TIE });
     }
   }

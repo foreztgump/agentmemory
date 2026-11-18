@@ -4,15 +4,13 @@
 //
 //   node --import tsx bench/fork/qdrant/extract-vectors.ts --container <valkey> --out /home/cownose/am-staging/qdrant-spike/buddy
 import { createWriteStream, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { jsonValues } from "../lib/valkey.js";
-import { DIMS, layerOfId } from "./lib.js";
+import { assertOutsideRepo, DIMS, layerOfId } from "./lib.js";
 
 const { values: args } = parseArgs({ options: { container: { type: "string" }, out: { type: "string" } } });
 if (!args.container || !args.out) throw new Error("--container and --out are required");
-const out = resolve(args.out);
-if (out.startsWith(resolve(import.meta.dirname, "../../.."))) throw new Error("--out must be outside the repo: the vectors are private");
+const out = assertOutsideRepo(args.out);
 mkdirSync(out, { recursive: true, mode: 0o700 });
 
 const SCAN = 'valkey-cli --scan --pattern "state:mem:index:bm25:vec:*" | while read -r k; do valkey-cli --raw hvals "$k"; done';
@@ -29,7 +27,7 @@ for await (const row of jsonValues(args.container, SCAN)) {
   const layer = layerOfId(row.id);
   layers.set(layer, (layers.get(layer) ?? 0) + 1);
   if (!vectors.write(bytes)) await new Promise((r) => vectors.once("drain", r));
-  meta.write(JSON.stringify({ id: row.id, layer }) + "\n");
+  if (!meta.write(JSON.stringify({ id: row.id, layer }) + "\n")) await new Promise((r) => meta.once("drain", r));
 }
 await Promise.all([new Promise((r) => vectors.end(r)), new Promise((r) => meta.end(r))]);
 if (layers.size === 0) throw new Error(`no vectors read from ${args.container}: is the store still loading?`);

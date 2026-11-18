@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { queryTerms } from "../../../src/state/term-extraction.js";
 
 export const DIMS = 1024;
+export const NOISE_SIGMA = 0.0151;
 export const K1 = 1.2;
 export const B = 0.75;
 export type Layer = "observation" | "memory" | "lesson" | "image";
@@ -86,6 +88,16 @@ export interface CollectionInfo {
   config: unknown;
 }
 
+const REPO = resolve(import.meta.dirname, "../../..");
+
+// Vectors and anything derived from them are private: refuse a directory inside the repo.
+export function assertOutsideRepo(dir: string): string {
+  if (!existsSync(`${REPO}/package.json`)) throw new Error(`repo root guess ${REPO} has no package.json; fix REPO in lib.ts`);
+  const abs = resolve(dir);
+  if (abs === REPO || abs.startsWith(REPO + sep)) throw new Error(`${abs} is inside the repo: the vectors are private`);
+  return abs;
+}
+
 export interface VectorSet {
   ids: string[];
   layers: Layer[];
@@ -105,6 +117,7 @@ export function readVectors(dir: string): VectorSet {
 export function normalize(v: Float32Array): Float32Array {
   let n = 0;
   for (let i = 0; i < v.length; i++) n += v[i]! * v[i]!;
+  if (!(n > 0)) throw new Error("cannot normalize a zero vector");
   const inv = 1 / Math.sqrt(n);
   for (let i = 0; i < v.length; i++) v[i]! *= inv;
   return v;

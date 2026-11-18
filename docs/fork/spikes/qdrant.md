@@ -154,6 +154,8 @@ IOPS cap 66,591. "Cold" means the page cache was evicted and Qdrant restarted. O
 - **Steady-state anon memory:** 1.19 GB, against the design's 0.88 GB estimate.
 - **Floor:** 3M does not boot in 1 GB, but it runs in 1.5 GB. Under concurrent load at 1.5 GB, almost every rescore misses the page cache.
 
+**Latencies above are upper bounds.** During these runs the memory sampler in `load-test.ts` called `docker exec` synchronously once a second, and each call took about 45 ms. While it ran, about 4.5% of wall time, it delayed the queries in flight. That raises p99 and, to a lesser degree, p95; the true values are lower. The sampler is now asynchronous. Re-measure before using these numbers as ceilings.
+
 **Latency on NR1 (estimate, not measured).** NR1's QD1 mean read latency is about 104 µs (1/9,627 s); locally it is about 50 µs. Adding about 55 µs per read:
 
 - 1M single-client dense: +1.6 ms on average, at 30 reads per query. Even at NR1's p99 read latency, under +17 ms.
