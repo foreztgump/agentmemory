@@ -5,6 +5,7 @@ import {
 } from "../src/providers/embedding/index.js";
 import { GeminiEmbeddingProvider } from "../src/providers/embedding/gemini.js";
 import { OpenAIEmbeddingProvider } from "../src/providers/embedding/openai.js";
+import { VoyageEmbeddingProvider } from "../src/providers/embedding/voyage.js";
 import type { EmbeddingProvider } from "../src/types.js";
 
 describe("createEmbeddingProvider", () => {
@@ -256,5 +257,56 @@ describe("withDimensionGuard", () => {
       }),
     );
     expect(withoutImage.embedImage).toBeUndefined();
+  });
+});
+
+describe("VoyageEmbeddingProvider", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env["VOYAGE_MODEL"];
+    delete process.env["VOYAGE_OUTPUT_DIMENSION"];
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+  });
+
+  async function requestBody(dims = 1024): Promise<Record<string, unknown>> {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ embedding: new Array(dims).fill(0.1) }] }), { status: 200 }),
+    );
+    await withDimensionGuard(new VoyageEmbeddingProvider("test-key")).embed("hello");
+    return JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+  }
+
+  it("defaults to voyage-code-3 at 1024 dims without output_dimension", async () => {
+    const body = await requestBody();
+    expect(body.model).toBe("voyage-code-3");
+    expect(body).not.toHaveProperty("output_dimension");
+    expect(new VoyageEmbeddingProvider("test-key").dimensions).toBe(1024);
+  });
+
+  it("sends VOYAGE_MODEL and VOYAGE_OUTPUT_DIMENSION", async () => {
+    process.env["VOYAGE_MODEL"] = "voyage-code-4";
+    process.env["VOYAGE_OUTPUT_DIMENSION"] = "1024";
+    const body = await requestBody();
+    expect(body.model).toBe("voyage-code-4");
+    expect(body.output_dimension).toBe(1024);
+  });
+
+  it("declares the configured dimension so the guard accepts it and rejects others", async () => {
+    process.env["VOYAGE_OUTPUT_DIMENSION"] = "512";
+    expect(new VoyageEmbeddingProvider("test-key").dimensions).toBe(512);
+    expect((await requestBody(512)).output_dimension).toBe(512);
+    vi.restoreAllMocks();
+    await expect(requestBody(1024)).rejects.toThrow(/dimension/i);
+  });
+
+  it.each(["1000", "abc", "-1024"])("rejects VOYAGE_OUTPUT_DIMENSION=%s", (value) => {
+    process.env["VOYAGE_OUTPUT_DIMENSION"] = value;
+    expect(() => new VoyageEmbeddingProvider("test-key")).toThrow(/VOYAGE_OUTPUT_DIMENSION/);
   });
 });
