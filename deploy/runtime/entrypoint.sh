@@ -115,5 +115,7 @@ NODE
 chown node:node "$DATA_DIR/config/iii-observability.yaml" "$WORKER_COMPOSE_FILE"
 
 # Compose owns the 0.25.1 engine and supervises state, http, and agentmemory.
-exec gosu node:node /usr/local/bin/iii compose \
+# supervise.mjs exits when the agentmemory worker stops serving, so the
+# container restart policy can act on a worker that compose gave up on.
+exec gosu node:node node /opt/agentmemory/supervise.mjs /usr/local/bin/iii compose \
   --namespace agentmemory --up --file "$WORKER_COMPOSE_FILE"

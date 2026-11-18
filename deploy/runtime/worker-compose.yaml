@@ -52,7 +52,7 @@ containers:
     worker: path://.
     working_dir: /opt/agentmemory
     start_after: [state, http]
-    startup_timeout: 300s
+    startup_timeout: "${AGENTMEMORY_READY_TIMEOUT_MS:-300000}ms"
     config_name: agentmemory
     restart:
       condition: on-failure
