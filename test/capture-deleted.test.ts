@@ -107,7 +107,7 @@ describe("deleted captured observations", () => {
 
   it("drops a stranded inbox entry for a deleted observation instead of storing it again", async () => {
     const kv = mockKV();
-    const { capture, forget, controller } = await boot(kv);
+    const { capture, forget, sdk } = await boot(kv);
     const body = payload("stranded-deleted");
     const first = await capture(body, "evc_000000000104");
     const [record] = eventRecords(kv);
@@ -122,7 +122,9 @@ describe("deleted captured observations", () => {
       payload: body,
     });
     await forget("ses_deleted", [first.observationId as string]);
-    await controller.sweep();
+    const { registerCaptureFunctions } = await import("../src/functions/capture.js");
+    const restarted = registerCaptureFunctions(sdk as never, kv as never);
+    await restarted.sweep();
     expect(observations(kv)).toHaveLength(0);
     expect([...(kv.store.get(KV.captureInbox)?.values() ?? [])]).toHaveLength(0);
     expect((await capture(body, "evc_000000000104")).status).toBe("duplicate");
