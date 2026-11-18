@@ -53,9 +53,9 @@ Changing the model or the dimension does not re-embed stored vectors. Vectors fr
 
 Each record holds the collection with ids replaced by `*` (`mem:obs:*`), the call site, the number of calls, the most items and bytes one reply returned, and the totals. The call site is the iii function that was running, then the function name, file and line of the first stack frame outside the state layer. In the built server the file is `index.mjs`, so the function name is the part to search for.
 
-The server writes the records to `scope-guard-inventory.json` in the data directory every 30 seconds, sorted by largest reply. It also logs one warning per call site per minute.
+The server writes the records to `scope-guard-inventory.json` in the data directory every 30 seconds, sorted by largest reply. It also logs one warning per call site per minute. A restarted server reads the file back and keeps counting, and `restarts` in the file says how many times that happened; delete the file to start a fresh count.
 
-`scripts/fork/replay-day.ts` drives a compressed day of traffic against a running server so the inventory fills.
+`scripts/fork/replay-day.ts` drives a compressed day of traffic against a running server so the inventory fills. `scripts/fork/read-inventory.ts` turns inventory snapshots taken at boot, at the end of the replay and after one-off calls into one row per collection and call site, with calls and bytes per day. The buddy run is in `docs/fork/baseline/read-inventory.md`.
 
 ## Baseline and benchmarks
 
