@@ -11,7 +11,7 @@ repository root.
 
 | Stack | Compose path | Routing |
 |---|---|---|
-| main | `/deploy/coolify/docker-compose.yml` | Coolify's Traefik routes the domain set as `https://<fqdn>:3111` to the container; Cloudflare Access sits in front, so clients go through a proxy that adds the Access service-token headers. |
+| main | `/deploy/coolify/docker-compose.yml` | Coolify's Traefik routes the domain set as `https://<fqdn>:3111` to the container; Cloudflare Access sits in front, so clients go through a proxy that adds the Access service-token headers. The viewer port `3113` is not exposed. |
 | buddy | `/deploy/coolify/docker-compose.buddy.yml` | A `cloudflared` service in the stack dials out to Cloudflare, so Traefik is bypassed and the host publishes no port. `CF_TUNNEL_TOKEN`, `VIEWER_ALLOWED_HOSTS` and `VIEWER_ALLOWED_ORIGINS` are required; the viewer listens on `3113` behind a Cloudflare Access application. Viewer live updates use SSE on the REST port (`/agentmemory/viewer/events`); port 3112 is unused. |
 
 The buddy file is the main file plus the viewer settings, port `3113` and the
@@ -33,7 +33,7 @@ Volumes:
 
 ## Changes from upstream
 
-- **Embedding model.** This branch carries a source fix that makes the Voyage provider read `VOYAGE_MODEL` (upstream sends `voyage-code-3` whatever the variable says). The compose file defaults it to `voyage-code-4`. Both models emit 1024 dimensions, and the dimension guard rejects a mismatch, so a wrong model fails closed.
+- **Embedding model.** The fork carries a source fix (TEE-1153) that makes the Voyage provider read `VOYAGE_MODEL` and `VOYAGE_OUTPUT_DIMENSION` (upstream sends `voyage-code-3` whatever the variable says). The compose file defaults it to `voyage-code-4`. Both models emit 1024 dimensions, and the dimension guard rejects a mismatch, so a wrong model fails closed.
 - **Compose files.** Upstream's `deploy/coolify/docker-compose.yml` plus a Valkey service, memory limits, a 300 s health-check start period, defaults for the embedding provider, LLM provider, Voyage model and dimension, summary model, compression and worker-ready wait, and a pinned state backend.
 - **Runtime.** `deploy/runtime/supervise.mjs` exits the container when the worker stops serving (see Health and restarts), and the worker's compose `startup_timeout` reads `AGENTMEMORY_READY_TIMEOUT_MS`.
 
