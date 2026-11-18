@@ -121,11 +121,13 @@ export function createSearchRuntime(
   backend: SearchBackend = configuredSearchBackend(),
 ): MemorySearchRuntime {
   const vector = deps.embeddingProvider ? new VectorIndex() : null;
+  let persistence: IndexPersistence | null = null;
   current = {
     backend,
+    // Callers may have reached getSearchIndex() before boot; they must keep seeing the same index.
     keyword: current?.keyword ?? new SearchIndex(),
     vector,
-    openPersistence: () => new IndexPersistence(deps.kv, vector, { requireRecoveryPlan: true }),
+    openPersistence: () => (persistence ??= new IndexPersistence(deps.kv, vector, { requireRecoveryPlan: true })),
   };
   return current;
 }
