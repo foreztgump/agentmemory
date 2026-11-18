@@ -126,6 +126,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    if: github.repository == 'rohitg00/agentmemory'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -178,6 +179,7 @@ jobs:
           push-to-registry: true
 
   latest:
+    if: github.repository == 'rohitg00/agentmemory'
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
