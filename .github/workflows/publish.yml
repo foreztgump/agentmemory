@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.repository == 'rohitg00/agentmemory'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
