@@ -1,8 +1,6 @@
 import type { CompressedObservation } from "../types.js";
 import { getSearchResultLayer, isSearchResultLayer, matchesSearchLayer, type SearchLayer, type SearchResultLayer } from "./search-layer.js";
-import { stem } from "./stemmer.js";
-import { getSynonyms } from "./synonyms.js";
-import { segmentCjk, hasCjk } from "./cjk-segmenter.js";
+import { extractTerms, queryTerms } from "./term-extraction.js";
 
 interface IndexEntry {
   obsId: string;
@@ -11,10 +9,6 @@ interface IndexEntry {
   layer: SearchResultLayer;
   timestamp?: string;
 }
-
-const USER_PROMPT_TERM_CAP = 2000;
-const ASSISTANT_RESPONSE_TERM_CAP = 1000;
-const TOOL_OUTPUT_TERM_CAP = 1000;
 
 export interface SearchIndexRevision {
   isCurrent(): boolean;
@@ -36,7 +30,7 @@ export class SearchIndex {
   add(obs: CompressedObservation, layer: SearchResultLayer = "observation"): void {
     this.invalidateAbsentRevision(obs.id);
     if (this.entries.has(obs.id)) this.remove(obs.id);
-    const terms = this.extractTerms(obs);
+    const terms = extractTerms(obs);
     const termFreq = new Map<string, number>();
     let termCount = 0;
 
@@ -178,32 +172,17 @@ export class SearchIndex {
     limit = 20,
     targetLayer: SearchLayer = "all",
   ): Array<{ obsId: string; sessionId: string; score: number }> {
-    const rawTerms = this.tokenize(query.toLowerCase());
-    if (rawTerms.length === 0) return [];
+    const weightedTerms = queryTerms(query);
+    if (weightedTerms.length === 0) return [];
 
     const N = this.entries.size;
     if (N === 0) return [];
     const avgDocLen = this.totalDocLength / N;
 
-    const queryTerms: Array<{ term: string; weight: number }> = [];
-    const seen = new Set<string>();
-    for (const term of rawTerms) {
-      if (!seen.has(term)) {
-        seen.add(term);
-        queryTerms.push({ term, weight: 1.0 });
-      }
-      for (const syn of getSynonyms(term)) {
-        if (!seen.has(syn)) {
-          seen.add(syn);
-          queryTerms.push({ term: syn, weight: 0.7 });
-        }
-      }
-    }
-
     const scores = new Map<string, number>();
     const sorted = this.getSortedTerms();
 
-    for (const { term, weight } of queryTerms) {
+    for (const { term, weight } of weightedTerms) {
       const matchingDocs = this.invertedIndex.get(term);
       if (matchingDocs) {
         const df = matchingDocs.size;
@@ -342,49 +321,6 @@ export class SearchIndex {
     } catch {
       return new SearchIndex();
     }
-  }
-
-  private extractTerms(obs: CompressedObservation): string[] {
-    const parts = [
-      obs.title,
-      obs.subtitle || "",
-      obs.narrative,
-      ...obs.facts,
-      ...obs.concepts,
-      ...obs.files,
-      obs.type,
-    ];
-    if (obs.source?.userPrompt) {
-      parts.push(obs.source.userPrompt.slice(0, USER_PROMPT_TERM_CAP));
-    }
-    if (obs.source?.assistantResponse) {
-      parts.push(
-        obs.source.assistantResponse.slice(0, ASSISTANT_RESPONSE_TERM_CAP),
-      );
-    }
-    if (
-      obs.source?.toolName === "conversation" &&
-      typeof obs.source.toolOutput === "string"
-    ) {
-      parts.push(obs.source.toolOutput.slice(0, TOOL_OUTPUT_TERM_CAP));
-    }
-    return this.tokenize(parts.join(" ").toLowerCase());
-  }
-
-  private tokenize(text: string): string[] {
-    const cleaned = text.replace(/[^\p{L}\p{N}\s/.\\-_]/gu, " ");
-    const out: string[] = [];
-    for (const raw of cleaned.split(/\s+/)) {
-      if (raw.length < 2) continue;
-      if (hasCjk(raw)) {
-        for (const seg of segmentCjk(raw)) {
-          if (seg.length >= 1) out.push(seg);
-        }
-      } else {
-        out.push(stem(raw));
-      }
-    }
-    return out;
   }
 
   private getSortedTerms(): string[] {

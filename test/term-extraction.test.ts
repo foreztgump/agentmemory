@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SearchIndex } from "../src/state/search-index.js";
+import { extractTerms, tokenize } from "../src/state/term-extraction.js";
 import type { CompressedObservation } from "../src/types.js";
-
-const legacy = new SearchIndex() as unknown as {
-  tokenize(text: string): string[];
-  extractTerms(obs: CompressedObservation): string[];
-};
-const tokenize = (text: string) => legacy.tokenize(text);
-const extractTerms = (obs: CompressedObservation) => legacy.extractTerms(obs);
 
 const TEXTS = [
   "The quick brown fox jumps over the lazy dog",
