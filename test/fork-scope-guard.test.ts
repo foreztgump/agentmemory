@@ -64,7 +64,7 @@ describe("scope guard", () => {
       maxBytes: bytesOf(values),
       bytes: 2 * bytesOf(values),
     });
-    expect(read!.site).toMatch(/^mem::observe fork-scope-guard\.test\.ts:\d+$/);
+    expect(read!.site).toMatch(/^mem::observe (\S+ )?fork-scope-guard\.test\.ts:\d+$/);
   });
 
   it("records a whole iterate and collectAll even when pages are consumed one by one", async () => {

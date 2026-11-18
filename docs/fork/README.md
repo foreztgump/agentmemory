@@ -51,7 +51,7 @@ Changing the model or the dimension does not re-embed stored vectors. Vectors fr
 
 `AGENTMEMORY_SCOPE_GUARD=warn` records every read of a whole collection: `list`, `listKeys` and `iterate`, which includes `collectAll`. It is off by default.
 
-Each record holds the collection with ids replaced by `*` (`mem:obs:*`), the call site, the number of calls, the most items and bytes one reply returned, and the totals. The call site is the iii function that was running, then the first stack frame outside the state layer. Start Node with `--enable-source-maps` to get source file names instead of `index.mjs` lines.
+Each record holds the collection with ids replaced by `*` (`mem:obs:*`), the call site, the number of calls, the most items and bytes one reply returned, and the totals. The call site is the iii function that was running, then the function name, file and line of the first stack frame outside the state layer. In the built server the file is `index.mjs`, so the function name is the part to search for.
 
 The server writes the records to `scope-guard-inventory.json` in the data directory every 30 seconds, sorted by largest reply. It also logs one warning per call site per minute.
 
