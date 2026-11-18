@@ -5,7 +5,7 @@
 //   node --import tsx bench/fork/eval.ts --cases <file> [--cases <file>] [--url URL] [--details]
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { aggregate, latencySummary, scoreCase, type EvalCase } from "./lib/score.js";
+import { aggregate, K, latencySummary, scoreCase, type EvalCase } from "./lib/score.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -23,7 +23,7 @@ async function search(query: string): Promise<string[]> {
   const res = await fetch(`${args.url}/agentmemory/smart-search`, {
     method: "POST",
     headers: { authorization: `Bearer ${args.secret}`, "content-type": "application/json" },
-    body: JSON.stringify({ query, limit: 10 }),
+    body: JSON.stringify({ query, limit: K }),
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) throw new Error(`smart-search ${res.status}: ${await res.text()}`);

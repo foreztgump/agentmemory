@@ -4,6 +4,7 @@
 #   replica.sh up <backup-dir|dump.rdb|none>  fresh volumes, load the snapshot, start agentmemory, wait until ready
 #   replica.sh valkey <backup-dir|dump.rdb|none>  same, but stop before starting agentmemory
 #   replica.sh app                       start agentmemory on the loaded Valkey and wait until ready
+#   replica.sh wait                      wait until the running agentmemory is ready
 #   replica.sh restart-valkey            restart Valkey and wait until it has loaded its AOF
 #   replica.sh counts                    record counts per KV scope family
 #   replica.sh client <cmd...>           run a command in the client container on the replica network
@@ -92,7 +93,7 @@ load_valkey() {
   if [[ -n "$rdb" ]]; then
     log "copying snapshot into the Valkey volume"
     docker run --rm --network none -v "${REPLICA_PROJECT}_valkey-data:/data" -v "$(dirname "$rdb"):/src:ro" \
-      valkey/valkey:9 sh -c "cp /src/$(basename "$rdb") /data/dump.rdb && chown valkey:valkey /data/dump.rdb"
+      valkey/valkey:9 sh -c 'cp "/src/$1" /data/dump.rdb && chown valkey:valkey /data/dump.rdb' sh "$(basename "$rdb")"
   fi
   if [[ -n "$tar" ]]; then
     log "restoring the agentmemory data volume"

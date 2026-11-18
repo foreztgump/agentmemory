@@ -18,9 +18,12 @@ RESULTS="${4:?results dir}"
 mkdir -p "$RESULTS"
 cd "$REPO"
 
+trap '"$HERE/replica.sh" stop; exit 130' INT TERM
+
 failed=0
 bench() {
   local name="$1"; shift
+  rm -f "$RESULTS/$name.json"
   node --import tsx bench/fork/bench.ts --name "$name" --out "$RESULTS/$name.json" "$@" || failed=1
 }
 
@@ -33,12 +36,12 @@ done
 bench synthetic-250k --data "$SYNTH/250000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json
 bench synthetic-500k-6g --data "$SYNTH/500000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g
 # The synthetic-1m entry holds targets the in-memory baseline cannot meet, so a
-# missed target does not decide the exit status. A run that never started the app
-# (no boot peak recorded) is a broken bench and does.
+# missed target does not decide the exit status: either the app never became
+# ready, or every phase ran and a limit failed. Anything else is a broken bench.
 rm -f "$RESULTS/synthetic-1m.json"
 if ! node --import tsx bench/fork/bench.ts --name synthetic-1m --out "$RESULTS/synthetic-1m.json" \
   --data "$SYNTH/1000000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g; then
-  if grep -q '"boot.peakMiB.agentmemory": [0-9]' "$RESULTS/synthetic-1m.json" 2>/dev/null; then
+  if grep -qE '"completed": true|did not become ready' "$RESULTS/synthetic-1m.json" 2>/dev/null; then
     echo "baseline: synthetic-1m misses its targets (expected until a build boots 1M)" >&2
   else
     echo "baseline: synthetic-1m did not run; see the output above" >&2

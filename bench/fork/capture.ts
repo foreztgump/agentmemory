@@ -60,6 +60,7 @@ function valkey(command: string): Promise<string> {
       buf += d.toString();
       if (buf.endsWith("\r\n")) { socket.end(); resolve(buf); }
     });
+    socket.setTimeout(10_000, () => socket.destroy(new Error(`valkey ${command} timed out`)));
     socket.on("error", reject);
   });
 }
@@ -93,17 +94,27 @@ await Promise.all(Array.from({ length: Number(args.concurrency) }, async () => {
 }));
 const acceptedS = (performance.now() - started) / 1000;
 
+async function storedOrZero(): Promise<number> {
+  try {
+    return await stored();
+  } catch (error) {
+    console.error(`valkey count failed: ${(error as Error).message}`);
+    return 0;
+  }
+}
+
+const accepted = Object.entries(statuses).reduce((sum, [status, k]) => sum + (/^2\d\d$/.test(status) ? k : 0), 0);
 const deadline = performance.now() + Number(args["timeout-s"]) * 1000;
-let n = await stored();
-while (n < count && performance.now() < deadline) {
+let n = await storedOrZero();
+while (accepted > 0 && n < count && performance.now() < deadline) {
   await new Promise((r) => setTimeout(r, 250));
-  n = await stored();
+  n = await storedOrZero();
 }
 const storedS = (performance.now() - started) / 1000;
 console.log(JSON.stringify({
   events: count,
   statuses,
-  acceptedPerSecond: Math.round((count / acceptedS) * 10) / 10,
+  acceptedPerSecond: Math.round((accepted / acceptedS) * 10) / 10,
   stored: n,
   storedPerSecond: n >= count ? Math.round((count / storedS) * 10) / 10 : 0,
   seconds: Math.round(storedS * 10) / 10,

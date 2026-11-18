@@ -81,6 +81,7 @@ for await (const line of valueLines(args.container, "valkey-cli --raw hvals stat
   memoryBytes.push(Buffer.byteLength(line));
 }
 if (observations === 0) throw new Error(`no observations in ${args.container}`);
+if (indexable === 0) throw new Error(`no indexable observations in ${args.container}`);
 
 const counts = (xs: number[]) => histogram(xs, [0, 1, 2, 3, 4, 5, 6, 8, 10, 16]);
 const profile = {

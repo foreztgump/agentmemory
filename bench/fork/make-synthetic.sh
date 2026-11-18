@@ -21,7 +21,7 @@ replica() { "$HERE/replica.sh" "$@"; }
 VALKEY="${REPLICA_PROJECT}-valkey-1"
 
 mkdir -p "$OUT"
-rm -f "$OUT/counts.txt"
+rm -f "$OUT/counts.txt" "$OUT/dump.rdb"
 trap 'replica stop' ERR
 replica valkey none
 echo "make-synthetic: writing $COUNT observations" >&2

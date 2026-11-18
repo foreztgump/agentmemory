@@ -53,6 +53,7 @@ async function writeSession(session: Session, observations: Observation[]): Prom
 for (const session of planted.sessions) {
   await writeSession(session, planted.observations.filter((o) => o.sessionId === session.id));
 }
+if (count < planted.observations.length) throw new Error(`--count ${count} is below the ${planted.observations.length} planted observations the eval cases need`);
 const gen = new Generator(profile, count, seed + 1);
 let written = planted.observations.length;
 for (let s = 0; written < count; s++) {
