@@ -109,7 +109,11 @@ export class ScopeReadInventory {
   constructor(previous?: WholeReadInventory) {
     this.startedAt = previous?.startedAt ?? new Date().toISOString();
     this.restarts = previous ? (previous.restarts ?? 0) + 1 : 0;
-    for (const read of previous?.reads ?? []) this.records.set(recordKey(read.collection, read.op, read.site), { ...read });
+    for (const read of previous?.reads ?? []) {
+      if (typeof read?.collection !== "string" || typeof read.op !== "string" || typeof read.site !== "string") continue;
+      if (!Number.isFinite(read.calls) || !Number.isFinite(read.bytes)) continue;
+      this.records.set(recordKey(read.collection, read.op, read.site), { ...read });
+    }
   }
 
   record(collection: string, op: WholeReadOp, site: string, items: number, bytes: number): void {
@@ -226,7 +230,7 @@ export class GuardedStateKV extends StateKV {
 export function readInventory(file: string): WholeReadInventory | undefined {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as WholeReadInventory;
-    return parsed?.v === 1 && Array.isArray(parsed.reads) ? parsed : undefined;
+    return parsed?.v === 1 && typeof parsed.startedAt === "string" && Array.isArray(parsed.reads) ? parsed : undefined;
   } catch {
     return undefined;
   }

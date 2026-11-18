@@ -143,6 +143,11 @@ describe("scope guard", () => {
       expect(snapshot.reads).toMatchObject([{ calls: 2, items: 7, bytes: 14, maxItems: 5, maxBytes: 10 }]);
       writeFileSync(file, "{not json");
       expect(readInventory(file)).toBeUndefined();
+      writeFileSync(file, JSON.stringify({ v: 1, reads: [] }));
+      expect(readInventory(file)).toBeUndefined();
+      const kept = { ...snapshot.reads[0]! };
+      const restored = new ScopeReadInventory({ ...snapshot, reads: [kept, { collection: "b", op: "list" } as never] });
+      expect(restored.snapshot().reads).toEqual([kept]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

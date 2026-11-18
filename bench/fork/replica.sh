@@ -183,6 +183,7 @@ counts() {
 
 down() {
   docker rm -f "$(container client)" >/dev/null 2>&1 || true
+  # The compose file requires AM_IMAGE; down never starts a container, so any value will do.
   AM_IMAGE="${AM_IMAGE:-none}" "${COMPOSE[@]}" --profile app down -v --remove-orphans >/dev/null 2>&1 || true
   docker volume rm "${REPLICA_PROJECT}_valkey-data" "${REPLICA_PROJECT}_agentmemory-data" >/dev/null 2>&1 || true
 }
