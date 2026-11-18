@@ -7,7 +7,7 @@ import { getEnvVar } from "../config.js";
 import { logger } from "../logger.js";
 
 export type ScopeGuardMode = "off" | "warn";
-export type WholeReadOp = "list" | "listKeys" | "iterate";
+export type WholeReadOp = "list" | "listKeys" | "iterate" | "listPage";
 
 export interface WholeReadRecord {
   collection: string;
@@ -49,7 +49,10 @@ const dynamicScopes: RegExp[] = Object.values(KV)
     return new RegExp(`^${parts.join("[^:]+")}$`);
   });
 
+const staticScopes = new Set(Object.values(KV).filter((value): value is string => typeof value === "string"));
+
 export function normalizeScope(scope: string): string {
+  if (staticScopes.has(scope)) return scope;
   for (const pattern of dynamicScopes) {
     if (pattern.test(scope)) {
       return pattern.source.slice(1, -1).replaceAll("[^:]+", "*").replace(/\\(.)/g, "$1");
@@ -161,6 +164,7 @@ export class GuardedStateKV extends StateKV {
     const site = this.site();
     const values = await super.list<T>(scope);
     if (Array.isArray(values)) this.note(scope, "list", site, values.length, jsonBytes(values));
+    else this.note(scope, "list", site, 0, Buffer.byteLength(JSON.stringify(values) ?? "null"));
     return values;
   }
 
@@ -169,6 +173,16 @@ export class GuardedStateKV extends StateKV {
     const keys = await super.listKeys(scope);
     this.note(scope, "listKeys", site, keys.length, jsonBytes(keys));
     return keys;
+  }
+
+  override async listPage<T = unknown>(
+    scope: string,
+    opts: { limit: number; cursor?: string; order?: "desc" | "asc" },
+  ): Promise<{ items: T[]; nextCursor?: string; total: number }> {
+    const site = this.site();
+    const page = await super.listPage<T>(scope, opts);
+    this.note(scope, "listPage", site, page.total, jsonBytes(page.items));
+    return page;
   }
 
   override async *iterate<T = unknown>(

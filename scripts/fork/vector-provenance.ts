@@ -28,6 +28,12 @@ const { values: args } = parseArgs({
   },
 });
 
+const requested = Number(args.sample);
+if (!Number.isInteger(requested) || requested < 1) {
+  console.error("--sample must be a positive integer");
+  process.exit(2);
+}
+
 const VECTOR_SCOPE_PREFIX = "state:mem:index:bm25:vec:";
 const EMBED_MAX_CHARS = 16_000;
 
@@ -36,7 +42,14 @@ type Reply = string | number | null | Reply[] | Error;
 class Redis {
   private buffer = Buffer.alloc(0);
   private waiting: Array<(reply: Reply) => void> = [];
+  private failure: Error | null = null;
   private constructor(private socket: Socket) {
+    const fail = (error: Error) => {
+      this.failure ??= error;
+      for (const settle of this.waiting.splice(0)) settle(this.failure);
+    };
+    socket.on("error", fail);
+    socket.on("close", () => fail(new Error("redis connection closed")));
     socket.on("data", (chunk: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
       for (;;) {
@@ -63,6 +76,7 @@ class Redis {
   }
 
   call(...parts: string[]): Promise<Reply> {
+    if (this.failure) return Promise.reject(this.failure);
     const payload = `*${parts.length}\r\n${parts.map((p) => `$${Buffer.byteLength(p)}\r\n${p}\r\n`).join("")}`;
     return new Promise((resolve, reject) => {
       this.waiting.push((reply) => (reply instanceof Error ? reject(reply) : resolve(reply)));
@@ -205,24 +219,38 @@ for (const row of timed) {
   if (rowsOfWeek) rowsOfWeek.push(row);
   else weeks.set(week, [row]);
 }
-const perWeek = Math.max(1, Math.ceil(Number(args.sample) / Math.max(1, weeks.size)));
-const sample = [...weeks.values()].flatMap((rowsOfWeek) => {
+const perWeek = Math.max(1, Math.ceil(requested / Math.max(1, weeks.size)));
+const picks = [...weeks.values()].flatMap((rowsOfWeek) => {
   const take = Math.min(perWeek, rowsOfWeek.length);
   return Array.from({ length: take }, (_, i) => rowsOfWeek[Math.floor((i * rowsOfWeek.length) / take)]!);
 });
+const sample = picks.length <= requested
+  ? picks
+  : Array.from({ length: requested }, (_, i) => picks[Math.floor((i * picks.length) / requested)]!);
 const sampleSize = sample.length;
 console.log(`per week (starting): ${[...weeks].map(([week, list]) => `${day(week * WEEK_MS)}=${list.length}`).join(", ")}`);
 
+function parseRecord<T>(raw: Reply): T | null {
+  if (typeof raw !== "string") return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
 async function sourceText(row: Row): Promise<string | null> {
   if (row.id.startsWith("mem_")) {
-    const raw = await redis.call("HGET", "state:mem:memories", row.id);
-    if (typeof raw !== "string") return null;
-    const memory = JSON.parse(raw) as { title?: string; content?: string; concepts?: string[] };
+    const memory = parseRecord<{ title?: string; content?: string; concepts?: string[] }>(
+      await redis.call("HGET", "state:mem:memories", row.id),
+    );
+    if (!memory) return null;
     return observationEmbedText({ title: memory.title ?? "", narrative: memory.content ?? "", concepts: memory.concepts ?? [] });
   }
-  const raw = await redis.call("HGET", `state:mem:obs:${row.session}`, row.id);
-  if (typeof raw !== "string") return null;
-  const obs = JSON.parse(raw) as { title?: string; narrative?: string; concepts?: string[] };
+  const obs = parseRecord<{ title?: string; narrative?: string; concepts?: string[] }>(
+    await redis.call("HGET", `state:mem:obs:${row.session}`, row.id),
+  );
+  if (!obs) return null;
   return observationEmbedText({ title: obs.title ?? "", narrative: obs.narrative ?? "", concepts: obs.concepts ?? [] });
 }
 
@@ -269,7 +297,9 @@ async function embed(model: string, dimension: number | undefined, inputs: strin
       signal: AbortSignal.timeout(60_000),
     });
     if (!response.ok) throw new Error(`${model}: ${response.status} ${(await response.text()).slice(0, 200)}`);
-    const body = (await response.json()) as { data: Array<{ embedding: number[] }> };
+    const body = (await response.json()) as { data?: Array<{ embedding: number[] }> };
+    const expected = Math.min(32, inputs.length - i);
+    if (body.data?.length !== expected) throw new Error(`${model}: got ${body.data?.length ?? 0} embeddings for ${expected} inputs`);
     out.push(...body.data.map((d) => d.embedding));
   }
   return out;
@@ -277,8 +307,9 @@ async function embed(model: string, dimension: number | undefined, inputs: strin
 
 const stored: Float32Array[] = [];
 for (const { row } of texts) {
-  const raw = (await redis.call("HGET", row.scope, row.id)) as string;
-  stored.push(decode((JSON.parse(raw) as { e: string }).e));
+  const vector = parseRecord<{ e?: string }>(await redis.call("HGET", row.scope, row.id));
+  if (typeof vector?.e !== "string") throw new Error(`stored vector ${row.id} vanished or changed during the run`);
+  stored.push(decode(vector.e));
 }
 redis.close();
 

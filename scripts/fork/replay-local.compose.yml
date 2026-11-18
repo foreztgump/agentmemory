@@ -1,6 +1,9 @@
 # Small local stack for testing scripts/fork/replay-day.ts with the scope guard on.
 # docker compose -p tee1156 -f scripts/fork/replay-local.compose.yml up -d --build
 # docker compose -p tee1156 -f scripts/fork/replay-local.compose.yml down -v
+# AGENTMEMORY_SECRET=local-replay-secret npx tsx scripts/fork/replay-day.ts --replica --url http://127.0.0.1:31111 \
+#   --container tee1156-agentmemory-1 --obs-per-day 3000 --factor 720 --sessions-per-day 30
+# docker exec tee1156-agentmemory-1 cat /data/scope-guard-inventory.json
 services:
   valkey:
     image: valkey/valkey:9
