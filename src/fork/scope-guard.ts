@@ -190,8 +190,8 @@ export class GuardedStateKV extends StateKV {
   }
 }
 
-export function createStateKV(sdk: IIIClient, options: StateKVOptions, dataDir: string): StateKV {
-  if (getScopeGuardMode() === "off") return new StateKV(sdk, options);
+export function withScopeGuard(kv: StateKV, sdk: IIIClient, dataDir: string): StateKV {
+  if (getScopeGuardMode() === "off") return kv;
   const inventory = new ScopeReadInventory();
   const file = join(dataDir, INVENTORY_FILE);
   const dump = () => {
@@ -204,5 +204,5 @@ export function createStateKV(sdk: IIIClient, options: StateKVOptions, dataDir: 
   setInterval(dump, DUMP_INTERVAL_MS).unref();
   process.once("beforeExit", dump);
   logger.warn("scope-guard: warn mode on, recording whole-collection reads", { file });
-  return new GuardedStateKV(sdk, options, inventory);
+  return new GuardedStateKV(sdk, { backend: kv.backend }, inventory);
 }

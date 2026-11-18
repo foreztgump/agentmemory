@@ -197,8 +197,21 @@ console.log(`vectors:meta: ${typeof meta === "string" ? meta : "absent"}; legacy
 console.log(`created (from id time): first ${day(timed[0]?.at ?? null)}, last ${day(timed.at(-1)?.at ?? null)}, ${rows.length - timed.length} without a time`);
 console.log(`per month: ${[...byMonth].sort().map(([m, n]) => `${m}=${n}`).join(", ")}`);
 
-const sampleSize = Math.min(Number(args.sample), timed.length);
-const sample = Array.from({ length: sampleSize }, (_, i) => timed[Math.floor((i * timed.length) / sampleSize)]!);
+const WEEK_MS = 7 * 86_400_000;
+const weeks = new Map<number, Row[]>();
+for (const row of timed) {
+  const week = Math.floor(row.at! / WEEK_MS);
+  const rowsOfWeek = weeks.get(week);
+  if (rowsOfWeek) rowsOfWeek.push(row);
+  else weeks.set(week, [row]);
+}
+const perWeek = Math.max(1, Math.ceil(Number(args.sample) / Math.max(1, weeks.size)));
+const sample = [...weeks.values()].flatMap((rowsOfWeek) => {
+  const take = Math.min(perWeek, rowsOfWeek.length);
+  return Array.from({ length: take }, (_, i) => rowsOfWeek[Math.floor((i * rowsOfWeek.length) / take)]!);
+});
+const sampleSize = sample.length;
+console.log(`per week (starting): ${[...weeks].map(([week, list]) => `${day(week * WEEK_MS)}=${list.length}`).join(", ")}`);
 
 async function sourceText(row: Row): Promise<string | null> {
   if (row.id.startsWith("mem_")) {
@@ -224,7 +237,7 @@ const models = args.models!.split(",").map((spec) => {
   return { label: spec, model: model!, dimension: dimension ? Number(dimension) : undefined };
 });
 console.log(
-  `sample: ${sampleSize} vectors spread evenly over time, ${texts.length} with source text ` +
+  `sample: ${sampleSize} vectors, up to ${perWeek} from each of ${weeks.size} weeks, ${texts.length} with source text ` +
     `(${sampleSize - texts.length} source records missing), ${chars} characters`,
 );
 

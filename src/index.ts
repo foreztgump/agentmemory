@@ -30,7 +30,8 @@ import {
   createEmbeddingProvider,
   createImageEmbeddingProvider,
 } from "./providers/index.js";
-import { createStateKV } from "./fork/scope-guard.js";
+import { StateKV } from "./state/kv.js";
+import { withScopeGuard } from "./fork/scope-guard.js";
 import { assertStateReady, waitForStateReady } from "./state/state-readiness.js";
 import type { SearchLayer } from "./state/search-layer.js";
 import { HybridSearch } from "./state/hybrid-search.js";
@@ -266,7 +267,7 @@ async function main() {
   try {
     stateBackend = getStateBackend();
   } catch {}
-  const kv = createStateKV(sdk, { backend: stateBackend }, config.dataDir);
+  const kv = withScopeGuard(new StateKV(sdk, { backend: stateBackend }), sdk, config.dataDir);
   const stateReadiness = await waitForStateReady(sdk, {
     onWaiting: (error) =>
       bootWarn(`Waiting for the state worker to register state::get and state::list (${error})`),
