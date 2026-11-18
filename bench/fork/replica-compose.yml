@@ -42,6 +42,8 @@ services:
       AGENTMEMORY_STATE_BACKEND: redis
       AGENTMEMORY_REDIS_URL: redis://valkey:6379
       AGENTMEMORY_SECRET: replica-dummy-secret
+      # "warn" records every whole-collection read in /data/scope-guard-inventory.json.
+      AGENTMEMORY_SCOPE_GUARD: "${AGENTMEMORY_SCOPE_GUARD:-}"
       # Empty unless the bench asks for it. With "voyage" the persisted vectors
       # load into RAM at boot, as in production before vector search was paused;
       # the dummy key and the internal network make every embed call fail.

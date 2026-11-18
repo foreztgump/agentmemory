@@ -14,7 +14,7 @@
 #   replica.sh down                      remove every container, volume and network the replica created
 #
 # Settings (environment): AM_IMAGE (required for up/app), REPLICA_PROJECT (default amreplica),
-# AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, READY_TIMEOUT_S,
+# AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, AGENTMEMORY_SCOPE_GUARD, READY_TIMEOUT_S,
 # REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container).
 set -euo pipefail
 
