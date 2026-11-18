@@ -40,13 +40,14 @@ const DAY_S = 86_400;
 const base = args.url!.replace(/\/$/, "");
 const factor = Number(args.factor);
 const obsPerDay = Number(args["obs-per-day"]);
-const sessionsPerDay = Math.max(1, Number(args["sessions-per-day"]) || 1);
+const sessionsPerDay = Number(args["sessions-per-day"]);
 const searchesPerDay = Number(args["searches-per-day"]);
 const project = args.project!;
 const durationS = DAY_S / factor;
-for (const [name, value] of Object.entries({ factor, "obs-per-day": obsPerDay, "searches-per-day": searchesPerDay })) {
-  if (!Number.isFinite(value) || value < 0 || (name === "factor" && value < 1)) {
-    console.error(`--${name} must be a number${name === "factor" ? " >= 1" : " >= 0"}`);
+const minimums = { factor: [factor, 1], "obs-per-day": [obsPerDay, 1], "sessions-per-day": [sessionsPerDay, 1], "searches-per-day": [searchesPerDay, 0] };
+for (const [name, [value, minimum]] of Object.entries(minimums)) {
+  if (!Number.isFinite(value) || value < minimum!) {
+    console.error(`--${name} must be a number >= ${minimum}`);
     process.exit(2);
   }
 }
