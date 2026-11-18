@@ -11,8 +11,9 @@ if (!command) {
   process.exit(2);
 }
 
-const readyWaitMs = Number(process.env.AGENTMEMORY_READY_TIMEOUT_MS || 300000);
-if (!Number.isInteger(readyWaitMs) || readyWaitMs < 1 || readyWaitMs > 3600000) {
+const readyWait = process.env.AGENTMEMORY_READY_TIMEOUT_MS ?? "300000";
+const readyWaitMs = Number(readyWait);
+if (!/^[0-9]+$/.test(readyWait) || readyWait !== readyWait.trim() || readyWaitMs < 1 || readyWaitMs > 3600000) {
   console.error("AGENTMEMORY_READY_TIMEOUT_MS must be an integer from 1 through 3600000");
   process.exit(1);
 }
@@ -25,7 +26,13 @@ console.log(`[supervise] agentmemory worker-ready wait: ${readyWaitMs} ms (AGENT
 const child = spawn(command, args, { stdio: "inherit" });
 let exitCode = null;
 let lastServingAt = Date.now();
+let hasServed = false;
+const probeErrors = new Set();
 
+child.on("error", (error) => {
+  console.error(`[supervise] could not start ${command}: ${error.message}`);
+  process.exit(1);
+});
 child.on("exit", (code, signal) => {
   process.exit(exitCode ?? code ?? (signal ? 1 : 0));
 });
@@ -39,13 +46,25 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
 const probe = setInterval(async () => {
   try {
     const response = await fetch(livezUrl, { signal: AbortSignal.timeout(probeEveryMs) });
-    if (response.ok) lastServingAt = Date.now();
-  } catch {}
+    if (response.ok) {
+      hasServed = true;
+      lastServingAt = Date.now();
+    }
+  } catch (error) {
+    if (error.name !== "TimeoutError" && error.name !== "AbortError") {
+      const message = error.message;
+      if (!probeErrors.has(message)) {
+        probeErrors.add(message);
+        console.error(`[supervise] livez probe error: ${message}`);
+      }
+    }
+  }
   const silentMs = Date.now() - lastServingAt;
-  if (silentMs <= readyWaitMs || exitCode !== null) return;
+  const waitMs = hasServed ? readyWaitMs : readyWaitMs * 2;
+  if (silentMs <= waitMs || exitCode !== null) return;
   console.error(
     `[supervise] agentmemory worker has not served ${livezUrl} for ${silentMs} ms ` +
-      `(wait ${readyWaitMs} ms); stopping so the container restarts`,
+      `(wait ${waitMs} ms); stopping so the container restarts`,
   );
   exitCode = 1;
   clearInterval(probe);
