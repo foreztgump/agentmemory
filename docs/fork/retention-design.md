@@ -226,6 +226,23 @@ Buddy's owner decides buddy's rows. All windows count project-active days.
 | D10 | Trimmed session that receives new captures | keep the stored summary and leave new rows unsummarized; rebuild the summary from the remaining rows | keep | A rebuild loses the detail the deleted rows gave the old summary; keeping leaves a few late rows outside the summary. |
 | D11 | Sweep schedule | daily; weekly; manual | weekly, off-peak | Weekly bounds the cost of the recall check. |
 
+### 9.1 Decided (owner, 2026-11-18)
+
+| # | Decision |
+|---|---|
+| D1 main | trim raw `source` after **45** project-active days; observations 180; superseded memories 180; cold memories demoted at 365 |
+| D1 buddy | pending buddy's owner (until then retention stays off on buddy) |
+| D2 | grace **30 days** on main; buddy pending its owner |
+| D3 | all protection signals of section 6; pin endpoint yes; no MCP pin tool (tool count unchanged) |
+| D4 | **enforce from the first sweep** (no report-only weeks). Every run still writes its dry-run style report, soft-deletes into the 30-day trash, runs the recall check before and after with automatic restore, and the first enforcing run is capped at 10% of observations (section 7.5) |
+| D5 | stop threshold 2 points recall@10, or any golden case losing its evidence |
+| D6 | cold memories: demote only |
+| D7 | explicit forget: immediate hard delete with graph propagation |
+| D8 | audit retention 13 months |
+| D9 | `MAX_OBS_PER_SESSION=5000` on both stacks |
+| D10 | keep the stored summary when a trimmed session receives new captures |
+| D11 | weekly sweep, off-peak |
+
 ## 10. Where the code lives (rebase-friendliness)
 
 Fork-only files, no upstream conflict risk:
@@ -266,7 +283,7 @@ Each criterion states behaviour and the check that proves it. No file paths; tho
 - [ ] R12. A sweep keeps memory bounded and resumes after a crash. Check: run a sweep on a staging copy at full size while sampling container memory peak; the peak stays within the stack's limit and does not scale with observation count. Kill the process mid-sweep; the next run resumes from its progress record, and no item is both live and in trash.
 - [ ] R13. Every run is audited. Check: after a dry run, an enforcing run, a restore and a purge, the audit log holds one entry per run and stage with counts, run id and reason.
 - [ ] R14. Long sessions no longer lose captures. Check: with the per-session cap at its new value, a session of 1,000 observations stores all 1,000, and none is refused.
-- [ ] R15. The first enforcing run on a production stack is preceded by the owner's reading of two dry-run reports, uses that stack's decided windows and grace period, and soft-deletes at most 10% of its observations. Check: the reports and the run's audit entry, linked in the issue.
+- [ ] R15. The first enforcing run on a production stack uses that stack's decided windows and grace period, writes its report, and soft-deletes at most 10% of its observations; retention stays off on a stack whose windows are not decided. Check: the run's report and audit entry, linked in the issue, and a sweep on a stack with no decided windows doing nothing.
 
 +++ Agent notes
 
