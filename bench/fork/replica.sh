@@ -183,7 +183,7 @@ counts() {
 
 down() {
   docker rm -f "$(container client)" >/dev/null 2>&1 || true
-  "${COMPOSE[@]}" --profile app down -v --remove-orphans >/dev/null 2>&1 || true
+  AM_IMAGE="${AM_IMAGE:-none}" "${COMPOSE[@]}" --profile app down -v --remove-orphans >/dev/null 2>&1 || true
   docker volume rm "${REPLICA_PROJECT}_valkey-data" "${REPLICA_PROJECT}_agentmemory-data" >/dev/null 2>&1 || true
 }
 
