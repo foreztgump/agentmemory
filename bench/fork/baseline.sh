@@ -35,9 +35,10 @@ bench synthetic-500k-6g --data "$SYNTH/500000/dump.rdb" --cases bench/fork/eval/
 # The synthetic-1m entry holds targets the in-memory baseline cannot meet, so a
 # missed target does not decide the exit status. A run that never started the app
 # (no boot peak recorded) is a broken bench and does.
+rm -f "$RESULTS/synthetic-1m.json"
 if ! node --import tsx bench/fork/bench.ts --name synthetic-1m --out "$RESULTS/synthetic-1m.json" \
   --data "$SYNTH/1000000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g; then
-  if grep -q '"boot.peakMiB.agentmemory"' "$RESULTS/synthetic-1m.json" 2>/dev/null; then
+  if grep -q '"boot.peakMiB.agentmemory": [0-9]' "$RESULTS/synthetic-1m.json" 2>/dev/null; then
     echo "baseline: synthetic-1m misses its targets (expected until a build boots 1M)" >&2
   else
     echo "baseline: synthetic-1m did not run; see the output above" >&2
