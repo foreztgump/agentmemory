@@ -215,7 +215,11 @@ export class SearchOutbox {
     return batch;
   }
 
-  /** A failed batch goes back to the front; anything queued for the same ids since then wins. */
+  /**
+   * A failed batch goes back to the front; anything queued for the same ids since then wins.
+   * take() runs only with no clear pending, so a pending clear is newer than the batch and
+   * erases what it covers: all of it for "all", its vectors for "vectors".
+   */
   private requeue(batch: Array<[string, Slot]>): void {
     if (this.pendingClear?.scope === "all") return;
     if (this.pendingClear?.scope === "vectors") {

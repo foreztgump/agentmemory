@@ -110,8 +110,8 @@ if (process.env.AGENTMEMORY_STATE_BACKEND === "redis") {
   compose.containers.state.config_override.adapter = { name: "redis", config: { redis_url: redisUrl } };
   input = stringify(compose);
 }
-const searchBackend = (process.env.AM_SEARCH_BACKEND ?? "memory").trim();
-if (searchBackend !== "memory" && searchBackend !== "disk") throw new Error("AM_SEARCH_BACKEND must be memory or disk");
+const searchBackend = (process.env.AM_SEARCH_BACKEND ?? "").trim() || "memory";
+if (searchBackend !== "memory" && searchBackend !== "disk") throw new Error(`AM_SEARCH_BACKEND=${searchBackend} must be memory or disk`);
 if (searchBackend === "disk") {
   if (!process.env.AM_QDRANT_URL?.trim()) throw new Error("AM_SEARCH_BACKEND=disk requires AM_QDRANT_URL");
   // parseDocument keeps each scalar's quoting, so the rest of the file reaches iii unchanged.

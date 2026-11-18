@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import { parse, stringify } from "yaml";
 import { MAX_STARTUP_TIMEOUT_MS } from "./readiness.js";
 import { getStateSaveIntervalMs } from "../config.js";
+import { configuredSearchBackend } from "../state/search-ports.js";
 
 export interface EngineRuntimePorts {
   restPort: number;
@@ -383,9 +384,9 @@ export function renderWorkerCompose(options: ComposeProjectOptions): string {
     "      III_TELEMETRY_ENABLED: 'false'",
     ...(options.linux ?? process.platform === "linux" ? ["      MALLOC_ARENA_MAX: '2'"] : []),
   );
-  if (options.workerEnvironment?.AM_SEARCH_BACKEND?.trim() === "disk") {
+  if (configuredSearchBackend(options.workerEnvironment ?? {}) === "disk") {
     if (windows) throw new Error("AM_SEARCH_BACKEND=disk is not supported on Windows.");
-    if (!options.workerEnvironment.AM_QDRANT_URL?.trim()) throw new Error("AM_SEARCH_BACKEND=disk requires AM_QDRANT_URL");
+    if (!options.workerEnvironment?.AM_QDRANT_URL?.trim()) throw new Error("AM_SEARCH_BACKEND=disk requires AM_QDRANT_URL");
     lines.push(
       "  am-search:",
       `    worker: ${yamlString(`path://${options.projectRoot}`)}`,

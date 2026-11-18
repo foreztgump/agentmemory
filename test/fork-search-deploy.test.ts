@@ -33,8 +33,8 @@ function runEntrypoint(env: Record<string, string>): { status: "ok"; compose: an
 
 describe("am-search worker in the Docker runtime", () => {
   it("is not started in memory mode", () => {
-    for (const backend of [undefined, "memory", " memory "]) {
-      const result = runEntrypoint(backend ? { AM_SEARCH_BACKEND: backend } : {});
+    for (const backend of [undefined, "memory", " memory ", "", "  "]) {
+      const result = runEntrypoint(backend === undefined ? {} : { AM_SEARCH_BACKEND: backend });
       expect(result.status).toBe("ok");
       if (result.status === "ok") expect(result.compose.containers["am-search"]).toBeUndefined();
     }
@@ -58,11 +58,11 @@ describe("am-search worker in the Docker runtime", () => {
     if (result.status === "failed") expect(result.stderr).toContain("AM_QDRANT_URL");
   });
 
-  it.each(["qdrant", " disks ", "", "  "])("refuses unknown backend %j", (backend) => {
+  it.each(["qdrant", " disks "])("refuses unknown backend %j", (backend) => {
     const result = runEntrypoint({ AM_SEARCH_BACKEND: backend });
     expect(result.status).toBe("failed");
     if (result.status === "failed") {
-      expect(result.stderr).toContain("AM_SEARCH_BACKEND must be memory or disk");
+      expect(result.stderr).toContain("must be memory or disk");
       expect(result.stderr).not.toContain("AM_QDRANT_URL");
     }
   });
@@ -87,6 +87,12 @@ describe("am-search worker in the generated worker compose", () => {
     expect(compose.containers["am-search"].scripts.run).toBe("'/opt/node/bin/node' 'dist/fork/worker/main.mjs'");
     expect(compose.containers["am-search"].environment).toMatchObject({ AM_SEARCH_BACKEND: "disk", AM_QDRANT_URL: "http://127.0.0.1:6333", III_ENGINE_PORT: "49534", III_TELEMETRY_ENABLED: "false", MALLOC_ARENA_MAX: "2" });
     expect(compose.containers["am-search"].environment.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("refuses an unknown backend and treats a blank one as memory", () => {
+    expect(() => renderWorkerCompose(options({ AM_SEARCH_BACKEND: "dqsk" }))).toThrow(/dqsk/);
+    expect(parse(renderWorkerCompose(options({ AM_SEARCH_BACKEND: "  " }))).containers["am-search"]).toBeUndefined();
+    expect(parse(renderWorkerCompose(options({ AM_SEARCH_BACKEND: " disk ", AM_QDRANT_URL: "http://127.0.0.1:6333" }))).containers["am-search"]).toBeDefined();
   });
 
   it("omits the Linux allocator setting on other platforms", () => {
