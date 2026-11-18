@@ -49,7 +49,9 @@ Changing the model or the dimension does not re-embed stored vectors. Vectors fr
 
 ## Scope guard (measurement)
 
-`AGENTMEMORY_SCOPE_GUARD=warn` records every read of a whole collection: `list`, `listKeys`, `iterate` (which includes `collectAll`) and `listPage`, which reads every key to return one page. It is off by default.
+`AGENTMEMORY_SCOPE_GUARD` has three modes. It is `off` by default. `warn` records every read of a whole collection: `list`, `listKeys`, `iterate` (which includes `collectAll`) and `listPage`, which reads every key to return one page. `throw` (or `refuse`) records the same reads and also refuses the ones a scope's class forbids, with a `ScopeTooLargeError` that names the scope, the call and the paged alternative. A `paged-only` scope refuses `list` and allows `listKeys`, `iterate` and `listPage`. A `point-read-only` scope refuses all four, because it is read by key only. A `bounded` scope and a scope that is not in `KV` are never refused. The classes are in `src/fork/kv/scope-classes.ts`.
+
+`npm run test:scope-guard` runs the suite with `throw` on. Its setup file, `test/helpers/scope-guard-setup.ts`, checks every whole read made through `StateKV` or the shared `mockKV()` double, but only when the nearest caller outside the KV layer is under `src/`, so a test that lists its own fixtures is not refused. A refusal fails the test even if the code under test caught it. A KV double that a test file defines for itself is not covered. CI runs this command in the `scope-guard` job.
 
 Each record holds the collection with ids replaced by `*` (`mem:obs:*`), the call site, the number of calls, the most items and bytes one reply returned, and the totals. The call site is the iii function that was running, then the function name, file and line of the first stack frame outside the state layer. In the built server the file is `index.mjs`, so the function name is the part to search for.
 

@@ -74,3 +74,16 @@ jobs:
       - run: npm run skills:check
       - run: npx tsc --noEmit --project tsconfig.eval.json
       - run: npm test
+
+  scope-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm install --legacy-peer-deps --no-audit --no-fund
+      - run: npm run build
+      - run: npm run test:scope-guard

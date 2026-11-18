@@ -7,6 +7,12 @@ export function currentAuditScope(): string {
   return KV.auditMonth(new Date().toISOString().slice(0, 7));
 }
 
+let beforeList: ((scope: string) => void) | undefined;
+
+export function onMockKvList(hook: ((scope: string) => void) | undefined): void {
+  beforeList = hook;
+}
+
 export function mockKV() {
   const store = new Map<string, Map<string, unknown>>();
   return {
@@ -34,6 +40,7 @@ export function mockKV() {
       store.get(scope)?.delete(key);
     },
     list: async <T>(scope: string): Promise<T[]> => {
+      beforeList?.(scope);
       const entries = store.get(scope);
       return entries ? (Array.from(entries.values()) as T[]) : [];
     },
