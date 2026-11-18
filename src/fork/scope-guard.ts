@@ -3,10 +3,11 @@ import { basename, dirname, join } from "node:path";
 import type { IIIClient } from "iii-sdk";
 import { StateKV, type StateKVOptions } from "../state/kv.js";
 import { KV } from "../state/schema.js";
+import { SCOPE_CLASS, type ScopeClass } from "./kv/scope-classes.js";
 import { getEnvVar } from "../config.js";
 import { logger } from "../logger.js";
 
-export type ScopeGuardMode = "off" | "warn";
+export type ScopeGuardMode = "off" | "warn" | "throw";
 export type WholeReadOp = "list" | "listKeys" | "iterate" | "listPage";
 
 export interface WholeReadRecord {
@@ -39,23 +40,64 @@ export function getScopeGuardMode(): ScopeGuardMode {
   const raw = (getEnvVar("AGENTMEMORY_SCOPE_GUARD") ?? "").trim().toLowerCase();
   if (raw === "" || raw === "off") return "off";
   if (raw === "warn") return "warn";
-  throw new Error(`AGENTMEMORY_SCOPE_GUARD must be off or warn, got "${raw}"`);
+  if (raw === "throw" || raw === "refuse") return "throw";
+  throw new Error(`AGENTMEMORY_SCOPE_GUARD must be off, warn or throw, got "${raw}"`);
 }
 
-const kvValues: unknown[] = Object.values(KV);
-const dynamicScopes: RegExp[] = kvValues
-  .filter((value): value is (...args: string[]) => string => typeof value === "function")
-  .map((template) => {
+export class ScopeTooLargeError extends Error {
+  constructor(
+    readonly scope: string,
+    readonly op: WholeReadOp,
+    readonly scopeClass: ScopeClass,
+  ) {
+    const instead =
+      scopeClass === "point-read-only"
+        ? "read it by key with get or getMany"
+        : "use iterate, collectAll, listPage or getMany";
+    super(
+      `scope-guard: ${op} of ${scope} (${scopeClass}) reads a collection that grows with data in one call; ${instead}`,
+    );
+    this.name = "ScopeTooLargeError";
+  }
+}
+
+type KvName = keyof typeof KV;
+
+const kvEntries = Object.entries(KV) as Array<[KvName, unknown]>;
+
+const dynamicScopes = kvEntries
+  .filter((entry): entry is [KvName, (...args: string[]) => string] => typeof entry[1] === "function")
+  .map(([name, template]) => {
     const sample = template(SENTINEL, SENTINEL);
     const parts = sample.split(SENTINEL).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    return new RegExp(`^${parts.join("[^:]+")}$`);
+    return { name, pattern: new RegExp(`^${parts.join("[^:]+")}$`) };
   });
 
-const staticScopes = new Set(kvValues.filter((value): value is string => typeof value === "string"));
+const staticScopes = new Map<string, KvName>(
+  kvEntries.flatMap(([name, value]) => (typeof value === "string" ? [[value, name] as [string, KvName]] : [])),
+);
+
+function kvNameOf(scope: string): KvName | undefined {
+  return staticScopes.get(scope) ?? dynamicScopes.find(({ pattern }) => pattern.test(scope))?.name;
+}
+
+export function scopeClassOf(scope: string): ScopeClass | undefined {
+  const name = kvNameOf(scope);
+  return name === undefined ? undefined : SCOPE_CLASS[name];
+}
+
+const PAGED_OPS: ReadonlySet<WholeReadOp> = new Set(["iterate", "listPage", "listKeys"]);
+
+export function assertWholeReadAllowed(scope: string, op: WholeReadOp): void {
+  const scopeClass = scopeClassOf(scope);
+  if (scopeClass === undefined || scopeClass === "bounded") return;
+  if (scopeClass === "paged-only" && PAGED_OPS.has(op)) return;
+  throw new ScopeTooLargeError(scope, op, scopeClass);
+}
 
 export function normalizeScope(scope: string): string {
   if (staticScopes.has(scope)) return scope;
-  for (const pattern of dynamicScopes) {
+  for (const { pattern } of dynamicScopes) {
     if (pattern.test(scope)) {
       return pattern.source.slice(1, -1).replaceAll("[^:]+", "*").replace(/\\(.)/g, "$1");
     }
@@ -166,6 +208,7 @@ export class GuardedStateKV extends StateKV {
     options: StateKVOptions,
     readonly inventory: ScopeReadInventory,
     private readonly isGrowing: (collection: string) => boolean = everyScopeGrows,
+    private readonly refuse = false,
   ) {
     super(client, options);
   }
@@ -183,7 +226,12 @@ export class GuardedStateKV extends StateKV {
     if (this.isGrowing(collection)) this.inventory.record(collection, op, site, items, bytes);
   }
 
+  private guard(scope: string, op: WholeReadOp): void {
+    if (this.refuse) assertWholeReadAllowed(scope, op);
+  }
+
   override async list<T = unknown>(scope: string): Promise<T[]> {
+    this.guard(scope, "list");
     const site = this.site();
     const values = await super.list<T>(scope);
     if (Array.isArray(values)) this.note(scope, "list", site, values.length, jsonBytes(values));
@@ -192,6 +240,7 @@ export class GuardedStateKV extends StateKV {
   }
 
   override async listKeys(scope: string): Promise<string[]> {
+    this.guard(scope, "listKeys");
     const site = this.site();
     const keys = await super.listKeys(scope);
     this.note(scope, "listKeys", site, keys.length, jsonBytes(keys));
@@ -202,6 +251,7 @@ export class GuardedStateKV extends StateKV {
     scope: string,
     opts: { limit: number; cursor?: string; order?: "desc" | "asc" },
   ): Promise<{ items: T[]; nextCursor?: string; total: number }> {
+    this.guard(scope, "listPage");
     const site = this.site();
     const page = await super.listPage<T>(scope, opts);
     this.note(scope, "listPage", site, page.total, jsonBytes(page.items));
@@ -212,6 +262,7 @@ export class GuardedStateKV extends StateKV {
     scope: string,
     opts: { pageSize?: number } = {},
   ): AsyncGenerator<T[]> {
+    this.guard(scope, "iterate");
     const site = this.site();
     let items = 0;
     let itemTotal = 0;
@@ -237,7 +288,8 @@ export function readInventory(file: string): WholeReadInventory | undefined {
 }
 
 export function withScopeGuard(kv: StateKV, sdk: IIIClient, dataDir: string): StateKV {
-  if (getScopeGuardMode() === "off") return kv;
+  const mode = getScopeGuardMode();
+  if (mode === "off") return kv;
   const file = join(dataDir, INVENTORY_FILE);
   const inventory = new ScopeReadInventory(readInventory(file));
   const dump = () => {
@@ -249,6 +301,11 @@ export function withScopeGuard(kv: StateKV, sdk: IIIClient, dataDir: string): St
   };
   setInterval(dump, DUMP_INTERVAL_MS).unref();
   process.once("beforeExit", dump);
-  logger.warn("scope-guard: warn mode on, recording whole-collection reads", { file });
-  return new GuardedStateKV(sdk, { backend: kv.backend }, inventory);
+  logger.warn(
+    mode === "throw"
+      ? "scope-guard: throw mode on, refusing whole reads of growing collections and recording them"
+      : "scope-guard: warn mode on, recording whole-collection reads",
+    { file },
+  );
+  return new GuardedStateKV(sdk, { backend: kv.backend }, inventory, undefined, mode === "throw");
 }
