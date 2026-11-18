@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { queryTerms } from "../../../src/state/term-extraction.js";
 
@@ -93,7 +93,7 @@ const REPO = resolve(import.meta.dirname, "../../..");
 // Vectors and anything derived from them are private: refuse a directory inside the repo.
 export function assertOutsideRepo(dir: string): string {
   if (!existsSync(`${REPO}/package.json`)) throw new Error(`repo root guess ${REPO} has no package.json; fix REPO in lib.ts`);
-  const abs = resolve(dir);
+  const abs = existsSync(dir) ? realpathSync(dir) : resolve(dir);
   if (abs === REPO || abs.startsWith(REPO + sep)) throw new Error(`${abs} is inside the repo: the vectors are private`);
   return abs;
 }

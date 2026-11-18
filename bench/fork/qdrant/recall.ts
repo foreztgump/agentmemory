@@ -115,7 +115,7 @@ function bruteForce(): Map<string, Truth[]> {
     for (const f of FILTERS) {
       const list = top.get(f)!;
       const matches = Math.min(K, list.length);
-      if (matches === 0) throw new Error(`no corpus vector has layer ${f}; pass --lessons above 0`);
+      if (matches === 0) throw new Error(`no corpus vector has layer ${f}, so its recall is undefined (for lesson, pass --lessons above 0)`);
       out.get(f)!.push({ kth: list[matches - 1]![0], matches, tied: list.length > K && list[K]![0] >= list[K - 1]![0] - TIE });
     }
   }
