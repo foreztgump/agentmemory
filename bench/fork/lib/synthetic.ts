@@ -1,3 +1,4 @@
+import type { EvalCase } from "./score.js";
 import { mulberry32, pickWeighted, sampleQuantile } from "./stats.js";
 
 export interface Profile {
@@ -14,13 +15,6 @@ export interface Profile {
   };
   withSubtitle: number;
   observationsPerSession: number[];
-}
-
-export interface EvalCase {
-  id: string;
-  kind: "keyword" | "graph";
-  query: string;
-  expected: string[];
 }
 
 export interface Observation {

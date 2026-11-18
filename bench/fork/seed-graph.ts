@@ -1,7 +1,7 @@
 // Builds the knowledge-graph edges for the synthetic tier's graph cases through
 // the real write path (POST /agentmemory/graph/extract, heuristic extraction, no
-// LLM), then builds the graph retrieval index. Runs on the replica network (replica.sh client) after generate.ts loaded
-// the same seed.
+// LLM), then builds the graph retrieval index. Runs on the replica network
+// (replica.sh client) after generate.ts loaded the same seed.
 //
 //   node --import tsx bench/fork/seed-graph.ts --profile <file> [--seed 1155]
 import { readFileSync } from "node:fs";
@@ -40,12 +40,16 @@ const migrate = await fetch(`${args.url}/agentmemory/graph/index/migrate`, {
   method: "POST",
   headers: { authorization: `Bearer ${args.secret}`, "content-type": "application/json" },
   body: JSON.stringify({ allowLegacyScan: true }),
+  signal: AbortSignal.timeout(60_000),
 });
 if (migrate.status >= 400) throw new Error(`graph/index/migrate ${migrate.status}: ${await migrate.text()}`);
 let index: { ready?: boolean; state?: string } = {};
 for (let i = 0; i < 300 && !index.ready; i++) {
   await new Promise((r) => setTimeout(r, 1000));
-  index = await (await fetch(`${args.url}/agentmemory/graph/index`, { headers: { authorization: `Bearer ${args.secret}` } })).json();
+  index = await (await fetch(`${args.url}/agentmemory/graph/index`, {
+    headers: { authorization: `Bearer ${args.secret}` },
+    signal: AbortSignal.timeout(30_000),
+  })).json();
 }
 if (!index.ready) throw new Error(`graph index not ready: ${JSON.stringify(index)}`);
 console.log(JSON.stringify({ seeds: graphSeeds.length, nodes, edges, graphIndex: index.state }));

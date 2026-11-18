@@ -4,7 +4,8 @@
 #
 #   AM_IMAGE=<image> baseline.sh <buddy-backup-dir> <private-cases.json> <synthetic-root> <results-dir>
 #
-# <synthetic-root>/<count>/dump.rdb is built by make-synthetic.sh when missing.
+# <synthetic-root>/<count>/dump.rdb is built by make-synthetic.sh when missing
+# (counts.txt, written last, marks a finished build).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,11 +27,14 @@ bench() {
 bench buddy-keyword --data "$BUDDY" --cases "$PRIVATE"
 bench buddy-vectors --data "$BUDDY" --cases "$PRIVATE" --embedding voyage --am-mem-limit 5g
 for count in 250000 500000; do
-  [[ -s "$SYNTH/$count/dump.rdb" ]] || AM_MEM_LIMIT=6g "$HERE/make-synthetic.sh" "$count" "$SYNTH/$count" || failed=1
+  [[ -s "$SYNTH/$count/counts.txt" ]] || AM_MEM_LIMIT=6g "$HERE/make-synthetic.sh" "$count" "$SYNTH/$count" || failed=1
 done
-[[ -s "$SYNTH/1000000/dump.rdb" ]] || SYNTHETIC_GRAPH=0 "$HERE/make-synthetic.sh" 1000000 "$SYNTH/1000000" || failed=1
+[[ -s "$SYNTH/1000000/counts.txt" ]] || SYNTHETIC_GRAPH=0 "$HERE/make-synthetic.sh" 1000000 "$SYNTH/1000000" || failed=1
 bench synthetic-250k --data "$SYNTH/250000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json
 bench synthetic-500k-6g --data "$SYNTH/500000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g
-# Fails on the in-memory baseline by design; see the synthetic-1m entry in ceilings.json.
-bench synthetic-1m --data "$SYNTH/1000000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g
+# The synthetic-1m entry holds targets the in-memory baseline cannot meet, so its
+# result is reported but does not decide the exit status.
+node --import tsx bench/fork/bench.ts --name synthetic-1m --out "$RESULTS/synthetic-1m.json" \
+  --data "$SYNTH/1000000/dump.rdb" --cases bench/fork/eval/synthetic-cases.json --am-mem-limit 6g ||
+  echo "baseline: synthetic-1m misses its targets (expected until a build boots 1M)" >&2
 exit "$failed"

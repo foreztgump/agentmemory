@@ -3,11 +3,10 @@
 // Output is counts and quantiles only, safe to commit.
 //
 //   node --import tsx bench/fork/profile.ts --container <valkey container> [--out file.json]
-import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { histogram, quantiles } from "./lib/stats.js";
+import { ALL_OBSERVATIONS, valueLines } from "./lib/valkey.js";
 
 const { values: args } = parseArgs({
   options: { container: { type: "string" }, out: { type: "string" } },
@@ -15,11 +14,6 @@ const { values: args } = parseArgs({
 if (!args.container) throw new Error("--container is required");
 
 const SIZE_EDGES = [0, 256, 512, 1024, 2048, 4096, 8192, 16384, 65536];
-
-function scan(script: string): AsyncIterable<string> {
-  const child = spawn("docker", ["exec", args.container!, "sh", "-c", script], { stdio: ["ignore", "pipe", "inherit"] });
-  return createInterface({ input: child.stdout, crlfDelay: Infinity });
-}
 
 const TOKEN = /[\p{L}\p{N}]{2,}/gu;
 
@@ -40,9 +34,20 @@ let withSubtitle = 0;
 let withSource = 0;
 const hookBytes = new Map<string, number[]>();
 
-for await (const line of scan('valkey-cli --scan --pattern "state:mem:obs:*" | while read -r k; do valkey-cli --raw hvals "$k"; done')) {
-  if (!line.startsWith("{")) continue;
-  const obs = JSON.parse(line);
+interface StoredObservation {
+  sessionId: string;
+  type?: string;
+  title?: string;
+  subtitle?: string;
+  narrative?: string;
+  facts?: unknown[];
+  concepts?: unknown[];
+  files?: unknown[];
+  source?: { hookType?: string; originalBytes?: number };
+}
+
+for await (const line of valueLines(args.container, ALL_OBSERVATIONS)) {
+  const obs = JSON.parse(line) as StoredObservation;
   observations++;
   perSession.set(obs.sessionId, (perSession.get(obs.sessionId) ?? 0) + 1);
   types[obs.type ?? "none"] = (types[obs.type ?? "none"] ?? 0) + 1;
@@ -72,9 +77,10 @@ for await (const line of scan('valkey-cli --scan --pattern "state:mem:obs:*" | w
 }
 
 const memoryBytes: number[] = [];
-for await (const line of scan("valkey-cli --raw hvals state:mem:memories")) {
-  if (line.startsWith("{")) memoryBytes.push(Buffer.byteLength(line));
+for await (const line of valueLines(args.container, "valkey-cli --raw hvals state:mem:memories")) {
+  memoryBytes.push(Buffer.byteLength(line));
 }
+if (observations === 0) throw new Error(`no observations in ${args.container}`);
 
 const counts = (xs: number[]) => histogram(xs, [0, 1, 2, 3, 4, 5, 6, 8, 10, 16]);
 const profile = {
@@ -83,8 +89,8 @@ const profile = {
   withSubtitle,
   withSource,
   sessions: perSession.size,
-  types,
-  hookTypes: Object.fromEntries([...hookBytes].sort((a, b) => b[1].length - a[1].length)
+  types: Object.fromEntries(Object.entries(types).sort(([a, x], [b, y]) => y - x || Number(a > b) - Number(a < b))),
+  hookTypes: Object.fromEntries([...hookBytes].sort((a, b) => b[1].length - a[1].length || Number(a[0] > b[0]) - Number(a[0] < b[0]))
     .map(([hook, bytes]) => [hook, { count: bytes.length, originalBytes: quantiles(bytes, 21) }])),
   jsonBytes: {
     mean: Math.round(jsonBytes.reduce((a, b) => a + b, 0) / jsonBytes.length),

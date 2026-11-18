@@ -156,7 +156,13 @@ try {
 } catch (error) {
   console.error(`bench: ${(error as Error).message}`);
 } finally {
-  if (!args.keep) replica("stop");
+  if (!args.keep) {
+    try {
+      replica("stop");
+    } catch (error) {
+      notes.push(`cleanup failed: ${(error as Error).message}`);
+    }
+  }
 }
 
 const image = spawnSync("docker", ["image", "inspect", "-f", "{{.Id}}", process.env.AM_IMAGE ?? ""], { encoding: "utf8" }).stdout.trim();

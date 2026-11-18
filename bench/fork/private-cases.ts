@@ -10,13 +10,12 @@
 //   as a graph entity, so X is reachable only through the edge.
 //
 //   node --import tsx bench/fork/private-cases.ts --container <valkey> --out /home/cownose/am-staging/eval-private/<name>.json
-import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { mulberry32 } from "./lib/stats.js";
 import type { EvalCase } from "./lib/score.js";
+import { ALL_OBSERVATIONS, jsonValues } from "./lib/valkey.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -29,24 +28,19 @@ const { values: args } = parseArgs({
   },
 });
 if (!args.container || !args.out) throw new Error("--container and --out are required");
-if (resolve(args.out).startsWith(resolve(import.meta.dirname, "../.."))) throw new Error("--out must be outside the repository");
+if (resolve(args.out).startsWith(resolve(import.meta.dirname, "../..") + sep)) throw new Error("--out must be outside the repository");
 
 const rand = mulberry32(Number(args.seed));
 const TOKEN = /[\p{L}\p{N}]{3,}/gu;
 const terms = (text: string) => [...new Set(text.toLowerCase().match(TOKEN) ?? [])];
 
-async function* hvals(script: string): AsyncIterable<Record<string, unknown>> {
-  const child = spawn("docker", ["exec", args.container!, "sh", "-c", script], { stdio: ["ignore", "pipe", "inherit"] });
-  for await (const line of createInterface({ input: child.stdout, crlfDelay: Infinity })) {
-    if (line.startsWith("{")) yield JSON.parse(line);
-  }
-}
+const hvals = (script: string) => jsonValues(args.container!, script);
 
 interface Doc { id: string; text: string; terms: string[] }
 const docs: Doc[] = [];
 const memoryDocs: Doc[] = [];
 const observationTerms = new Map<string, string[]>();
-for await (const o of hvals('valkey-cli --scan --pattern "state:mem:obs:*" | while read -r k; do valkey-cli --raw hvals "$k"; done')) {
+for await (const o of hvals(ALL_OBSERVATIONS)) {
   observationTerms.set(String(o.id), terms(`${o.title ?? ""}\n${o.subtitle ?? ""}\n${o.narrative ?? ""}`));
   if (typeof o.title !== "string" || typeof o.narrative !== "string" || !o.title || !o.narrative) continue;
   const text = `${o.title}\n${o.narrative}`;
@@ -58,6 +52,8 @@ for await (const m of hvals("valkey-cli --raw hvals state:mem:memories")) {
   memoryDocs.push({ id: String(m.id), text, terms: terms(text) });
 }
 
+if (docs.length === 0) throw new Error(`no indexed observations in ${args.container}`);
+
 const df = new Map<string, number>();
 for (const d of [...docs, ...memoryDocs]) for (const t of d.terms) df.set(t, (df.get(t) ?? 0) + 1);
 const sameText = new Map<string, string[]>();
@@ -66,6 +62,8 @@ for (const d of [...docs, ...memoryDocs]) {
   group.push(d.id);
   sameText.set(d.text, group);
 }
+
+const compare = (a: string, b: string) => Number(a > b) - Number(a < b);
 
 function shuffled<T>(xs: T[]): T[] {
   const out = [...xs];
@@ -78,7 +76,8 @@ function shuffled<T>(xs: T[]): T[] {
 
 const cases: EvalCase[] = [];
 function keywordCases(pool: Doc[], want: number, prefix: string): void {
-  const sorted = [...pool].sort((a, b) => (a.id < b.id ? -1 : 1));
+  // Sorting first makes the seeded shuffle independent of Valkey's hash order.
+  const sorted = [...pool].sort((a, b) => compare(a.id, b.id));
   let made = 0;
   for (const d of shuffled(sorted)) {
     if (made >= want) break;
@@ -86,7 +85,7 @@ function keywordCases(pool: Doc[], want: number, prefix: string): void {
       .sort((a, b) => df.get(a)! - df.get(b)! || (a < b ? -1 : 1)).slice(0, 4);
     if (rare.length < 3) continue;
     made++;
-    cases.push({ id: `${prefix}-${String(made).padStart(3, "0")}`, kind: prefix, query: shuffled(rare).join(" "), expected: sameText.get(d.text)! });
+    cases.push({ id: `${prefix}-${String(made).padStart(3, "0")}`, kind: prefix, query: shuffled(rare).join(" "), expected: [...sameText.get(d.text)!].sort(compare) });
   }
 }
 keywordCases(docs, Number(args.keyword), "keyword");
@@ -97,12 +96,13 @@ const nodes = new Map<string, Node>();
 for await (const n of hvals("valkey-cli --raw hvals state:mem:graph:nodes")) nodes.set(String(n.id), n as unknown as Node);
 const edges: { a: string; b: string; id: string }[] = [];
 for await (const e of hvals("valkey-cli --raw hvals state:mem:graph:edges")) {
+  if (e.stale || e.isLatest === false) continue;
   edges.push({ a: String(e.sourceNodeId), b: String(e.targetNodeId), id: String(e.id) });
   edges.push({ a: String(e.targetNodeId), b: String(e.sourceNodeId), id: String(e.id) });
 }
 let graphMade = 0;
 const usedNames = new Set<string>();
-for (const e of shuffled(edges.sort((x, y) => (x.id + x.a < y.id + y.a ? -1 : 1)))) {
+for (const e of shuffled(edges.sort((x, y) => compare(x.id, y.id) || compare(x.a, y.a)))) {
   if (graphMade >= Number(args.graph)) break;
   const a = nodes.get(e.a);
   const b = nodes.get(e.b);
