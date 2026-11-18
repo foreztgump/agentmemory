@@ -7,9 +7,8 @@ import { KV } from '../state/schema.js'
 import { StateKV, collectAll } from '../state/kv.js'
 import { trackedUnindexedObservations } from '../fork/index-reconcile.js'
 import { getSearchResultLayer, isSearchLayer, matchesSearchLayer, type SearchLayer, type SearchResultLayer } from "../state/search-layer.js";
-import type { SearchIndex, SearchIndexRevision } from '../state/search-index.js'
-import { getSearchRuntime } from '../state/search-ports.js'
-import { VectorIndex } from '../state/vector-index.js'
+import type { SearchIndexRevision } from '../state/search-index.js'
+import { getSearchRuntime, type KeywordIndexPort, type VectorStorePort } from '../state/search-ports.js'
 import type { EmbeddingProvider } from '../types.js'
 import { memoryToObservation, observationEmbedText } from '../state/memory-utils.js'
 import { buildRecallResponse, type RecallFormat } from "./recall-response.js";
@@ -23,7 +22,7 @@ import {
   isVectorBackfillAllEnabled,
 } from "../config.js";
 
-let vectorIndex: VectorIndex | null = null
+let vectorIndex: VectorStorePort | null = null
 let currentEmbeddingProvider: EmbeddingProvider | null = null
 
 // Hybrid ranking hook for mem::search. Wired by index.ts once the
@@ -91,15 +90,15 @@ export function setPendingVectorBackfillCount(n: number): void {
   pendingVectorBackfill = Math.max(0, n)
 }
 
-export function getSearchIndex(): SearchIndex {
+export function getSearchIndex(): KeywordIndexPort {
   return getSearchRuntime().keyword
 }
 
-export function setVectorIndex(idx: VectorIndex | null): void {
+export function setVectorIndex(idx: VectorStorePort | null): void {
   vectorIndex = idx
 }
 
-export function getVectorIndex(): VectorIndex | null {
+export function getVectorIndex(): VectorStorePort | null {
   return vectorIndex
 }
 
@@ -118,13 +117,13 @@ export async function rankMemoryIds(
   limit: number,
 ): Promise<{ ids: string[]; mode: "hybrid" | "keyword" }> {
   const fetchLimit = Math.max(limit * 4, 50)
-  const keyword = getSearchIndex()
+  const keyword = await getSearchIndex()
     .search(query, fetchLimit, "memory")
   let semantic: Array<{ obsId: string }> = []
   if (vectorIndex && vectorIndex.size > 0 && currentEmbeddingProvider) {
     try {
       const embedding = await currentEmbeddingProvider.embed(query)
-      semantic = vectorIndex
+      semantic = await vectorIndex
         .search(embedding, fetchLimit, "memory", (id) => getSearchIndex().layerOf(id))
     } catch (err) {
       logger.warn("memory vector ranking failed, using keyword ranking", {
@@ -433,7 +432,7 @@ export async function findUnindexedObservations(
   const tracked = await trackedUnindexedObservations(kv, idx, keywordRebuildEpoch)
   if (tracked) return tracked
   const sessions = await collectAll<Session>(kv, KV.sessions)
-  const indexed = idx.observationCountsBySession()
+  const indexed = await idx.observationCountsBySession()
   const missing: CompressedObservation[] = []
   for (const session of sessions) {
     const known = session.observationCount ?? 0
@@ -579,6 +578,12 @@ async function runKeywordRebuild(
   vectorBackfillSince?: string | null,
 ): Promise<KeywordRebuildResult> {
   const idx = getSearchIndex()
+  if (getSearchRuntime().backend === 'disk') {
+    // The index lives in the search worker and survives restarts; refreshing the counts is the whole boot cost.
+    await idx.documentKindCounts()
+    memoryIndexReady = true
+    return { documents: idx.size, vectorJobs: [], fullBackfillPending: 0, historicalVectorGaps: 0 }
+  }
   idx.clear()
   memoryIndexReady = false
   bm25RebuildIncomplete = false
@@ -911,10 +916,10 @@ export function registerSearchFunction(sdk: IIIClient, kv: StateKV): void {
             })
             if (enriched.length > 0) break
             useHybridRanker = false
-            results = idx.search(query, fetchLimit, targetLayer)
+            results = await idx.search(query, fetchLimit, targetLayer)
           }
         } else {
-          results = idx.search(query, fetchLimit, targetLayer)
+          results = await idx.search(query, fetchLimit, targetLayer)
         }
 
         enriched = []

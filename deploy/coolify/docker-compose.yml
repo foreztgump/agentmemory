@@ -147,6 +147,15 @@ services:
       INSIGHT_DECAY_ENABLED: "${INSIGHT_DECAY_ENABLED:-}"
       REBUILD_EMBED_BATCH_SIZE: "${REBUILD_EMBED_BATCH_SIZE:-}"
       RERANK_ENABLED: "${RERANK_ENABLED:-}"
+      # memory keeps the indexes in this container; disk moves them to the qdrant
+      # service through the am-search worker. Switch only after the index migration.
+      AM_SEARCH_BACKEND: "${AM_SEARCH_BACKEND:-memory}"
+      AM_QDRANT_URL: "http://qdrant:6333"
+      AM_QDRANT_API_KEY: "${QDRANT_API_KEY:-}"
+      AM_QDRANT_COLLECTION: "${AM_QDRANT_COLLECTION:-}"
+      AM_SEARCH_DIMENSIONS: "${VOYAGE_OUTPUT_DIMENSION:-1024}"
+      AM_SEARCH_OVERSAMPLING: "${AM_SEARCH_OVERSAMPLING:-}"
+      AM_SEARCH_AVGDL: "${AM_SEARCH_AVGDL:-}"
     expose:
       - "3111"
     volumes:
@@ -188,6 +197,30 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Keyword index and vectors for AM_SEARCH_BACKEND=disk. Not published: only
+  # agentmemory reaches it, on the stack's network. 1 GB holds about 1M documents
+  # (docs/fork/spikes/qdrant.md); raise QDRANT_MEM_LIMIT toward 2.5g near 3M.
+  qdrant:
+    image: qdrant/qdrant:v1.20.2
+    restart: unless-stopped
+    mem_limit: "${QDRANT_MEM_LIMIT:-1g}"
+    environment:
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:-}"
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200 '"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   agentmemory-data:
+  qdrant-data:
   valkey-data:

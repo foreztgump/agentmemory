@@ -1,0 +1,43 @@
+# A local stack with AM_SEARCH_BACKEND=disk for the TEE-1164 checks (AC6 and the
+# recall eval). Local embeddings (all-MiniLM, 384 dims), dummy secrets, about 3 GB
+# of container limits in total.
+#
+#   AM_IMAGE=<image> docker compose -f bench/fork/qdrant/stack-compose.yml -p amsearch up -d
+#   docker compose -f bench/fork/qdrant/stack-compose.yml -p amsearch down -v
+services:
+  valkey:
+    image: valkey/valkey:9
+    command: valkey-server --save "" --appendonly no
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      retries: 30
+  qdrant:
+    image: qdrant/qdrant:v1.20.2
+    mem_limit: 1g
+    environment:
+      QDRANT__SERVICE__API_KEY: stack-dummy-qdrant-key
+      QDRANT__TELEMETRY_DISABLED: "true"
+    ports:
+      - "127.0.0.1:${STACK_QDRANT_PORT:-16335}:6333"
+  agentmemory:
+    image: ${AM_IMAGE:?set AM_IMAGE}
+    mem_limit: 1536m
+    depends_on:
+      valkey:
+        condition: service_healthy
+    environment:
+      AGENTMEMORY_SECRET: stack-dummy-secret
+      AGENTMEMORY_STATE_BACKEND: redis
+      AGENTMEMORY_REDIS_URL: redis://valkey:6379
+      AGENTMEMORY_VIEWER_HOST: 0.0.0.0
+      AGENTMEMORY_AUTO_COMPRESS: "false"
+      AGENTMEMORY_SESSION_SWEEP_ENABLED: "false"
+      EMBEDDING_PROVIDER: "${STACK_EMBEDDING_PROVIDER:-local}"
+      AM_SEARCH_BACKEND: "${STACK_SEARCH_BACKEND:-disk}"
+      AM_QDRANT_URL: http://qdrant:6333
+      AM_QDRANT_API_KEY: stack-dummy-qdrant-key
+      AM_SEARCH_DIMENSIONS: "384"
+    ports:
+      - "127.0.0.1:${STACK_REST_PORT:-13111}:3111"

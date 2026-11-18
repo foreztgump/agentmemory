@@ -1,6 +1,5 @@
-import { SearchIndex } from "./search-index.js";
 import type { SearchLayer } from "./search-layer.js";
-import { VectorIndex } from "./vector-index.js";
+import type { KeywordIndexPort, VectorStorePort } from "./search-ports.js";
 import type {
   EmbeddingProvider,
   HybridSearchResult,
@@ -35,8 +34,8 @@ export class HybridSearch {
   private lastGraphTimeoutWarningAt = -Infinity;
 
   constructor(
-    private bm25: SearchIndex,
-    private vector: VectorIndex | null,
+    private bm25: KeywordIndexPort,
+    private vector: VectorStorePort | null,
     private embeddingProvider: EmbeddingProvider | null,
     private kv: StateKV,
     private bm25Weight = 0.4,
@@ -105,7 +104,7 @@ export class HybridSearch {
   ): Promise<HybridSearchResult[]> {
     const retrievalLimit = this.rerankEnabled ? Math.max(limit, 20) : limit;
     const poolLimit = Math.max(retrievalLimit * 2, MIN_FUSION_POOL);
-    const bm25Results = this.bm25.search(query, poolLimit, targetLayer);
+    const bm25Results = await this.bm25.search(query, poolLimit, targetLayer);
 
     let vectorResults: Array<{
       obsId: string;
@@ -130,7 +129,7 @@ export class HybridSearch {
         } else {
           queryEmbedding = await this.embeddingProvider.embed(query);
         }
-        vectorResults = this.vector.search(queryEmbedding, poolLimit, targetLayer, (id) => this.bm25.layerOf(id));
+        vectorResults = await this.vector.search(queryEmbedding, poolLimit, targetLayer, (id) => this.bm25.layerOf(id));
       } catch {
         // fall through to BM25-only
       }

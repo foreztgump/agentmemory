@@ -412,8 +412,8 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
       valueWithin(getCaptureController()?.status() ?? Promise.resolve(null), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(getGraphIndexMigrationStatus(kv), STATUS_CHECK_TIMEOUT_MS),
     ]);
-    const observationsIndexed = [...idx.observationCountsBySession().values()].reduce((a, n) => a + n, 0);
-    const documentKinds = idx.documentKindCounts();
+    const observationsIndexed = [...(await idx.observationCountsBySession()).values()].reduce((a, n) => a + n, 0);
+    const documentKinds = await idx.documentKindCounts();
     const circuit =
       deps.provider && "circuitState" in deps.provider
         ? (deps.provider.circuitState as { state?: string; failures?: number } | null)

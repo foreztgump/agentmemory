@@ -70,7 +70,7 @@ if (!input.includes(marker)) throw new Error("Could not locate REST CORS allowli
 const origins = process.env.REST_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean);
 if (origins.length === 0 || origins.some((origin) => /[\u0000-\u001f\u007f]/.test(origin))) throw new Error("REST_ALLOWED_ORIGINS must contain comma-separated origins without control characters");
 input = input.replace(marker, `        allowed_origins:\n${origins.map((origin) => `          - ${JSON.stringify(origin)}`).join("\n")}`);
-const { parse, stringify } = require("/opt/agentmemory/node_modules/yaml");
+const { parse, parseDocument, stringify } = require("/opt/agentmemory/node_modules/yaml");
 const configPath = `${process.env.AGENTMEMORY_DATA_DIR}/config/iii-observability.yaml`;
 let entry;
 try {
@@ -109,6 +109,13 @@ if (process.env.AGENTMEMORY_STATE_BACKEND === "redis") {
   if (!redisUrl || /[\u0000-\u001f\u007f]/.test(redisUrl)) throw new Error("AGENTMEMORY_REDIS_URL is required and must not contain control characters");
   compose.containers.state.config_override.adapter = { name: "redis", config: { redis_url: redisUrl } };
   input = stringify(compose);
+}
+if ((process.env.AM_SEARCH_BACKEND || "memory").trim() === "disk") {
+  if (!process.env.AM_QDRANT_URL) throw new Error("AM_SEARCH_BACKEND=disk requires AM_QDRANT_URL");
+  // parseDocument keeps each scalar's quoting, so the rest of the file reaches iii unchanged.
+  const compose = parseDocument(input);
+  compose.setIn(["containers", "am-search"], parseDocument(fs.readFileSync("/opt/agentmemory/am-search.worker-compose.yaml", "utf8")).contents);
+  input = compose.toString();
 }
 fs.writeFileSync(target, input, { mode: 0o600 });
 NODE

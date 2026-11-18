@@ -1,0 +1,26 @@
+# The am-search worker (AM_SEARCH_BACKEND=disk). The entrypoint adds this
+# container to worker-compose.yaml only in disk mode.
+worker: path://.
+working_dir: /opt/agentmemory
+start_after: [state]
+config_name: am-search
+restart:
+  condition: on-failure
+  delay: 500ms
+  max_delay: 30s
+  max_attempts: 5
+  window: 60s
+scripts:
+  run: node /opt/agentmemory/dist/fork/worker/main.mjs
+environment:
+  HOME: /data/home
+  III_ENGINE_URL: ws://127.0.0.1:49134
+  III_TELEMETRY_ENABLED: "false"
+  AM_QDRANT_URL: "${AM_QDRANT_URL:-}"
+  AM_QDRANT_API_KEY: "${AM_QDRANT_API_KEY:-}"
+  AM_QDRANT_COLLECTION: "${AM_QDRANT_COLLECTION:-}"
+  AM_SEARCH_DIMENSIONS: "${AM_SEARCH_DIMENSIONS:-}"
+  AM_SEARCH_OVERSAMPLING: "${AM_SEARCH_OVERSAMPLING:-}"
+  AM_SEARCH_AVGDL: "${AM_SEARCH_AVGDL:-}"
+  PATH: /usr/local/bin:/usr/bin:/bin
+  MALLOC_ARENA_MAX: "2"

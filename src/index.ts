@@ -37,6 +37,8 @@ import { assertStateReady, waitForStateReady } from "./state/state-readiness.js"
 import type { SearchLayer } from "./state/search-layer.js";
 import { HybridSearch } from "./state/hybrid-search.js";
 import { createSearchRuntime } from "./state/search-ports.js";
+import { VectorIndex } from "./state/vector-index.js";
+import "./fork/search/runtime.js";
 import { SHUTDOWN_FLUSH_TIMEOUT_MS, SHUTDOWN_HARD_EXIT_MS, runStartupCleanup, settleWithin } from "./shutdown.js";
 import { registerPrivacyFunction, withWriteScrubbing } from "./functions/privacy.js";
 import { withRegistrationDefaults } from "./runtime/registration.js";
@@ -283,7 +285,7 @@ async function main() {
   const metricsStore = new MetricsStore(kv);
   const dedupMap = new DedupMap();
 
-  const searchRuntime = createSearchRuntime({ kv, embeddingProvider });
+  const searchRuntime = createSearchRuntime({ kv, embeddingProvider, sdk });
   const vectorIndex = searchRuntime.vector;
 
   setVectorIndex(vectorIndex);
@@ -483,7 +485,7 @@ async function main() {
     return null;
   });
   let vectorBackfillSince = await indexPersistence.prepareBackfill(loaded, isVectorBackfillAllEnabled());
-  if (loaded?.vector && vectorIndex && loaded.vector.size > 0) {
+  if (loaded?.vector && vectorIndex instanceof VectorIndex && loaded.vector.size > 0) {
     // Persisted vectors carry whatever dimension the provider had when
     // they were written. If the active provider declares a different
     // dimension — or if the on-disk index contains a mix of dimensions

@@ -88,7 +88,8 @@ const AGENTMEMORY_WORKER_ENV_ALLOWLIST = new Set([
   "AGENTMEMORY_VECTOR_BACKFILL", "AGENTMEMORY_SLOTS", "AGENTMEMORY_PROVIDER", "AGENTMEMORY_VERBOSE",
   "OBSIDIAN_AUTO_EXPORT", "AUTO_FORGET_ENABLED", "AUTO_FORGET_INTERVAL_MS", "LESSON_DECAY_ENABLED",
   "INSIGHT_DECAY_ENABLED", "REBUILD_EMBED_BATCH_SIZE", "RERANK_ENABLED",
-  "AGENTMEMORY_LOCAL_DISPATCH",
+  "AGENTMEMORY_LOCAL_DISPATCH", "AM_SEARCH_BACKEND", "AM_QDRANT_URL", "AM_QDRANT_API_KEY",
+  "AM_QDRANT_COLLECTION", "AM_SEARCH_DIMENSIONS", "AM_SEARCH_OVERSAMPLING", "AM_SEARCH_AVGDL",
 ]);
 
 const COMPOSE_RESERVED_ENV = new Set([
@@ -381,8 +382,24 @@ export function renderWorkerCompose(options: ComposeProjectOptions): string {
     `      III_VIEWER_PORT: ${yamlString(String(viewerPort))}`,
     "      III_TELEMETRY_ENABLED: 'false'",
     ...(options.linux ?? process.platform === "linux" ? ["      MALLOC_ARENA_MAX: '2'"] : []),
-    "",
   );
+  if (options.workerEnvironment?.AM_SEARCH_BACKEND?.trim() === "disk") {
+    if (windows) throw new Error("AM_SEARCH_BACKEND=disk is not supported on Windows.");
+    lines.push(
+      "  am-search:",
+      `    worker: ${yamlString(`path://${options.projectRoot}`)}`,
+      "    start_after: [state]",
+      "    config_name: am-search",
+      ...restartPolicyLines("    ", restartEnabled),
+      "    scripts:",
+      `      run: ${yamlString(shellCommand(options.nodeBin, ["dist/fork/worker/main.mjs"]))}`,
+      "    environment:",
+      ...explicitWorkerEnvironment.filter(([key]) => key.startsWith("AM_")).map(([key, value]) => `      ${key}: ${yamlString(value!)}`),
+      `      III_ENGINE_PORT: ${yamlString(String(enginePort))}`,
+      `      PATH: ${yamlString(`${dirname(options.nodeBin)}:/usr/local/bin:/usr/bin:/bin`)}`,
+    );
+  }
+  lines.push("");
   return lines.join("\n");
 }
 
