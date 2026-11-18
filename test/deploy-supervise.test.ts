@@ -71,6 +71,54 @@ describe("deploy supervisor", () => {
     expect(result.code).toBe(3);
   });
 
+  it("gives a worker that has not served yet twice the ready wait, since compose starts its timer after state and http", async () => {
+    const port = await freePort();
+    const lateWorker = `
+      const http = require("node:http");
+      setTimeout(() => {
+        http.createServer((req, res) => {
+          res.statusCode = req.url === "/agentmemory/livez" ? 200 : 404;
+          res.end();
+        }).listen(${port}, "127.0.0.1");
+      }, 1500);
+      setTimeout(() => process.exit(0), 4000);
+    `;
+    const result = await run(lateWorker, { AGENTMEMORY_READY_TIMEOUT_MS: "1000", III_REST_PORT: String(port) });
+    expect(result.code).toBe(0);
+    expect(result.output).not.toContain("has not served");
+  }, 15000);
+
+  it("exits non-zero when the worker never serves within twice the ready wait", async () => {
+    const port = await freePort();
+    const result = await run("setInterval(() => {}, 1000);", {
+      AGENTMEMORY_READY_TIMEOUT_MS: "1000",
+      III_REST_PORT: String(port),
+    });
+    expect(result.code).toBe(1);
+    expect(result.output).toContain("has not served");
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(2000);
+    expect(result.elapsedMs).toBeLessThan(8000);
+  }, 15000);
+
+  it("exits non-zero with a clear message when the command cannot start", async () => {
+    const child = spawn(process.execPath, [supervise, "/nonexistent/iii", "compose"], {
+      env: { PATH: process.env.PATH, AGENTMEMORY_READY_TIMEOUT_MS: "60000" },
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+    const code = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+    expect(code).toBe(1);
+    expect(output).toContain("[supervise] could not start /nonexistent/iii");
+    expect(output).not.toContain("Unhandled 'error' event");
+  });
+
+  it.each(["0x10", "12e3", " 1000", "1000.0"])("rejects the non-decimal ready wait %j, which compose cannot parse", async (value) => {
+    const result = await run("process.exit(0)", { AGENTMEMORY_READY_TIMEOUT_MS: value });
+    expect(result.code).toBe(1);
+    expect(result.output).toContain("AGENTMEMORY_READY_TIMEOUT_MS must be an integer");
+  });
+
   it.each(["0", "abc", "3600001"])("rejects a ready wait of %s", async (value) => {
     const result = await run("process.exit(0)", { AGENTMEMORY_READY_TIMEOUT_MS: value });
     expect(result.code).toBe(1);
