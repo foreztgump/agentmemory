@@ -24,18 +24,23 @@ function sortedVocabulary(frequencies: ReadonlyMap<string, number>): string[] {
   return sorted;
 }
 
+/** The first index whose term is not below `term`. */
+export function lowerBound(sorted: readonly string[], term: string): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sorted[mid]! < term) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 export function expandLexicalTerms(query: readonly WeightedTerm[], frequencies: ReadonlyMap<string, number>): LexicalTerm[] {
   const vocabulary = sortedVocabulary(frequencies);
   return query.map(({ term, weight }) => {
-    let lo = 0;
-    let hi = vocabulary.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (vocabulary[mid]! < term) lo = mid + 1;
-      else hi = mid;
-    }
     const prefixes: string[] = [];
-    for (let i = lo; i < vocabulary.length && vocabulary[i]!.startsWith(term); i++) {
+    for (let i = lowerBound(vocabulary, term); i < vocabulary.length && vocabulary[i]!.startsWith(term); i++) {
       if (vocabulary[i] !== term) prefixes.push(vocabulary[i]!);
     }
     return { term, weight, prefixes };

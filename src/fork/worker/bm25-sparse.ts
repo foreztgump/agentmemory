@@ -1,4 +1,4 @@
-import { extractTerms, queryTerms, type TermSource } from "../../state/term-extraction.js";
+import { extractTerms, queryTerms, type TermSource, type WeightedTerm } from "../../state/term-extraction.js";
 
 // Same constants as SearchIndex. Qdrant's idf modifier computes
 // ln((N - n + 0.5) / (n + 0.5) + 1), which is SearchIndex's idf, so only the
@@ -26,7 +26,11 @@ export function termId(term: string): number {
 // expansion at half the idf; Qdrant has no prefix search, so the bare form is
 // indexed beside it at half weight.
 const TRAILING_PUNCTUATION = /[./\\\]^_]+$/u;
-const PREFIX_WEIGHT = 0.5;
+export const PREFIX_WEIGHT = 0.5;
+
+export function bareForm(term: string): string {
+  return term.replace(TRAILING_PUNCTUATION, "");
+}
 
 export function docSparse(fields: TermSource, avgdl: number): Sparse {
   return termsSparse(extractTerms(fields), avgdl);
@@ -44,7 +48,7 @@ export function termsSparse(terms: readonly string[], avgdl: number): Sparse {
     weights.set(id, (weights.get(id) ?? 0) + weight(tf));
   }
   for (const [term, tf] of counts) {
-    const bare = term.replace(TRAILING_PUNCTUATION, "");
+    const bare = bareForm(term);
     if (bare === term || bare.length < 2 || counts.has(bare)) continue;
     const id = termId(bare);
     weights.set(id, Math.max(weights.get(id) ?? 0, PREFIX_WEIGHT * weight(tf)));
@@ -52,11 +56,17 @@ export function termsSparse(terms: readonly string[], avgdl: number): Sparse {
   return { indices: [...weights.keys()], values: [...weights.values()] };
 }
 
-export function querySparse(query: string): Sparse {
+/** The query's own terms (one weight per id), plus prefix terms, which add: each scores for its own query term, as in SearchIndex. */
+export function querySparse(query: string, expand?: (terms: readonly WeightedTerm[]) => WeightedTerm[]): Sparse {
+  const exact = queryTerms(query);
   const weights = new Map<number, number>();
-  for (const { term, weight } of queryTerms(query)) {
+  for (const { term, weight } of exact) {
     const id = termId(term);
     weights.set(id, Math.max(weights.get(id) ?? 0, weight));
+  }
+  for (const { term, weight } of expand?.(exact) ?? []) {
+    const id = termId(term);
+    weights.set(id, (weights.get(id) ?? 0) + weight);
   }
   return { indices: [...weights.keys()], values: [...weights.values()] };
 }

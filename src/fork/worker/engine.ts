@@ -16,6 +16,7 @@ import {
 } from "../search/protocol.js";
 import { querySparse, termsSparse } from "./bm25-sparse.js";
 import { expandLexicalTerms, lexicalBm25, type LexicalDocument } from "./lexical-bm25.js";
+import { DEFAULT_VOCABULARY_LIMITS, PrefixVocabulary, type VocabularyLimits } from "./prefix-vocabulary.js";
 import { pointId, type Qdrant } from "./qdrant.js";
 import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
 
@@ -93,18 +94,22 @@ export class SearchEngine {
   /** Bumped when clear("all") drops the collection; a reweighting pass from before it stops. */
   private collectionEpoch = 0;
   private readonly clock: VersionClock;
+  /** Prefix expansion for the docs collection's keyword search; the lessons collection expands exactly. */
+  readonly prefixes: PrefixVocabulary | null;
 
-  constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number) {
+  constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number, vocabulary: VocabularyLimits = DEFAULT_VOCABULARY_LIMITS) {
     this.clock = new VersionClock(qdrant, () => this.ready());
+    this.prefixes = qdrant.config.layout === "lessons" ? null : new PrefixVocabulary(qdrant, () => this.ready(), vocabulary);
   }
 
   maxVersion(): Promise<OpVersion> {
     return this.clock.maxVersion();
   }
 
-  /** Resolves once no reweighting pass is running. */
+  /** Resolves once no reweighting pass or prefix vocabulary read is running. */
   async settled(): Promise<void> {
     while (this.reweighting) await this.reweighting;
+    await this.prefixes?.settled();
   }
 
   /** Every call waits for the collection and its payload indexes; a facet before the index exists fails. */
@@ -245,6 +250,7 @@ export class SearchEngine {
     if (operations.length > 0) {
       try {
         await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, { operations });
+        if (this.prefixes) for (const docTerms of terms.values()) this.prefixes.observe(docTerms);
       } finally {
         this.vocabulary = null;
       }
@@ -388,7 +394,8 @@ export class SearchEngine {
     if (this.qdrant.config.layout === "lessons") {
       return this.lessonKeyword(query, clampLimit(limit), isSearchLayer(layer) ? layer : "all");
     }
-    const sparse = querySparse(query);
+    this.prefixes?.fillInBackground();
+    const sparse = querySparse(query, this.prefixes ? (terms) => this.prefixes!.expand(terms) : undefined);
     if (sparse.indices.length === 0) return [];
     await this.ready();
     if (this.avgdl === null) this.corpusDidChange();
@@ -534,6 +541,7 @@ export class SearchEngine {
       await this.ready();
       await this.qdrant.drop();
       this.vocabulary = null;
+      this.prefixes?.clear();
       this.lastVocabularySize = 0;
       this.collectionEpoch++;
       this.corpusChanged = false;

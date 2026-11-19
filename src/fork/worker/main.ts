@@ -32,6 +32,7 @@ const handlers = createSearchHandlers(engines, settings.oversampling);
 for (const [id, handler] of Object.entries(handlers)) worker.registerFunction(id, handler as (data: unknown) => Promise<unknown>);
 
 const health = await engine.health();
+engine.prefixes?.fillInBackground();
 console.log(`[am-search] collection ${health.collection} ${health.status} (${health.dimensions} dims)${health.error ? `: ${health.error}` : ""}`);
 if (health.ok && health.dimensions !== settings.dimensions) {
   console.error(`[am-search] collection ${health.collection} has ${health.dimensions} dims, AM_SEARCH_DIMENSIONS is ${settings.dimensions}; vector writes will fail`);

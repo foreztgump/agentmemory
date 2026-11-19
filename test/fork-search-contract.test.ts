@@ -7,7 +7,7 @@ import type { CompressedObservation } from "../src/types.js";
 import { SearchIndex } from "../src/state/search-index.js";
 import { VectorIndex } from "../src/state/vector-index.js";
 import type { KeywordIndexPort, ScoredId, VectorStorePort } from "../src/state/search-ports.js";
-import type { SearchResultLayer } from "../src/state/search-layer.js";
+import type { SearchLayer, SearchResultLayer } from "../src/state/search-layer.js";
 import { createDiskSearchRuntime, type DiskSearchRuntime } from "../src/fork/search/runtime.js";
 import { SearchEngine } from "../src/fork/worker/engine.js";
 import { DEFAULT_AVGDL } from "../src/fork/search/settings.js";
@@ -55,11 +55,16 @@ const backends: Array<[string, () => Promise<Backend>, boolean]> = [
   ["qdrant", async () => {
     const qdrant = qdrantFor(`contract_${process.pid}_${Math.floor(Math.random() * 1e9)}`);
     await qdrant.ensure();
-    const runtime: DiskSearchRuntime = createDiskSearchRuntime(engineClient(new SearchEngine(qdrant, DEFAULT_AVGDL)), true, DIMS);
+    const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
+    const runtime: DiskSearchRuntime = createDiskSearchRuntime(engineClient(engine), true, DIMS);
     return {
       keyword: runtime.keyword,
       vector: runtime.vector!,
-      settle: () => runtime.outbox.drainFor(10_000),
+      settle: async () => {
+        await runtime.outbox.drainFor(10_000);
+        engine.prefixes?.fillInBackground();
+        await engine.settled();
+      },
       teardown: async () => {
         runtime.stats.stop();
         await runtime.outbox.stop(10_000);
@@ -168,10 +173,69 @@ describe.each(backends)("search port contract: %s", (_name, make, skip) => {
   });
 });
 
+// A query term also matches every indexed term it is a prefix of, at half
+// its idf. Each case's ranking is asserted on both implementations.
+describe.each(backends)("prefix expansion contract: %s", (_name, make, skip) => {
+  let b: Backend;
+  const search = async (query: string, layer?: SearchLayer) => ids(await b.keyword.search(query, 10, layer));
+
+  beforeAll(async () => {
+    if (skip) return;
+    b = await make();
+    b.keyword.add(obs("obs_tron", "zorbtron rollout", "pods restarted after the rollout"));
+    b.keyword.add(obs("obs_zorb", "zorb proxy rules", "iptables rules for the service"));
+    b.keyword.add(obs("obs_quellcraft", "quellcraft drift", "the staging quellcraft drifted from prod"));
+    b.keyword.add(obs("obs_quell", "quell file moved", "nginx quell moved to sites"));
+    b.keyword.add(obs("obs_nginx_end", "pipeline finished", "the release went out after restarting nginx."));
+    b.keyword.add(obs("mem_zorbmax", "zorbmax contexts", "switch contexts before applying", "memory"), "memory");
+    b.keyword.add(obs("obs_unrelated", "postgres vacuum", "autovacuum blocked by a long transaction"));
+    await b.settle();
+  }, 60_000);
+
+  afterAll(async () => {
+    if (!skip) await b.teardown();
+  }, 60_000);
+
+  it.skipIf(skip)("finds a document only through a longer indexed term", async () => {
+    expect(await search("rollo")).toEqual(["obs_tron"]);
+    expect(await search("iptab")).toEqual(["obs_zorb"]);
+  });
+
+  it.skipIf(skip)("ranks an exact match above documents reached only through a prefix", async () => {
+    const hits = await search("zorb");
+    expect(hits[0]).toBe("obs_zorb");
+    expect(new Set(hits)).toEqual(new Set(["obs_zorb", "obs_tron", "mem_zorbmax"]));
+    expect(await search("quell")).toEqual(["obs_quell", "obs_quellcraft"]);
+  });
+
+  it.skipIf(skip)("matches a sentence-final word through its bare form, below the exact match", async () => {
+    expect(await search("nginx")).toEqual(["obs_quell", "obs_nginx_end"]);
+  });
+
+  it.skipIf(skip)("keeps the layer filter for prefix matches", async () => {
+    expect(await search("zorbma", "memory")).toEqual(["mem_zorbmax"]);
+    expect(await search("zorbma", "observation")).toEqual([]);
+  });
+
+  it.skipIf(skip)("adds the prefix score of one query term to the exact score of another", async () => {
+    expect(await search("zorb rollout")).toEqual(["obs_tron", "obs_zorb", "mem_zorbmax"]);
+  });
+
+  it.skipIf(skip)("drops a deleted document reached through a prefix", async () => {
+    b.keyword.remove("obs_quell");
+    await b.settle();
+    expect(await search("quell")).toEqual(["obs_quellcraft"]);
+  });
+});
+
 // Top-k agreement of keyword search between the two implementations on a
-// synthetic corpus shaped like buddy's store. Qdrant has no prefix expansion
-// and a frozen avgdl, so the rankings differ slightly by design.
+// synthetic corpus shaped like buddy's store. Qdrant scores a document that
+// holds several prefix matches of one query term by their sum (SearchIndex
+// takes the best) and uses a frozen avgdl, so the rankings differ slightly.
 const KEYWORD_TOP10_OVERLAP_MIN = 0.9;
+// Every word cut to 60% of its length, so each query term matches only through
+// prefixes. Measured 0.880 at 64 expansions per term, 0.222 with none.
+const PREFIX_TOP10_OVERLAP_MIN = 0.85;
 
 describe.skipIf(!QDRANT_URL)("keyword parity on a synthetic corpus", () => {
   const DOCS = 2000;
@@ -179,6 +243,7 @@ describe.skipIf(!QDRANT_URL)("keyword parity on a synthetic corpus", () => {
   let disk: Awaited<ReturnType<(typeof backends)[1][1]>>;
   const memory = new SearchIndex();
   const queries: string[] = [];
+  const prefixQueries: string[] = [];
 
   beforeAll(async () => {
     disk = await backends[1]![1]();
@@ -195,7 +260,9 @@ describe.skipIf(!QDRANT_URL)("keyword parity on a synthetic corpus", () => {
         termTotal += extractTerms(o).length;
         if (queries.length < QUERIES && rand() < 0.2) {
           const words = `${o.title} ${o.narrative}`.split(/\s+/).filter((w) => w.length > 3);
-          queries.push([0, 1].map(() => words[Math.floor(rand() * words.length)]).join(" "));
+          const picked = [0, 1].map(() => words[Math.floor(rand() * words.length)]!);
+          queries.push(picked.join(" "));
+          prefixQueries.push(picked.map((w) => w.slice(0, Math.max(3, Math.ceil(w.length * 0.6)))).join(" "));
         }
       }
     }
@@ -207,7 +274,10 @@ describe.skipIf(!QDRANT_URL)("keyword parity on a synthetic corpus", () => {
     await disk?.teardown();
   }, 60_000);
 
-  it(`agrees on at least ${KEYWORD_TOP10_OVERLAP_MIN} of the top 10`, async () => {
+  it.each([
+    ["whole-word", queries, KEYWORD_TOP10_OVERLAP_MIN],
+    ["truncated-word", prefixQueries, PREFIX_TOP10_OVERLAP_MIN],
+  ] as const)("agrees on the top 10 for %s queries (at least %s)", async (_kind, queries, min) => {
     let overlap = 0;
     let exactTop1 = 0;
     for (const q of queries) {
@@ -222,7 +292,7 @@ describe.skipIf(!QDRANT_URL)("keyword parity on a synthetic corpus", () => {
     }
     const mean = overlap / queries.length;
     console.log(`keyword top-10 overlap ${mean.toFixed(3)}, top-1 agreement ${(exactTop1 / queries.length).toFixed(3)} over ${queries.length} queries`);
-    expect(mean).toBeGreaterThanOrEqual(KEYWORD_TOP10_OVERLAP_MIN);
+    expect(mean).toBeGreaterThanOrEqual(min);
   }, 120_000);
 });
 
