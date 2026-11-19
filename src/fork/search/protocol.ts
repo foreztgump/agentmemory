@@ -12,6 +12,7 @@ export const SEARCH_FN = {
   clear: "search::clear",
   health: "search::health",
   lookup: "search::lookup",
+  maxVersion: "search::max-version",
 } as const;
 
 /** Content hash of a document's indexed text; the fence a vector must match to be stored. */
@@ -33,6 +34,10 @@ export type ClearScope = "all" | "vectors";
  * Orders apply invocations. The worker drops an op whose version is older
  * than the last one it applied to that id, so an invocation that timed out
  * and completes after its retry cannot overwrite the retry or undo a delete.
+ * One writer process per store: versions order that writer's invocations,
+ * and a second writer's clock would interleave with them. Before its first
+ * write after a start, the writer seeds its clock above the highest stored
+ * version (search::max-version), so a clock behind the last run's still wins.
  */
 export type OpVersion = number;
 
@@ -44,10 +49,16 @@ export function nextOpVersion(): OpVersion {
   return lastVersion;
 }
 
+export function seedOpVersion(version: OpVersion): void {
+  if (Number.isSafeInteger(version) && version > lastVersion) lastVersion = version;
+}
+
+export interface MaxVersionResult { version: OpVersion }
+
 export interface ApplyRequest { ops: Op[]; version?: OpVersion }
 export interface ApplyResult {
   applied: number;
-  /** Vectors dropped because the record changed or was deleted after embedding started. */
+  /** Vector changes dropped because the record changed, was deleted, or holds a newer invocation's version. */
   fenced: string[];
   failed: Array<{ id: string; error: string }>;
 }

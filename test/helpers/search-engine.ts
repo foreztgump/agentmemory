@@ -9,6 +9,7 @@ export const QDRANT_URL = process.env.QDRANT_URL;
 export function engineClient(engine: SearchEngine, oversampling = 6): SearchWorkerClient {
   return {
     apply: (ops, version) => engine.apply(ops, version),
+    maxVersion: () => engine.maxVersion(),
     lookup: (ids) => engine.lookup(ids),
     keyword: (query, limit, layer) => engine.keyword(query, limit, layer),
     vector: (f32b64, limit, layer) => engine.vector(f32b64, limit, layer, oversampling),

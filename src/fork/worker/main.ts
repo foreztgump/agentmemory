@@ -41,6 +41,7 @@ const handlers: Record<(typeof SEARCH_FN)[keyof typeof SEARCH_FN], (data: never)
     return { ok: true };
   },
   [SEARCH_FN.health]: async () => engine.health(),
+  [SEARCH_FN.maxVersion]: async () => ({ version: await engine.maxVersion() }),
 };
 
 for (const [id, handler] of Object.entries(handlers)) worker.registerFunction(id, handler as (data: unknown) => Promise<unknown>);

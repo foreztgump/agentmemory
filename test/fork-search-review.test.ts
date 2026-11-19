@@ -125,7 +125,7 @@ describe("am-search worker boundary", () => {
     const { qdrant, requests } = stubQdrant(true);
     await qdrant.ensure();
     const indexed = requests.filter((r) => r.method === "PUT" && r.path.endsWith("/index")).map((r) => (r.body as { field_name: string }).field_name);
-    expect(indexed.sort()).toEqual(["ad", "dense", "dl", "layer", "session_id", "ts"]);
+    expect(indexed.sort()).toEqual(["ad", "dense", "dl", "layer", "session_id", "ts", "v"]);
   });
 });
 

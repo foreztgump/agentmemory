@@ -4,6 +4,7 @@ import { extractTerms } from "../../state/term-extraction.js";
 import { logger } from "../../logger.js";
 import {
   nextOpVersion,
+  seedOpVersion,
   type ApplyResult,
   type ContentRev,
   type DocOp,
@@ -21,7 +22,7 @@ import { pointId, type Qdrant } from "./qdrant.js";
 interface ScoredPoint { id: string; score: number; payload?: { doc_id?: string; session_id?: string } }
 interface RecordPoint {
   id: string;
-  payload?: { doc_id?: string; session_id?: string; layer?: string; rev?: string; deleted?: boolean; terms?: unknown };
+  payload?: { doc_id?: string; session_id?: string; layer?: string; rev?: string; deleted?: boolean; terms?: unknown; v?: unknown };
 }
 
 const HIT_PAYLOAD = ["doc_id", "session_id"];
@@ -32,8 +33,6 @@ const LAYERS: SearchResultLayer[] = ["memory", "observation", "lesson", "insight
 // the mean they were computed with; BM25 rankings barely move inside it.
 const AVGDL_DRIFT = 0.1;
 const REWEIGHT_PAGE = 256;
-/** How long a keyword search waits for a reweighting pass before ranking with the weights it finds. */
-const REWEIGHT_WAIT_MS = 1000;
 const DL_FACET_LIMIT = 100_000;
 
 /**
@@ -56,14 +55,8 @@ function meanLength(docs: string[][]): number | null {
   return total > 0 ? total / docs.length : null;
 }
 
-async function within(promise: Promise<void>, ms: number): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([promise, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
-  clearTimeout(timer);
-}
-
 function layerFilter(layer: SearchLayer): unknown {
-  return layer === "all" ? undefined : { must: [{ key: "layer", match: { value: layer } }] };
+  return { ...(layer === "all" ? {} : { must: [{ key: "layer", match: { value: layer } }] }), must_not: [TOMBSTONE] };
 }
 
 const MISSING_VECTOR_FILTER = {
@@ -107,8 +100,45 @@ export class SearchEngine {
   private avgdl: number | null = null;
   private corpusChanged = false;
   private reweighting: Promise<void> | null = null;
+  /** Bumped when clear("all") drops the collection; a reweighting pass from before it stops. */
+  private collectionEpoch = 0;
+  private versionFloor: Promise<unknown> | null = null;
 
   constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number) {}
+
+  /** The highest version stored, tombstones included; this process's own stamps start above it. */
+  async maxVersion(): Promise<OpVersion> {
+    await this.ready();
+    const res = await this.qdrant.call<{ points: Array<{ payload?: { v?: unknown } }> }>("POST", `${this.qdrant.path}/points/scroll`, {
+      filter: { must: [{ key: "v", range: { gte: 1 } }] },
+      order_by: { key: "v", direction: "desc" },
+      limit: 1,
+      with_payload: ["v"],
+      with_vector: false,
+    });
+    const version = validVersion(res.points?.[0]?.payload?.v) ?? 0;
+    seedOpVersion(version);
+    return version;
+  }
+
+  /** A caller's version, or one stamped here above every version stored. */
+  private async versionFor(rawVersion: unknown): Promise<OpVersion> {
+    const version = validVersion(rawVersion);
+    if (version !== null) {
+      seedOpVersion(version);
+      return version;
+    }
+    await (this.versionFloor ??= this.maxVersion().catch((error) => {
+      this.versionFloor = null;
+      throw error;
+    }));
+    return nextOpVersion();
+  }
+
+  /** Resolves once no reweighting pass is running. */
+  async settled(): Promise<void> {
+    while (this.reweighting) await this.reweighting;
+  }
 
   /** Every call waits for the collection and its payload indexes; a facet before the index exists fails. */
   private ready(): Promise<void> {
@@ -126,7 +156,7 @@ export class SearchEngine {
    * deleted is dropped (reported in `fenced`).
    */
   async apply(rawOps: unknown[], rawVersion?: unknown): Promise<ApplyResult> {
-    const version = validVersion(rawVersion) ?? nextOpVersion();
+    const version = await this.versionFor(rawVersion);
     const failed: ApplyResult["failed"] = [];
     const ops: Op[] = [];
     for (const op of rawOps) {
@@ -142,9 +172,9 @@ export class SearchEngine {
       else if (op.k === "vec" && !writtenFirst.has(op.id)) lookup.add(op.id);
     }
     await this.ready();
-    const stored = await this.storedRevs([...lookup]);
+    const stored = await this.storedPayloads([...lookup]);
     const rev = new Map<string, ContentRev | null>();
-    const revOf = (id: string) => (rev.has(id) ? rev.get(id)! : stored.get(id) ?? null);
+    const revOf = (id: string) => (rev.has(id) ? rev.get(id)! : stored.get(id)?.rev ?? null);
     const terms = new Map<DocOp, string[]>();
     for (const op of ops) if (op.k === "doc") terms.set(op, extractTerms(op.fields));
     const avgdl = terms.size > 0 ? await this.writeAvgdl([...terms.values()]) : this.fallbackAvgdl;
@@ -197,7 +227,7 @@ export class SearchEngine {
           break;
         }
         case "vec-del":
-          vecDeletes.push(id);
+          vecDeletes.push(op.id);
           break;
       }
       applied++;
@@ -209,34 +239,38 @@ export class SearchEngine {
         // Inserts new points and replaces older tombstones; a live point keeps its dense vector.
         { upsert: { points: docPoints, update_filter: { must: [TOMBSTONE, notNewerThan(version)] } } },
         ...docPayloads,
-        { update_vectors: { points: docWeights, update_filter: { must: [claimedNow] } } },
+        { update_vectors: { points: docWeights, update_filter: { must: [claimedNow], must_not: [TOMBSTONE] } } },
       );
     }
     if (tombstones.length > 0) operations.push({ upsert: { points: tombstones, update_filter: notNewerThan(version) } });
     if (vecPoints.length > 0) {
       operations.push(
         ...vecClaims,
-        { update_vectors: { points: vecPoints, update_filter: { must: [claimedNow] } } },
-        { set_payload: { payload: { dense: true }, filter: { must: [{ has_id: vecPoints.map((p) => p.id) }, claimedNow] } } },
+        { update_vectors: { points: vecPoints, update_filter: { must: [claimedNow], must_not: [TOMBSTONE] } } },
+        { set_payload: { payload: { dense: true }, filter: { must: [{ has_id: vecPoints.map((p) => p.id) }, claimedNow], must_not: [TOMBSTONE] } } },
       );
     }
     if (vecDeletes.length > 0) {
-      const claimed = { must: [{ has_id: vecDeletes }, claimedNow] };
+      const ids = vecDeletes.map(pointId);
+      const claimed = { must: [{ has_id: ids }, claimedNow], must_not: [TOMBSTONE] };
       operations.push(
-        { set_payload: { payload: { v: version }, filter: { must: [{ has_id: vecDeletes }, notNewerThan(version)], must_not: [TOMBSTONE] } } },
+        { set_payload: { payload: { v: version }, filter: { must: [{ has_id: ids }, notNewerThan(version)], must_not: [TOMBSTONE] } } },
         { delete_vectors: { filter: claimed, vector: ["dense"] } },
         { set_payload: { payload: { dense: false }, filter: claimed } },
       );
     }
     if (operations.length > 0) await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, { operations });
     if (terms.size > 0 || ops.some((op) => op.k === "del")) this.corpusDidChange();
-    if (written.length > 0) {
-      const now = await this.storedRevs(written.map((w) => w.id));
-      for (const w of written) {
-        if (now.get(w.id) === w.rev) continue;
-        fenced.push(w.id);
-        applied--;
-      }
+    // A vector change applied only if its claim held: the point is live and carries this version.
+    // A vector delete on a tombstone or an absent point leaves no vector either way.
+    if (written.length > 0 || vecDeletes.length > 0) {
+      const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes])]);
+      const lost = [
+        ...written.filter((w) => { const p = now.get(w.id); return !(p && !p.deleted && p.rev === w.rev && p.v === version); }).map((w) => w.id),
+        ...vecDeletes.filter((id) => { const p = now.get(id); return p !== undefined && !p.deleted && p.v !== version; }),
+      ];
+      fenced.push(...lost);
+      applied -= lost.length;
     }
     return { applied, fenced, failed };
   }
@@ -258,18 +292,18 @@ export class SearchEngine {
     );
   }
 
-  private async storedRevs(docIds: string[]): Promise<Map<string, ContentRev>> {
-    const revs = new Map<string, ContentRev>();
-    if (docIds.length === 0) return revs;
+  private async storedPayloads(docIds: string[]): Promise<Map<string, { rev?: ContentRev; v?: unknown; deleted?: boolean }>> {
+    const payloads = new Map<string, { rev?: ContentRev; v?: unknown; deleted?: boolean }>();
+    if (docIds.length === 0) return payloads;
     const points = await this.qdrant.call<RecordPoint[]>("POST", `${this.qdrant.path}/points`, {
       ids: docIds.map(pointId),
-      with_payload: ["doc_id", "rev"],
+      with_payload: ["doc_id", "rev", "v", "deleted"],
       with_vector: false,
     });
-    for (const p of points) {
-      if (p.payload?.doc_id && typeof p.payload.rev === "string") revs.set(p.payload.doc_id, p.payload.rev as ContentRev);
+    for (const { payload: p } of points) {
+      if (p?.doc_id) payloads.set(p.doc_id, { rev: typeof p.rev === "string" ? (p.rev as ContentRev) : undefined, v: p.v, deleted: p.deleted === true });
     }
-    return revs;
+    return payloads;
   }
 
   /**
@@ -313,10 +347,12 @@ export class SearchEngine {
   }
 
   private async reweightWhileChanging(): Promise<void> {
-    while (this.corpusChanged) {
+    const epoch = this.collectionEpoch;
+    while (this.corpusChanged && epoch === this.collectionEpoch) {
       this.corpusChanged = false;
       try {
         const mean = await this.corpusMean();
+        if (epoch !== this.collectionEpoch) return;
         if (mean === null) continue;
         if (this.avgdl === null || Math.abs(mean / this.avgdl - 1) > AVGDL_DRIFT) this.avgdl = mean;
         await this.reweight(this.avgdl);
@@ -327,6 +363,7 @@ export class SearchEngine {
   }
 
   private async reweight(avgdl: number): Promise<void> {
+    const epoch = this.collectionEpoch;
     const filter = {
       must_not: [{ is_empty: { key: "terms" } }, { key: "ad", range: { gte: avgdl * (1 - AVGDL_DRIFT), lte: avgdl * (1 + AVGDL_DRIFT) } }],
     };
@@ -339,9 +376,10 @@ export class SearchEngine {
         with_payload: ["terms", "rev"],
         with_vector: false,
       });
+      if (epoch !== this.collectionEpoch) return;
       const operations = page.points.flatMap(({ id, payload }) => {
         const { terms, rev } = payload ?? {};
-        if (!Array.isArray(terms) || typeof rev !== "string") return [];
+        if (!Array.isArray(terms) || !terms.every((term) => typeof term === "string") || typeof rev !== "string") return [];
         // Keyed on rev, not v: the stored terms are the content of that rev, whichever op wrote it.
         const same = [{ key: "rev", match: { value: rev } }];
         return [
@@ -351,7 +389,7 @@ export class SearchEngine {
       });
       if (operations.length > 0) await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, { operations });
       offset = page.next_page_offset ?? undefined;
-    } while (offset);
+    } while (offset && epoch === this.collectionEpoch);
   }
 
   async keyword(query: unknown, limit: unknown, layer: unknown): Promise<Hit[]> {
@@ -360,7 +398,6 @@ export class SearchEngine {
     if (sparse.indices.length === 0) return [];
     await this.ready();
     if (this.avgdl === null) this.corpusDidChange();
-    if (this.reweighting) await within(this.reweighting, REWEIGHT_WAIT_MS);
     const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", `${this.qdrant.path}/points/query`, {
       query: sparse,
       using: "bm25",
@@ -390,7 +427,7 @@ export class SearchEngine {
     const byLayer = (value: SearchResultLayer) => ({ must: [{ key: "layer", match: { value } }] });
     const [docs, vectors, memories, lessons, missingVectors] = await Promise.all([
       this.qdrant.count(LIVE_DOCS),
-      this.qdrant.count({ must: [{ key: "dense", match: { value: true } }] }),
+      this.qdrant.count({ must: [{ key: "dense", match: { value: true } }], must_not: [TOMBSTONE] }),
       this.qdrant.count(byLayer("memory")),
       this.qdrant.count(byLayer("lesson")),
       this.qdrant.count(MISSING_VECTOR_FILTER),
@@ -432,6 +469,8 @@ export class SearchEngine {
     if (scope === "all") {
       await this.ready();
       await this.qdrant.drop();
+      this.collectionEpoch++;
+      this.corpusChanged = false;
       this.ensured = null;
       this.avgdl = null;
       await this.ready();

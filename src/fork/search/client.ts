@@ -8,6 +8,7 @@ import {
   type Hit,
   type HitsResult,
   type LookupResult,
+  type MaxVersionResult,
   type Op,
   type OpVersion,
   type ScanMissingResult,
@@ -18,6 +19,8 @@ import {
 /** The whole search::* protocol as the app worker sees it. */
 export interface SearchWorkerClient {
   apply(ops: Op[], version?: OpVersion): Promise<ApplyResult>;
+  /** The highest version stored. A client without it (a test double) leaves the clock unseeded. */
+  maxVersion?(): Promise<OpVersion>;
   /** Live documents among ids; unknown and deleted ids are absent. */
   lookup(ids: string[]): Promise<LookupResult["items"]>;
   keyword(query: string, limit: number, layer: SearchLayer): Promise<Hit[]>;
@@ -38,6 +41,7 @@ export function iiiSearchClient(sdk: IIIClient): SearchWorkerClient {
     sdk.trigger<unknown, T>({ function_id, payload, timeoutMs });
   return {
     apply: (ops, version) => call<ApplyResult>(SEARCH_FN.apply, { ops, version }, WRITE_TIMEOUT_MS),
+    maxVersion: async () => (await call<MaxVersionResult>(SEARCH_FN.maxVersion, {})).version,
     lookup: async (ids) => (await call<LookupResult>(SEARCH_FN.lookup, { ids })).items,
     keyword: async (query, limit, layer) => (await call<HitsResult>(SEARCH_FN.keyword, { query, limit, layer }, SEARCH_TIMEOUT_MS)).hits,
     vector: async (f32b64, limit, layer) => (await call<HitsResult>(SEARCH_FN.vector, { f32b64, limit, layer }, SEARCH_TIMEOUT_MS)).hits,

@@ -1,7 +1,7 @@
 import type { SearchResultLayer } from "../../state/search-layer.js";
 import { logger } from "../../logger.js";
 import type { SearchWorkerClient } from "./client.js";
-import { nextOpVersion, type ClearScope, type ContentRev, type DelOp, type DocOp, type Op, type VecDelOp, type VecOp } from "./protocol.js";
+import { nextOpVersion, seedOpVersion, type ClearScope, type ContentRev, type DelOp, type DocOp, type Op, type VecDelOp, type VecOp } from "./protocol.js";
 
 export interface OutboxLimits {
   maxOps: number;
@@ -46,7 +46,7 @@ function slotBytes(slot: Slot): number {
 export interface OutboxCounters {
   /** Ops dropped because the outbox hit its cap while the worker was unreachable. A healthy worker never loses a write here. */
   spilled: number;
-  /** Vectors the worker refused because their record changed after embedding started. */
+  /** Vector changes the worker refused because their revision or invocation lost its claim. */
   fenced: number;
   /** Ops the worker rejected as malformed. */
   failed: number;
@@ -67,6 +67,7 @@ export class SearchOutbox {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private flushing: Promise<void> | null = null;
   private failures = 0;
+  private versionFloor: Promise<void> | null = null;
   private waiters: Array<{ target: number; resolve: () => void }> = [];
   readonly counters: OutboxCounters = { spilled: 0, fenced: 0, failed: 0 };
 
@@ -200,6 +201,12 @@ export class SearchOutbox {
       try {
         // A fresh version per invocation: a retry outranks the attempt it replaces if that one still lands.
         const ops = batch.flatMap(([, slot]) => [slot.doc, slot.vec].filter((op): op is Op => op !== undefined));
+        // Before the first send, versions start above any stored: the clock may be behind the last process's.
+        // A failed read fails the send, so the batch stays queued and the read retries with it.
+        await (this.versionFloor ??= this.seedVersionFloor().catch((error: unknown) => {
+          this.versionFloor = null;
+          throw error;
+        }));
         const result = await this.client.apply(ops, nextOpVersion());
         this.failures = 0;
         this.counters.fenced += result.fenced.length;
@@ -215,6 +222,11 @@ export class SearchOutbox {
       }
       this.notify();
     }
+  }
+
+  private async seedVersionFloor(): Promise<void> {
+    const floor = await this.client.maxVersion?.();
+    if (floor !== undefined) seedOpVersion(floor);
   }
 
   private take(): Array<[string, Slot]> {
@@ -281,7 +293,8 @@ export class SearchOutbox {
   // While the worker is unreachable the heap bound is the invariant: the
   // index is derived from the records, so dropped writes are repaired by
   // reconcile rather than kept here. A healthy worker drains a burst of any
-  // size, and a write queued after the last failed send is never dropped.
+  // size. While it is unreachable the cap wins and the oldest queued writes
+  // go first, including writes queued after the last failed send.
   // ponytail: a healthy burst is held in full until it drains; backpressure
   // on the bulk paths (indexRecords) would bound it if an import outgrows the heap.
   private spill(throughSeq: number): void {

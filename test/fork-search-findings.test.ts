@@ -287,6 +287,7 @@ describe.skipIf(!live)("finding 4: keyword ranking tracks the in-memory index", 
       for (let i = 0; i < 10; i++) add(obs(`obs_long_${q}_${i}`, Array(5).fill(word).join(" "), Array(14).fill("padding").join(" ")));
     }
     await runtime.outbox.drainFor(30_000);
+    await r.engine.settled();
     let overlap = 0;
     for (let q = 0; q < 20; q++) {
       const word = "quartzmarker" + q;

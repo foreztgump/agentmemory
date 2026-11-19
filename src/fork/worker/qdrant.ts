@@ -72,6 +72,7 @@ export class Qdrant {
       ["dense", "bool"],
       ["dl", "integer"],
       ["ad", "float"],
+      ["v", "integer"],
     ] as const) {
       await this.call("PUT", `${this.path}/index?wait=true`, { field_name, field_schema });
     }

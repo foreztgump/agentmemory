@@ -106,3 +106,38 @@ it("uses the best-effort search timeout without shortening other calls", async (
     { function_id: SEARCH_FN.clear, timeoutMs: 60_000 },
   ]);
 });
+
+describe("the outbox seeds its versions above the stored ones", () => {
+  it("retries the floor read with the batch while it fails, then reads it once per outbox", async () => {
+    vi.useFakeTimers();
+    const floor = Date.now() * 1000 + 3_600_000_000;
+    const maxVersion = vi.fn(async () => floor);
+    maxVersion.mockRejectedValueOnce(new Error("worker unavailable"));
+    const apply = vi.fn(async (ops: Op[], _version?: number) => applied(ops));
+    const outbox = new SearchOutbox({ apply, maxVersion } as unknown as SearchWorkerClient, limits);
+    outbox.put(doc("first"));
+    const firstDrain = outbox.drainFor(1000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(maxVersion).toHaveBeenCalledTimes(1);
+    expect(apply).not.toHaveBeenCalled();
+    expect(outbox.pending).toBe(1);
+    await vi.runAllTimersAsync();
+    await firstDrain;
+    expect(maxVersion).toHaveBeenCalledTimes(2);
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply.mock.calls[0]![1]).toBeGreaterThan(floor);
+
+    outbox.put(doc("second"));
+    const secondDrain = outbox.drainFor(1000);
+    await vi.runAllTimersAsync();
+    await secondDrain;
+    expect(maxVersion).toHaveBeenCalledTimes(2);
+    expect(apply.mock.calls[1]![1]).toBeGreaterThan(apply.mock.calls[0]![1]!);
+  });
+
+  it("reads the floor with the read timeout", async () => {
+    const trigger = vi.fn(async (_request: { function_id: string; payload: unknown; timeoutMs: number }) => ({ version: 42 }));
+    expect(await iiiSearchClient({ trigger } as never).maxVersion!()).toBe(42);
+    expect(trigger.mock.calls[0]![0]).toMatchObject({ function_id: SEARCH_FN.maxVersion, timeoutMs: 10_000 });
+  });
+});
