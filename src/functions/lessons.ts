@@ -41,7 +41,7 @@ export async function resetLessonIndex(changedIds?: readonly string[]): Promise<
   const disk = getSearchRuntime().lessons;
   if (!disk) return clearLessonIndex();
   if (!lessonKv || !changedIds) {
-    logger.warn("lesson index not converged: disk mode needs the changed lesson ids", { registered: !!lessonKv });
+    logger.warn(lessonKv ? "lesson index not converged: disk mode needs the changed lesson ids" : "lesson index not converged: lesson KV is not registered", { registered: !!lessonKv });
     return;
   }
   await convergeLessons(disk, lessonKv, changedIds);

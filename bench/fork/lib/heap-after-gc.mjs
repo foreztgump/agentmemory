@@ -19,7 +19,11 @@ ws.onmessage = (e) => {
   const msg = JSON.parse(e.data);
   if (pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
 };
-const send = (method, params = {}) => new Promise((resolve) => { pending.set(++id, resolve); ws.send(JSON.stringify({ id, method, params })); });
+const send = (method, params = {}) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error(`${method} got no reply in 30 s`)), 30_000);
+  pending.set(++id, (msg) => { clearTimeout(timer); resolve(msg); });
+  ws.send(JSON.stringify({ id, method, params }));
+});
 await send("HeapProfiler.collectGarbage");
 await send("HeapProfiler.collectGarbage");
 const usage = await send("Runtime.getHeapUsage");

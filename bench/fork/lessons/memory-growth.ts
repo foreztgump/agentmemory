@@ -75,7 +75,7 @@ function sample() {
   const heap = JSON.parse(execFileSync("docker", ["exec", "-i", args.container!, "node", "-", pid!], { input: readFileSync(new URL("../lib/heap-after-gc.mjs", import.meta.url)), encoding: "utf8" })) as { heapUsedBytes: number };
   return {
     agentmemoryHeapAfterGcMiB: +(heap.heapUsedBytes / 2 ** 20).toFixed(1),
-    agentmemoryWorkerRssMiB: pick(/dist\/index\.mjs/),
+    agentmemoryWorkerRssMiB: pick(/^node \S*dist\/index\.mjs/),
     amSearchRssMiB: pick(/fork\/worker\/main\.mjs/, false),
     containerAnonMiB: +anon.toFixed(1),
   };
