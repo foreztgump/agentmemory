@@ -9,6 +9,8 @@ import type { RemoteKeywordIndex, RemoteVectorStore } from "./remote-index.js";
 const BATCH = 32;
 const FIRST_DELAY_MS = 10_000;
 const IDLE_MS = 30_000;
+/** Between pages that yielded nothing to embed, so a backlog of cooled-down or unindexable ids is not rescanned in a tight loop. */
+const SKIP_PAGE_MS = 1000;
 const MAX_BACKOFF_MS = 5 * 60_000;
 /** An id whose embedding failed is left alone this long, so one bad record cannot spend the quota in a loop. */
 const COOLDOWN_MS = 10 * 60_000;
@@ -82,6 +84,7 @@ export class ReembedLoop {
     try {
       const page = await client.scanMissingVectors(this.cursor, Math.min(BATCH, perMinute));
       this.cursor = page.next;
+      for (const [id, until] of this.cooldown) if (until <= started) this.cooldown.delete(id);
       const candidates = page.items.filter((item) => (this.cooldown.get(item.id) ?? 0) <= started && !vector.has(item.id));
       await keyword.prefetch(candidates.map((item) => item.id));
       const jobs: Parameters<ServiceHooks["embedBatch"]>[0] = [];
@@ -95,7 +98,7 @@ export class ReembedLoop {
         jobs.push({ id: item.id, sessionId: item.sessionId, text: doc.embedText, context: { kind, logId: item.id } });
       }
       if (jobs.length === 0) {
-        if (page.next) return 0;
+        if (page.next) return SKIP_PAGE_MS;
         this.state = "idle";
         return IDLE_MS;
       }
@@ -109,11 +112,11 @@ export class ReembedLoop {
       } else {
         this.failures = 0;
       }
-      for (const [id, until] of this.cooldown) if (until <= Date.now()) this.cooldown.delete(id);
       const pace = (jobs.length * 60_000) / perMinute - (Date.now() - started);
       return Math.max(0, pace, this.backoffMs());
     } catch (err) {
       this.failures++;
+      this.state = health.ok ? "idle" : "paused-degraded";
       logger.warn("vector re-embed step failed; retrying with backoff", { error: err instanceof Error ? err.message : String(err) });
       return this.backoffMs();
     }

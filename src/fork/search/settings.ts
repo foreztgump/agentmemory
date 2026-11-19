@@ -59,8 +59,8 @@ export interface MaintenanceSettings {
 function wholeAtLeastZero(env: Record<string, string | undefined>, name: string, fallback: number): number {
   const raw = env[name]?.trim();
   if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name}=${raw} must be a whole number of 0 or more`);
+  const value = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(value)) throw new Error(`${name}=${raw} must be a whole number of 0 or more`);
   return value;
 }
 

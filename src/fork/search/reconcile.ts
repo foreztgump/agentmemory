@@ -202,6 +202,7 @@ export class Reconciler {
       }
       for (const key of this.outstanding.keys()) if (key !== "memories" && !known.has(key)) this.outstanding.delete(key);
       for (const key of this.settled.keys()) if (!known.has(key)) this.settled.delete(key);
+      for (const key of this.verifiedAt.keys()) if (key !== "memories" && !known.has(key)) this.verifiedAt.delete(key);
       if (results.some(([u]) => u.kind === "memories")) {
         this.memoriesDue = false;
         this.spillsSeen = spills;

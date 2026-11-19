@@ -459,31 +459,21 @@ export class SearchEngine {
   }
 
   async scanMissingVectors(cursor: unknown, limit: unknown): Promise<ScanMissingResult> {
-    await this.ready();
-    const res = await this.qdrant.call<{ points: RecordPoint[]; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
-      filter: MISSING_VECTOR_FILTER,
-      limit: clampLimit(limit),
-      ...(typeof cursor === "string" ? { offset: cursor } : {}),
-      with_payload: ["doc_id", "session_id", "layer", "rev"],
-      with_vector: false,
-    });
-    const items = res.points.flatMap((p) => {
-      const { doc_id, session_id, layer, rev } = p.payload ?? {};
-      return doc_id && isSearchResultLayer(layer) && typeof rev === "string"
-        ? [{ id: doc_id, sessionId: session_id ?? "", layer, rev: rev as ContentRev }]
-        : [];
-    });
-    return { items, ...(res.next_page_offset ? { next: res.next_page_offset } : {}) };
+    return this.scrollStubs(MISSING_VECTOR_FILTER, cursor, limit);
   }
 
   /** One page of live docs: a session's observations, or every memory when sessionId is not a string. */
   async scanDocs(sessionId: unknown, cursor: unknown, limit: unknown): Promise<ScanDocsResult> {
-    await this.ready();
     const must = typeof sessionId === "string"
       ? [{ key: "layer", match: { value: "observation" } }, { key: "session_id", match: { value: sessionId } }]
       : [{ key: "layer", match: { value: "memory" } }];
+    return this.scrollStubs({ must, must_not: [TOMBSTONE] }, cursor, limit);
+  }
+
+  private async scrollStubs(filter: unknown, cursor: unknown, limit: unknown): Promise<ScanDocsResult> {
+    await this.ready();
     const res = await this.qdrant.call<{ points: RecordPoint[]; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
-      filter: { must, must_not: [TOMBSTONE] },
+      filter,
       limit: clampLimit(limit),
       ...(typeof cursor === "string" ? { offset: cursor } : {}),
       with_payload: ["doc_id", "session_id", "layer", "rev"],

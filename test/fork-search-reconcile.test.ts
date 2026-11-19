@@ -7,6 +7,7 @@ import { pointId, type Qdrant } from "../src/fork/worker/qdrant.js";
 import { createDiskSearchRuntime, type DiskSearchRuntime } from "../src/fork/search/runtime.js";
 import type { SearchWorkerClient } from "../src/fork/search/client.js";
 import { diffDocs } from "../src/fork/search/reconcile.js";
+import { ReembedLoop } from "../src/fork/search/reembed.js";
 import { BackendHealth } from "../src/fork/search/health.js";
 import { searchBackendProblems, type ServiceHooks } from "../src/fork/search/backend-status.js";
 import { contentRev, type ContentRev, type DocStub } from "../src/fork/search/protocol.js";
@@ -72,6 +73,28 @@ describe("maintenance settings", () => {
   it("rejects a negative or fractional value at boot", () => {
     expect(() => loadMaintenanceSettings({ AM_SEARCH_REEMBED_PER_MINUTE: "-1" })).toThrow(/AM_SEARCH_REEMBED_PER_MINUTE/);
     expect(() => loadMaintenanceSettings({ AM_SEARCH_RECONCILE_INTERVAL_MS: "1.5" })).toThrow(/AM_SEARCH_RECONCILE_INTERVAL_MS/);
+    expect(() => loadMaintenanceSettings({ AM_SEARCH_REEMBED_PER_MINUTE: "0x10" })).toThrow(/AM_SEARCH_REEMBED_PER_MINUTE/);
+  });
+});
+
+describe("ReembedLoop pacing without a worker", () => {
+  it("waits before the next page when a page has nothing to embed, instead of rescanning at once", async () => {
+    const client = { scanMissingVectors: async () => ({ items: [{ id: "obs_gone", sessionId: "s", layer: "observation", rev: "r" }], next: "cursor" }) };
+    const keyword = { prefetch: async () => {}, has: () => false, revOf: () => undefined, add: () => {} };
+    const vector = { has: () => false };
+    const loop = new ReembedLoop({ client, keyword, vector, health: new BackendHealth(), perMinute: 120 } as never);
+    loop.start({ kv: mockKV() as never, embedBatch: async () => ({ ok: 0, fail: 0, skipped: 0 }), embeddingEnabled: () => true });
+    loop.stop();
+    expect(await loop.step()).toBeGreaterThan(0);
+  });
+
+  it("reports idle, not running, after a step that failed", async () => {
+    const client = { scanMissingVectors: async () => { throw new Error("worker gone"); } };
+    const loop = new ReembedLoop({ client, keyword: {}, vector: { has: () => false }, health: new BackendHealth(), perMinute: 120 } as never);
+    loop.start({ kv: mockKV() as never, embedBatch: async () => ({ ok: 0, fail: 0, skipped: 0 }), embeddingEnabled: () => true });
+    loop.stop();
+    await loop.step();
+    expect(loop.report().state).toBe("idle");
   });
 });
 
