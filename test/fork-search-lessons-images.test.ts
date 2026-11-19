@@ -37,7 +37,7 @@ function workerSdk(engines: WorkerEngines) {
 function makeEngines() {
   const qdrants = {
     docs: qdrantFor(collectionName(base, "docs")),
-    lessons: qdrantFor(collectionName(base, "lessons")),
+    lessons: qdrantFor(collectionName(base, "lessons"), DIMS, "lessons"),
     images: qdrantFor(collectionName(base, "images"), IMAGE_DIMS, "image"),
   };
   const engines: WorkerEngines = {

@@ -2,12 +2,12 @@ import { registerWorker } from "iii-sdk";
 import { loadSearchWorkerSettings } from "../search/settings.js";
 import { SearchEngine } from "./engine.js";
 import { ImageEngine } from "./image-engine.js";
-import { Qdrant } from "./qdrant.js";
+import { Qdrant, type QdrantConfig } from "./qdrant.js";
 import { createSearchHandlers } from "./router.js";
 
 const env = process.env;
 const settings = loadSearchWorkerSettings(env);
-const qdrantFor = (collection: string, dimensions: number, layout?: "image") =>
+const qdrantFor = (collection: string, dimensions: number, layout?: QdrantConfig["layout"]) =>
   new Qdrant({
     url: settings.qdrantUrl,
     apiKey: settings.qdrantApiKey,
@@ -20,7 +20,7 @@ const qdrantFor = (collection: string, dimensions: number, layout?: "image") =>
 const engine = new SearchEngine(qdrantFor(settings.collections.docs, settings.dimensions), settings.avgdl);
 const engines = {
   docs: engine,
-  lessons: new SearchEngine(qdrantFor(settings.collections.lessons, settings.dimensions), settings.avgdl),
+  lessons: new SearchEngine(qdrantFor(settings.collections.lessons, settings.dimensions, "lessons"), settings.avgdl),
   images: new ImageEngine(qdrantFor(settings.collections.images, settings.imageDimensions, "image")),
 };
 const engineUrl = env.III_ENGINE_URL || env.III_URL || `ws://localhost:${env.III_ENGINE_PORT || "49134"}`;

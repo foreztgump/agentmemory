@@ -1,7 +1,7 @@
 import type { SearchWorkerClient } from "../../src/fork/search/client.js";
 import type { SearchEngine } from "../../src/fork/worker/engine.js";
 import type { ImageEngine } from "../../src/fork/worker/image-engine.js";
-import { Qdrant } from "../../src/fork/worker/qdrant.js";
+import { Qdrant, type QdrantConfig } from "../../src/fork/worker/qdrant.js";
 
 export const DIMS = 16;
 export const QDRANT_URL = process.env.QDRANT_URL;
@@ -41,7 +41,7 @@ export function imageEngineClient(engine: ImageEngine): SearchWorkerClient {
   };
 }
 
-export function qdrantFor(collection: string, dimensions = DIMS, layout?: "image"): Qdrant {
+export function qdrantFor(collection: string, dimensions = DIMS, layout?: QdrantConfig["layout"]): Qdrant {
   return new Qdrant({ url: QDRANT_URL!, apiKey: process.env.QDRANT_API_KEY, collection, dimensions, oversampling: 6, timeoutMs: 30_000, layout });
 }
 

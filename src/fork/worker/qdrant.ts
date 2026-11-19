@@ -7,8 +7,7 @@ export interface QdrantConfig {
   dimensions: number;
   oversampling: number;
   timeoutMs: number;
-  /** The collection's shape: `text` is the docs and lessons layout, `image` one exact-search image vector. Default text. */
-  layout?: "text" | "image";
+  layout?: "text" | "lessons" | "image";
 }
 
 const TEXT_INDEXES = [
@@ -92,6 +91,9 @@ export class Qdrant {
   private async createPayloadIndexes(): Promise<void> {
     for (const [field_name, field_schema] of this.config.layout === "image" ? IMAGE_INDEXES : TEXT_INDEXES) {
       await this.call("PUT", `${this.path}/index?wait=true`, { field_name, field_schema });
+    }
+    if (this.config.layout === "lessons") {
+      await this.call("PUT", `${this.path}/index?wait=true`, { field_name: "terms", field_schema: "keyword" });
     }
   }
 
