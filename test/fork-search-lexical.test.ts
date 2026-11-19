@@ -36,7 +36,7 @@ describe("lessons lexical Qdrant requests", () => {
     vi.spyOn(qdrant, "ensure").mockResolvedValue();
     vi.spyOn(qdrant, "drop").mockResolvedValue();
     vi.spyOn(qdrant, "count").mockResolvedValue(2);
-    const vocabulary = Array.from({ length: 1025 }, (_, i) => ({ value: `redis${i}`, count: 1 }));
+    const vocabulary = Array.from({ length: 1025 }, (_, i) => ({ value: i === 1 || i === 2 ? `zebra${i}` : `redis${i}`, count: 1 }));
     const call = vi.spyOn(qdrant, "call").mockImplementation(async (_method, path, raw) => {
       const body = raw as { key?: string; limit?: number; offset?: string };
       if (path.endsWith("/facet")) {
@@ -57,13 +57,13 @@ describe("lessons lexical Qdrant requests", () => {
     expect(facets()).toHaveLength(2);
     await engine.apply([], 1000);
     await engine.keyword("redis", 50, "all");
-    expect(facets()).toHaveLength(4);
+    expect(facets()).toHaveLength(3);
     await engine.clear("vectors");
     await engine.keyword("redis", 50, "all");
-    expect(facets()).toHaveLength(6);
+    expect(facets()).toHaveLength(4);
     await engine.clear("all");
     await engine.keyword("redis", 50, "observation");
-    expect(facets()).toHaveLength(8);
+    expect(facets()).toHaveLength(5);
     const requests = call.mock.calls.filter(([, path]) => path.endsWith("/points/scroll"));
     expect(requests[0]![2]).toMatchObject({ filter: { must: [{ key: "terms", match: { any: expect.arrayContaining([...queryTerms("redis").map(({ term }) => term), "redis1024"]) } }], must_not: [TOMBSTONE] }, with_vector: false });
     expect(requests[1]![2]).toMatchObject({ offset: "next" });

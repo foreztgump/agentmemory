@@ -34,6 +34,7 @@ const LAYERS: SearchResultLayer[] = ["memory", "observation", "lesson", "insight
 const AVGDL_DRIFT = 0.1;
 const REWEIGHT_PAGE = 256;
 const DL_FACET_LIMIT = 100_000;
+const LESSON_TERMS_FILTER_LIMIT = 1024;
 
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
 
@@ -84,6 +85,7 @@ function opError(op: unknown): string | null {
 export class SearchEngine {
   private ensured: Promise<void> | null = null;
   private vocabulary: Promise<Map<string, number>> | null = null;
+  private lastVocabularySize = 0;
   /** The mean document length new BM25 weights are computed with; null until read from the collection. */
   private avgdl: number | null = null;
   private corpusChanged = false;
@@ -411,7 +413,7 @@ export class SearchEngine {
   }
 
   private async readVocabulary(): Promise<Map<string, number>> {
-    let limit = 1024;
+    let limit = Math.max(1024, 2 * this.lastVocabularySize);
     for (;;) {
       const { hits } = await this.qdrant.call<{ hits: Array<{ value: string; count: number }> }>("POST", `${this.qdrant.path}/facet`, {
         key: "terms",
@@ -419,7 +421,10 @@ export class SearchEngine {
         exact: true,
         limit,
       });
-      if (hits.length < limit) return new Map(hits.map(({ value, count }) => [value, count]));
+      if (hits.length < limit) {
+        this.lastVocabularySize = hits.length;
+        return new Map(hits.map(({ value, count }) => [value, count]));
+      }
       limit *= 2;
     }
   }
@@ -435,15 +440,15 @@ export class SearchEngine {
     ]);
     if (count === 0 || averageLength === null) return [];
     const expanded = expandLexicalTerms(weightedTerms, frequencies);
-    const terms = [...new Set(expanded.flatMap(({ term, prefixes }) => [term, ...prefixes]))];
+    const terms = new Set(expanded.flatMap(({ term, prefixes }) => [term, ...prefixes]));
     const filter = {
       must: [
-        { key: "terms", match: { any: terms } },
+        ...(terms.size <= LESSON_TERMS_FILTER_LIMIT ? [{ key: "terms", match: { any: [...terms] } }] : []),
         ...(layer === "all" ? [] : [{ key: "layer", match: { value: layer } }]),
       ],
       must_not: [TOMBSTONE],
     };
-    // ponytail: scores every live lesson that holds a query term or one of its prefix expansions, as SearchIndex does, so per-query work grows with matching lessons; cap candidates by top sparse hits if lesson counts reach the tens of thousands.
+    // ponytail: above the 1024-term filter ceiling, scroll every live lesson; retained candidates still grow with matching lessons. Upgrade to disk-backed postings and exact top-K scoring for larger corpora.
     const documents: Array<LexicalDocument & { order: [number, number] }> = [];
     let offset: string | undefined;
     do {
@@ -456,7 +461,9 @@ export class SearchEngine {
       });
       for (const { payload } of page.points) {
         if (!payload?.doc_id || typeof payload.dl !== "number" || !Array.isArray(payload.terms) || !payload.terms.every((term) => typeof term === "string")) continue;
-        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: payload.terms, dl: payload.dl, order: payload.lexical_order ?? [0, 0] });
+        const matchedTerms = payload.terms.filter((term) => terms.has(term));
+        if (matchedTerms.length === 0) continue;
+        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: matchedTerms, dl: payload.dl, order: payload.lexical_order ?? [0, 0] });
       }
       offset = page.next_page_offset ?? undefined;
     } while (offset);

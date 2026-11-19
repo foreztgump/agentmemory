@@ -56,9 +56,12 @@ export interface KeywordIndexPort {
   ): number;
 }
 
-export interface LessonIndexPort extends KeywordIndexPort {
+export interface LessonIndexPort {
+  add(obs: CompressedObservation, layer?: SearchResultLayer): void;
   /** add() that sends nothing when the index already holds this content, so strengthening a lesson costs no write. */
   addIfChanged(obs: CompressedObservation, layer?: SearchResultLayer): void;
+  remove(id: string): void;
+  search(query: string, limit?: number, layer?: SearchLayer): MaybePromise<ScoredId[]>;
 }
 
 export interface VectorStorePort {

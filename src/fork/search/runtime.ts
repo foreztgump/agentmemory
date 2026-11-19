@@ -1,7 +1,7 @@
 import { logger } from "../../logger.js";
 import { SHUTDOWN_FLUSH_TIMEOUT_MS } from "../../shutdown.js";
 import type { IndexPersistenceStatus, PendingReplayResult, VectorLoadResult } from "../../state/index-persistence.js";
-import { registerSearchBackend, type IndexPersistencePort, type SearchRuntime } from "../../state/search-ports.js";
+import { registerSearchBackend, type IndexPersistencePort, type LessonIndexPort, type SearchRuntime } from "../../state/search-ports.js";
 import { iiiSearchClient, type SearchWorkerClient } from "./client.js";
 import { RemoteImageIndex } from "./images.js";
 import { DocLedger, SearchOutbox } from "./outbox.js";
@@ -57,7 +57,7 @@ export class DiskIndexPersistence implements IndexPersistencePort {
 export interface DiskSearchRuntime extends SearchRuntime<RemoteKeywordIndex, RemoteVectorStore, DiskIndexPersistence> {
   readonly outbox: SearchOutbox;
   readonly stats: StatsCache;
-  readonly lessons?: RemoteKeywordIndex;
+  readonly lessons?: LessonIndexPort;
   readonly images?: RemoteImageIndex;
   /** Every outbox this runtime writes through: docs first, then lessons and images when present. */
   readonly outboxes: readonly SearchOutbox[];
