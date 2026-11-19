@@ -1,0 +1,17 @@
+# Voyage overlay for the end-to-end recall eval (bench/fork/qdrant/eval-voyage.sh): agentmemory
+# gets a second network with internet access and the real key from VOYAGE_API_KEY. Every other
+# replica container stays on the internal network. Boot embeds at most one missing vector
+# (AGENTMEMORY_VECTOR_BACKFILL_MAX, whose minimum is 1) and re-embedding stays off, so the
+# Voyage calls are the eval's query embeddings.
+services:
+  agentmemory:
+    networks: [replica, egress]
+    environment:
+      EMBEDDING_PROVIDER: voyage
+      VOYAGE_API_KEY: "${VOYAGE_API_KEY:?set VOYAGE_API_KEY}"
+      VOYAGE_MODEL: voyage-code-4
+      AGENTMEMORY_VECTOR_BACKFILL_MAX: "1"
+      AM_SEARCH_REEMBED_PER_MINUTE: "0"
+
+networks:
+  egress: {}

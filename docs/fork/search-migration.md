@@ -127,3 +127,5 @@ bench/fork/replica.sh client env MIGRATE_STORE_URL=redis://:<replica pw>@kvrocks
   AM_QDRANT_API_KEY=replica-dummy-qdrant-key node --import tsx scripts/fork/search-migrate.ts fill
 # the same with verify, then bench/fork/qdrant/recall-migrated.ts for recall@10 against brute force
 ```
+
+The end-to-end eval with query embeddings (AC4) runs the memory-mode baseline, the migration and the disk-mode eval on one replica, and tears it down: `VOYAGE_API_KEY=… AM_IMAGE=<image> bench/fork/qdrant/eval-voyage.sh <backup-dir> <cases.json> <out-dir>`, holding the replica lock. Only agentmemory gets a network with internet access (`bench/fork/replica-voyage.yml`). Voyage receives one query embedding per case per run and at most one boot backfill embedding; the migration makes none. With 100 private cases that is 200 query embeddings of 8,236 characters in total. `EVAL_KEYWORD_ONLY=1` runs the same steps with no provider and no key.
