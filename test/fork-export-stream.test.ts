@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerExportImportFunction, EXPORT_COLLECTIONS } from "../src/functions/export-import.js";
-import { streamExport, PART_BYTES, STREAM_COLLECTIONS } from "../src/fork/export-stream.js";
+import { streamExport, PART_BYTES, STREAM_COLLECTIONS, EXPORT_STREAM_FORMAT } from "../src/fork/export-stream.js";
 import { runExportCommand, runImportCommand, verifyExportFile } from "../src/fork/cli-export-import.js";
 import { SAFE_PAYLOAD_BYTES } from "../src/state/frame-guard.js";
 import { KV } from "../src/state/schema.js";
@@ -318,6 +318,15 @@ describe("review fixes", () => {
     const file = join(dir, "early-error.ndjson");
     const log: string[] = [];
     const fetchImpl = async () => streamResponse(['{"t":"error","message":"kv unavailable"}']);
+    expect(await runExportCommand({ base: "http://src", args: [file], log: (l) => log.push(l), fetchImpl })).toBe(1);
+    expect(log.join("\n")).toMatch(/kv unavailable/);
+  });
+
+  it("export reports the server's error when it arrives after the end line", async () => {
+    const file = join(dir, "late-error.ndjson");
+    const log: string[] = [];
+    const header = JSON.stringify({ t: "header", format: EXPORT_STREAM_FORMAT, v: 1, version: "0", exportedAt: "2026-11-19T00:00:00Z" });
+    const fetchImpl = async () => streamResponse([header, '{"t":"end","parts":0,"rows":{}}', '{"t":"error","message":"kv unavailable"}']);
     expect(await runExportCommand({ base: "http://src", args: [file], log: (l) => log.push(l), fetchImpl })).toBe(1);
     expect(log.join("\n")).toMatch(/kv unavailable/);
   });
