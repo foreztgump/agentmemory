@@ -534,6 +534,7 @@ export class SearchEngine {
       await this.ready();
       await this.qdrant.drop();
       this.vocabulary = null;
+      this.lastVocabularySize = 0;
       this.collectionEpoch++;
       this.corpusChanged = false;
       this.ensured = null;

@@ -30,7 +30,7 @@ export async function diskLessonCandidates(
   return { hits, lessonOf: (id) => records.get(id) };
 }
 
-/** Repairs these ids from KV, re-sending live lessons even when the ledger already holds their revision. Idempotent. */
+/** Repairs these ids from KV, re-sending live lessons even when the ledger already holds their revision: the ledger records a write when it is queued, and the outbox can drop it. Idempotent. */
 export async function convergeLessons(index: LessonIndexPort, kv: StateKV, ids: readonly string[]): Promise<void> {
   const unique = [...new Set(ids)];
   if (unique.length === 0) return;

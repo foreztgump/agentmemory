@@ -25,6 +25,10 @@ const base = Number(args.base);
 const factor = Number(args.factor);
 if (!Number.isInteger(base) || base < 1) throw new Error(`--base=${args.base} must be a positive integer`);
 if (!Number.isFinite(factor) || factor <= 1) throw new Error(`--factor=${args.factor} must be greater than 1`);
+const recallCount = Number(args.recalls);
+const settleSeconds = Number(args.settle);
+if (!Number.isInteger(recallCount) || recallCount < 1) throw new Error(`--recalls=${args.recalls} must be a positive integer`);
+if (!Number.isFinite(settleSeconds) || settleSeconds < 0) throw new Error(`--settle=${args.settle} must be zero or more seconds`);
 
 const rand = mulberry32(1167);
 const SYL = ["ka", "vo", "mi", "ru", "te", "so", "la", "pe", "zu", "ni", "do", "fa", "gi", "bo", "ye", "wu"];
@@ -83,16 +87,16 @@ function sample() {
   };
 }
 
-const settle = () => new Promise((r) => setTimeout(r, Number(args.settle) * 1000));
+const settle = () => new Promise((r) => setTimeout(r, settleSeconds * 1000));
 
 // Warm-up: one full round at the base size, so the first sample is not a cold worker.
 await saveUntil(base);
-await recalls(Number(args.recalls));
+await recalls(recallCount);
 const steps = [1, 2.5, 5, factor].filter((m, i, xs) => m <= factor && xs.indexOf(m) === i);
 const series: Array<{ lessons: number; recallHits: number } & ReturnType<typeof sample>> = [];
 for (const m of steps) {
   await saveUntil(Math.round(base * m));
-  const recallHits = await recalls(Number(args.recalls));
+  const recallHits = await recalls(recallCount);
   await settle();
   series.push({ lessons: saved, recallHits, ...sample() });
 }

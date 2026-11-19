@@ -63,7 +63,7 @@ describe("lessons lexical Qdrant requests", () => {
     expect(facets()).toHaveLength(4);
     await engine.clear("all");
     await engine.keyword("redis", 50, "observation");
-    expect(facets()).toHaveLength(5);
+    expect(facets().slice(4).map(([, , body]) => (body as { limit: number }).limit)).toEqual([1024, 2048]);
     const requests = call.mock.calls.filter(([, path]) => path.endsWith("/points/scroll"));
     expect(requests[0]![2]).toMatchObject({ filter: { must: [{ key: "terms", match: { any: expect.arrayContaining([...queryTerms("redis").map(({ term }) => term), "redis1024"]) } }], must_not: [TOMBSTONE] }, with_vector: false });
     expect(requests[1]![2]).toMatchObject({ offset: "next" });
