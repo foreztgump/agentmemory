@@ -4,6 +4,7 @@ import { decodeCursor, encodeCursor } from './list-query.js'
 import { resolveGraphScope, notifyGraphGenerationChange } from './graph-generation.js'
 import { ensureGraphConsistency, noteGraphSnapshotWrite } from './graph-consistency.js'
 import { withGraphIndexMutation, withGraphSnapshotIndexBarrier, withGraphSnapshotUnknownMutation } from './graph-retrieval-index.js'
+import { isRedisListTimeout } from '../fork/kv/list-timeout.js'
 
 export type StateBackend = 'file' | 'redis'
 
@@ -200,10 +201,17 @@ export class StateKV {
   async list<T = unknown>(scope: string): Promise<T[]> {
     scope = await resolveGraphScope(this, scope)
     await ensureGraphConsistency(this, scope)
-    const values = await this.sdk.trigger<{ scope: string }, T[]>({
-      function_id: 'state::list',
-      payload: { scope },
-    })
+    let values: T[]
+    try {
+      values = await this.sdk.trigger<{ scope: string }, T[]>({
+        function_id: 'state::list',
+        payload: { scope },
+      })
+    } catch (error) {
+      if (this.backend !== 'redis' || !isRedisListTimeout(error)) throw error
+      const keys = await this.rawListKeys(scope)
+      values = (await this.rawGetMany<T>(scope, keys, 16)).filter((value): value is T => value !== null && value !== undefined)
+    }
     if (this.backend !== 'redis' || !Array.isArray(values)) return values
     return orderLikeInsertion(values)
   }
