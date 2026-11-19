@@ -5,6 +5,7 @@ import { resolveGraphScope, notifyGraphGenerationChange } from './graph-generati
 import { ensureGraphConsistency, noteGraphSnapshotWrite } from './graph-consistency.js'
 import { withGraphIndexMutation, withGraphSnapshotIndexBarrier, withGraphSnapshotUnknownMutation } from './graph-retrieval-index.js'
 import { isRedisListTimeout } from '../fork/kv/list-timeout.js'
+import { logger } from '../logger.js'
 
 export type StateBackend = 'file' | 'redis'
 
@@ -209,6 +210,7 @@ export class StateKV {
       })
     } catch (error) {
       if (this.backend !== 'redis' || !isRedisListTimeout(error)) throw error
+      logger.warn('state::list timed out on the redis store; reading the scope by keys', { scope })
       const keys = await this.rawListKeys(scope)
       values = (await this.rawGetMany<T>(scope, keys, 16)).filter((value): value is T => value !== null && value !== undefined)
     }

@@ -28,12 +28,14 @@ export function parseReply(buffer: Buffer, start: number): Parsed {
     case 0x3a: return { value: Number(line), end: next };
     case 0x24: {
       const length = Number(line);
+      if (!Number.isInteger(length)) throw new Error(`malformed RESP bulk length ${JSON.stringify(line)}`);
       if (length < 0) return { value: null, end: next };
       if (buffer.length < next + length + 2) return null;
       return { value: buffer.subarray(next, next + length), end: next + length + 2 };
     }
     case 0x2a: {
       const count = Number(line);
+      if (!Number.isInteger(count)) throw new Error(`malformed RESP array length ${JSON.stringify(line)}`);
       if (count < 0) return { value: null, end: next };
       const items: Reply[] = [];
       let at = next;
@@ -121,7 +123,7 @@ export async function connectRedis(url: string, timeoutMs = 60_000): Promise<Red
   const parsed = new URL(url);
   if (parsed.protocol !== "redis:") throw new Error(`only redis:// URLs are supported, got ${parsed.protocol}`);
   if (parsed.pathname && parsed.pathname !== "/" && parsed.pathname !== "/0") throw new Error("only database 0 is supported");
-  const socket = netConnect(Number(parsed.port || 6379), parsed.hostname);
+  const socket = netConnect(Number(parsed.port || 6379), parsed.hostname.replace(/^\[|\]$/g, ""));
   await new Promise<void>((resolve, reject) => socket.once("connect", resolve).once("error", reject));
   const client = new Connection(socket, timeoutMs);
   if (parsed.password) {

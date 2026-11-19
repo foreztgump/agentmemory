@@ -149,6 +149,17 @@ describe("kvrocks migration", () => {
     expect(broken.extraKeys).toEqual(["state:mem:extra"]);
   });
 
+  it("fails verify while copy has not finished, even when the copied part matches", async () => {
+    const source = new FakeRedis(sourceStore());
+    const target = new FakeRedis(new Map(), "kv");
+    await copy(source, target, options);
+    const [someKey] = [...target.data.keys()].filter((key) => key !== MARKER_KEY);
+    target.data.get(MARKER_KEY)!.set(`cursor:${someKey}`, Buffer.from("0"));
+    const result = await verify(source, target, { page: 50, rate: 1, full: true });
+    expect(result.incomplete).toBe(1);
+    expect(result.ok).toBe(false);
+  });
+
   it("samples the same fields on every run", () => {
     const fields = Array.from({ length: 2000 }, (_, i) => Buffer.from(`obs_${i}`));
     const picked = fields.filter((f) => isSampled("state:mem:obs:s", f, 32));
@@ -169,6 +180,10 @@ describe("kvrocks migration", () => {
     expect(family("state:mem:audit:2026-11")).toBe("mem:audit:<month>");
     expect(family("state:mem:memories")).toBe("mem:memories");
     expect(family("stream:mem-live:viewer")).toBe("stream:mem-live:viewer");
+    expect(family("state:mem:enriched:ses_9")).toBe("mem:enriched:<session>");
+    expect(family("state:mem:latent:obs_9")).toBe("mem:latent:<obs>");
+    expect(family("state:mem:team:t1:shared")).toBe("mem:team:<team>:shared");
+    expect(family("state:mem:team:t1:users:u7")).toBe("mem:team:<team>:users:<user>");
   });
 });
 
@@ -183,6 +198,8 @@ describe("RESP client", () => {
     expect(parsed.end).toBe(frame.length);
     expect(parsed.value).toEqual([Buffer.from([0, 0xff, 10]), null, 42, [Buffer.from("OK")]]);
     expect(parseReply(Buffer.from("-ERR nope\r\n"), 0)!.value).toBeInstanceOf(RespError);
+    expect(() => parseReply(Buffer.from("$x\r\nabc\r\n"), 0)).toThrow(/malformed/);
+    expect(() => parseReply(Buffer.from("*?\r\n"), 0)).toThrow(/malformed/);
   });
 
   it("authenticates, pipelines over split chunks and rejects server errors", async () => {

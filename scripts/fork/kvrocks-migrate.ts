@@ -24,6 +24,8 @@
 // A source restart invalidates HSCAN cursors, so unfinished hashes restart from
 // cursor 0 when the source's run_id differs from the one recorded.
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { connectRedis, redactUrl, type Arg, type Redis, type Reply } from "./lib/resp.js";
 
@@ -62,13 +64,17 @@ export function family(key: string): string {
   const scope = key.startsWith("state:") ? key.slice(6) : key;
   const rules: Array<[RegExp, string]> = [
     [/^mem:obs:.+/, "mem:obs:<session>"],
+    [/^mem:enriched:.+/, "mem:enriched:<session>"],
+    [/^mem:latent:.+/, "mem:latent:<obs>"],
+    [/^mem:team:[^:]+:(shared|profile)$/, "mem:team:<team>:$1"],
+    [/^mem:team:[^:]+:users:.+/, "mem:team:<team>:users:<user>"],
     [/^mem:index:bm25:vec:\d+$/, "mem:index:bm25:vec:<bucket>"],
     [/^mem:idx:obs:\d+$/, "mem:idx:obs:<shard>"],
     [/^mem:capture:events:.+/, "mem:capture:events:<shard>"],
     [/^mem:audit:\d{4}-\d{2}$/, "mem:audit:<month>"],
     [/^mem:emb:.+/, "mem:emb:<obs>"],
   ];
-  for (const [pattern, name] of rules) if (pattern.test(scope)) return name;
+  for (const [pattern, name] of rules) if (pattern.test(scope)) return scope.replace(pattern, name);
   return key.startsWith("state:") ? scope : key;
 }
 
@@ -78,7 +84,11 @@ async function scanKeys(redis: Redis, page: number): Promise<string[]> {
   do {
     const [next, batch] = (await redis.call("SCAN", cursor, "COUNT", String(page))) as [Buffer, Buffer[]];
     cursor = str(next);
-    for (const key of batch) keys.add(key.toString("utf8"));
+    for (const key of batch) {
+      const text = key.toString("utf8");
+      if (!Buffer.from(text, "utf8").equals(key)) throw new MigrateError(`key ${JSON.stringify(text)} is not valid UTF-8; the iii redis adapter writes text keys`, 2);
+      keys.add(text);
+    }
   } while (cursor !== "0");
   return [...keys].sort();
 }
@@ -141,7 +151,12 @@ export async function copy(source: Redis, target: Redis, options: CopyOptions): 
     const present = await targetHasKeys(target);
     if (present.length) throw new MigrateError(`target is not empty and has no ${MARKER_KEY} hash (keys: ${present.join(", ")}); use a fresh Kvrocks volume`, 3);
   } else {
-    const meta = JSON.parse(str(metaRaw)) as { sourceRunId: string };
+    let meta: { sourceRunId: string };
+    try {
+      meta = JSON.parse(str(metaRaw)) as { sourceRunId: string };
+    } catch {
+      throw new MigrateError(`${MARKER_KEY} field ${META_FIELD} is not JSON; delete the target volume and copy again`, 3);
+    }
     resetCursors = meta.sourceRunId !== runId;
     if (resetCursors) options.log(`source restarted since the last run (run_id changed); unfinished hashes restart from cursor 0`);
   }
@@ -173,7 +188,10 @@ export async function copy(source: Redis, target: Redis, options: CopyOptions): 
 }
 
 export async function status(target: Redis, keys: string[]): Promise<{ done: number; started: number; pending: number }> {
-  const states = await target.pipeline(keys.map((k) => ["HGET", MARKER_KEY, CURSOR_PREFIX + k]));
+  const states: Reply[] = [];
+  for (let i = 0; i < keys.length; i += 256) {
+    states.push(...(await target.pipeline(keys.slice(i, i + 256).map((k) => ["HGET", MARKER_KEY, CURSOR_PREFIX + k]))));
+  }
   const done = states.filter((s) => s !== null && str(s) === DONE).length;
   const started = states.filter((s) => s !== null && str(s) !== DONE).length;
   return { done, started, pending: keys.length - done - started };
@@ -295,7 +313,7 @@ export async function verify(source: Redis, target: Redis, options: VerifyOption
     return r;
   }).sort((a, b) => a.family.localeCompare(b.family));
   const incomplete = progress.started + progress.pending;
-  const ok = !missingKeys.length && !extraKeys.length && !countMismatches.length && !valueMismatches && families.every((f) => f.ok);
+  const ok = incomplete === 0 && !missingKeys.length && !extraKeys.length && !countMismatches.length && !valueMismatches && families.every((f) => f.ok);
   return { ok, families, missingKeys, extraKeys, countMismatches, valueMismatches, incomplete };
 }
 
@@ -310,7 +328,7 @@ function printVerify(result: VerifyResult): void {
   for (const k of result.missingKeys.slice(0, 20)) console.log(`missing at target: ${k}`);
   for (const k of result.extraKeys.slice(0, 20)) console.log(`only at target: ${k}`);
   for (const m of result.countMismatches.slice(0, 20)) console.log(`count differs: ${m}`);
-  if (result.incomplete) console.log(`note: ${result.incomplete} hashes are not marked done by copy`);
+  if (result.incomplete) console.log(`copy has not finished: ${result.incomplete} hashes are not marked done`);
   console.log(`VERIFY ${result.ok ? "OK" : "FAIL"} collections=${t.keys} records src=${t.src} dst=${t.dst} sampled=${t.sampled} value-mismatches=${result.valueMismatches} missing=${result.missingKeys.length} extra=${result.extraKeys.length} count-mismatches=${result.countMismatches.length}`);
 }
 
@@ -360,7 +378,7 @@ async function main(): Promise<number> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().then((code) => process.exit(code), (error) => {
     console.error(`kvrocks-migrate: ${(error as Error).message}`);
     process.exit(error instanceof MigrateError ? error.exitCode : 2);

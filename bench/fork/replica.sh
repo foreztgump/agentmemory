@@ -17,7 +17,7 @@
 #   replica.sh stop                      remove the replica but keep the worker cache volume
 #   replica.sh down                      remove every container, volume and network the replica created
 #
-# Settings (environment): AM_IMAGE (required for up/app), REPLICA_PROJECT (default amreplica),
+# Settings (environment): AM_IMAGE (required for up, app, kvrocks, migrate and client), REPLICA_PROJECT (default amreplica),
 # REPLICA_STORE (valkey or kvrocks, default valkey), KVROCKS_MEM_LIMIT, AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, AGENTMEMORY_SCOPE_GUARD, READY_TIMEOUT_S,
 # REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container).
 set -euo pipefail
@@ -138,6 +138,9 @@ migrate() {
 # Copy, verify, then leave Kvrocks as the only store: Valkey stops, and Kvrocks
 # restarts so its memory.peak no longer includes the import.
 to_kvrocks() {
+  if docker inspect "$(container agentmemory)" >/dev/null 2>&1; then
+    die "agentmemory exists and may write to Valkey; run replica.sh stop and load again before copying"
+  fi
   "${COMPOSE[@]}" --profile kvrocks up -d --wait kvrocks >&2
   local started=$SECONDS
   migrate copy >&2
