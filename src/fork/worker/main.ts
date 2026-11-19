@@ -5,6 +5,7 @@ import {
   type ClearRequest,
   type KeywordRequest,
   type LookupRequest,
+  type ScanDocsRequest,
   type ScanMissingRequest,
   type VectorRequest,
 } from "../search/protocol.js";
@@ -36,6 +37,7 @@ const handlers: Record<(typeof SEARCH_FN)[keyof typeof SEARCH_FN], (data: never)
   [SEARCH_FN.stats]: async () => engine.stats(),
   [SEARCH_FN.sessionCounts]: async () => ({ counts: await engine.sessionCounts() }),
   [SEARCH_FN.scanMissingVectors]: async (data: Partial<ScanMissingRequest>) => engine.scanMissingVectors(data?.cursor, data?.limit),
+  [SEARCH_FN.scanDocs]: async (data: Partial<ScanDocsRequest>) => engine.scanDocs(data?.sessionId, data?.cursor, data?.limit),
   [SEARCH_FN.clear]: async (data: Partial<ClearRequest>) => {
     await engine.clear(data?.scope);
     return { ok: true };

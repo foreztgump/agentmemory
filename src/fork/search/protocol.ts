@@ -13,6 +13,7 @@ export const SEARCH_FN = {
   health: "search::health",
   lookup: "search::lookup",
   maxVersion: "search::max-version",
+  scanDocs: "search::scan-docs",
 } as const;
 
 /** Content hash of a document's indexed text; the fence a vector must match to be stored. */
@@ -84,6 +85,11 @@ export interface ScanMissingResult {
   items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }>;
   next?: string;
 }
+
+/** Live documents of one session's observations, or of every memory when sessionId is absent. */
+export interface ScanDocsRequest { sessionId?: string; cursor?: string; limit: number }
+export interface DocStub { id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }
+export interface ScanDocsResult { items: DocStub[]; next?: string }
 
 export interface LookupRequest { ids: string[] }
 export interface LookupResult { items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }> }

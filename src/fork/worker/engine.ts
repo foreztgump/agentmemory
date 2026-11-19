@@ -13,6 +13,7 @@ import {
   type LookupResult,
   type Op,
   type OpVersion,
+  type ScanDocsResult,
   type ScanMissingResult,
   type StatsResult,
 } from "../search/protocol.js";
@@ -461,6 +462,28 @@ export class SearchEngine {
     await this.ready();
     const res = await this.qdrant.call<{ points: RecordPoint[]; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
       filter: MISSING_VECTOR_FILTER,
+      limit: clampLimit(limit),
+      ...(typeof cursor === "string" ? { offset: cursor } : {}),
+      with_payload: ["doc_id", "session_id", "layer", "rev"],
+      with_vector: false,
+    });
+    const items = res.points.flatMap((p) => {
+      const { doc_id, session_id, layer, rev } = p.payload ?? {};
+      return doc_id && isSearchResultLayer(layer) && typeof rev === "string"
+        ? [{ id: doc_id, sessionId: session_id ?? "", layer, rev: rev as ContentRev }]
+        : [];
+    });
+    return { items, ...(res.next_page_offset ? { next: res.next_page_offset } : {}) };
+  }
+
+  /** One page of live docs: a session's observations, or every memory when sessionId is not a string. */
+  async scanDocs(sessionId: unknown, cursor: unknown, limit: unknown): Promise<ScanDocsResult> {
+    await this.ready();
+    const must = typeof sessionId === "string"
+      ? [{ key: "layer", match: { value: "observation" } }, { key: "session_id", match: { value: sessionId } }]
+      : [{ key: "layer", match: { value: "memory" } }];
+    const res = await this.qdrant.call<{ points: RecordPoint[]; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
+      filter: { must, must_not: [TOMBSTONE] },
       limit: clampLimit(limit),
       ...(typeof cursor === "string" ? { offset: cursor } : {}),
       with_payload: ["doc_id", "session_id", "layer", "rev"],
