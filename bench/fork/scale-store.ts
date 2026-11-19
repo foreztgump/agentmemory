@@ -17,6 +17,7 @@ const { values: args } = parseArgs({
 if (!args.url) throw new Error("--url is required");
 const factor = Number(args.factor);
 const min = Number(args.min);
+if (!Number.isInteger(min) || min < 1) throw new Error("--min must be a positive integer");
 if (!Number.isInteger(factor) || factor < 2) throw new Error("--factor must be an integer of at least 2");
 
 const redis = await connectRedis(args.url);

@@ -215,7 +215,7 @@ export class StateKV {
       } catch (error) {
         if (!keys || !isRedisListTimeout(error)) throw error
         logger.warn('state::list timed out on the redis store; reading the scope by keys', { scope })
-        values = await this.readByKeys<T>(scope, keys)
+        values = await this.readByKeys<T>(scope, await this.rawListKeys(scope))
       }
     }
     if (this.backend !== 'redis' || !Array.isArray(values)) return values

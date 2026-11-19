@@ -33,7 +33,7 @@ async function timed(function_id, payload) {
     return { ms: Math.round(performance.now() - started), size: sizeOf(result) };
   } catch (error) {
     const message = String(error?.message ?? error);
-    return { ms: Math.round(performance.now() - started), error: /timed out/.test(message) ? "timeout" : message.slice(0, 200) };
+    return { ms: Math.round(performance.now() - started), error: /from Redis: .*timed out/.test(message) ? "timeout" : message.slice(0, 200) };
   }
 }
 
@@ -62,7 +62,7 @@ try {
     }
     if (keys >= listMin || first.error || first.ms >= 100) console.log(JSON.stringify(out));
   }
-  const worst = Math.max(...rows.map((row) => row.first.ms));
+  const worst = Math.max(0, ...rows.map((row) => row.first.ms));
   const timeouts = rows.filter((row) => row.first.error === "timeout").length;
   console.log(JSON.stringify({ op: "summary", scopes: rows.length, skipped: groups.groups.length - scopes.length, list_keys_timeouts: timeouts, list_keys_worst_ms: worst }));
 } finally {
