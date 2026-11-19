@@ -8,6 +8,8 @@ import { StateKV } from "../src/state/kv.js";
 import { KV } from "../src/state/schema.js";
 import { withObservationStats } from "../src/fork/kv/observation-stats.js";
 import { findUnindexedObservations, getSearchIndex, reconcileIndex, setIndexPersistence } from "../src/functions/search.js";
+import { trackedUnindexedObservations } from "../src/fork/index-reconcile.js";
+import type { KeywordIndexPort } from "../src/state/search-ports.js";
 import type { CompressedObservation, Session } from "../src/types.js";
 
 type Req = { function_id: string; payload: { scope: string; key: string; value?: unknown } };
@@ -213,5 +215,23 @@ describe("tracked index reconcile", () => {
     await expect(findUnindexedObservations(t.tracked.kv)).rejects.toThrow("boom");
     fail = false;
     expect((await findUnindexedObservations(t.tracked.kv)).missing.map((o) => o.id)).toEqual(["a"]);
+  });
+});
+
+describe("tracked index reconcile on a remote index", () => {
+  it("prefetches ids a cold remote index does not know before calling them missing", async () => {
+    const { kv } = makeKv(true);
+    await kv.set(KV.sessions, "s1", session("s1", 0));
+    await kv.set(KV.observations("s1"), "a", obs("a", "s1"));
+    await kv.set(KV.observations("s1"), "b", obs("b", "s1"));
+    const stored = new Set(["a"]);
+    const known = new Set<string>();
+    const remote = {
+      has: (id: string) => known.has(id),
+      prefetch: async (ids: readonly string[]) => { for (const id of ids) if (stored.has(id)) known.add(id); },
+      observationCountsBySession: async () => new Map([["s1", 0]]),
+    } as unknown as KeywordIndexPort;
+    const scan = await trackedUnindexedObservations(kv, remote, 0);
+    expect(scan?.missing.map((o) => o.id)).toEqual(["b"]);
   });
 });

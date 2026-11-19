@@ -11,6 +11,7 @@ export interface UnindexedScan {
 }
 
 async function unindexedRows(rows: CompressedObservation[], idx: KeywordIndexPort): Promise<CompressedObservation[]> {
+  await idx.prefetch?.(rows.map((obs) => obs.id));
   return rows.filter((obs) => obs.title && obs.narrative && !idx.has(obs.id));
 }
 
