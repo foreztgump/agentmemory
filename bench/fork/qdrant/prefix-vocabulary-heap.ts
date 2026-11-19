@@ -24,9 +24,9 @@ const started = performance.now();
 let slowestDocMs = 0;
 for (let i = 0; i < offer; i += 40) {
   const terms = Array.from({ length: Math.min(40, offer - i) }, (_, j) => `t${(i + j).toString(36)}_${((i + j) * 7919).toString(36)}`);
-  const doc = performance.now();
+  const docStart = performance.now();
   vocabulary.observe(terms);
-  slowestDocMs = Math.max(slowestDocMs, performance.now() - doc);
+  slowestDocMs = Math.max(slowestDocMs, performance.now() - docStart);
 }
 const observeMs = performance.now() - started;
 gc();
