@@ -284,8 +284,11 @@ export async function readVectors(store: Redis, plan: VectorPlan, ids: string[],
     const values = replies[s] as Array<Buffer | null>;
     fieldIds.forEach((id, i) => {
       const value = values[i];
-      const row = value == null ? null : source === "pending" ? parsePendingRow(id, value, dimensions) : parseBucketRow(id, value, dimensions);
-      const bytes = row && "bytes" in row ? row.bytes : null;
+      let bytes: Buffer | null = null;
+      if (value !== null) {
+        const row = source === "pending" ? parsePendingRow(id, value, dimensions) : parseBucketRow(id, value, dimensions);
+        if ("bytes" in row) bytes = row.bytes;
+      }
       if (!bytes || digestOf(bytes) !== plan.winners.get(id)!.digest) {
         throw new MigrateError(`the stored vector of ${id} changed during the migration; stop the app and run again`, 3);
       }
@@ -308,7 +311,7 @@ async function listUnits(store: Redis, page: number): Promise<Unit[]> {
 }
 
 /** The indexable records of a unit, page by page, as the keyword documents the app would write. */
-async function* unitDocs(store: Redis, unit: Unit, page: number): AsyncGenerator<ReturnType<typeof docOp>[]> {
+async function* unitDocs(store: Redis, unit: Unit, page: number, counts?: { unparsable: number }): AsyncGenerator<ReturnType<typeof docOp>[]> {
   for await (const pairs of hashPages(store, unit.key, page)) {
     const docs = [];
     for (const [, value] of pairs) {
@@ -316,6 +319,7 @@ async function* unitDocs(store: Redis, unit: Unit, page: number): AsyncGenerator
       try {
         row = JSON.parse(value.toString("utf8"));
       } catch {
+        if (counts) counts.unparsable++;
         continue;
       }
       const doc = docOfRecord(unit.kind, row);
@@ -325,8 +329,8 @@ async function* unitDocs(store: Redis, unit: Unit, page: number): AsyncGenerator
   }
 }
 
-/** fenced: documents left alone because a live write or delete is newer than the migration. */
-export interface UnitResult { docs: number; vectors: number; fenced: number }
+/** fenced: documents left alone because a live write or delete is newer than the migration; unparsable: records that are not JSON. */
+export interface UnitResult { docs: number; vectors: number; fenced: number; unparsable: number }
 
 // ---------------------------------------------------------------- fill
 
@@ -386,12 +390,12 @@ export async function fill(store: Redis, engine: SearchEngine, qdrant: Qdrant, o
   const states = await Promise.all(chunk(units, 256).map((part) => store.pipeline([["HMGET", MARKER_KEY, ...part.map((u) => UNIT_PREFIX + u.name)]])));
   states.forEach(([values], c) => (values as Array<Buffer | null>).forEach((v, i) => v !== null && done.add(units[c * 256 + i]!.name)));
 
-  const written: UnitResult = { docs: 0, vectors: 0, fenced: 0 };
+  const written: UnitResult = { docs: 0, vectors: 0, fenced: 0, unparsable: 0 };
   let finished = 0;
   for (const unit of units) {
     if (done.has(unit.name)) continue;
-    const result: UnitResult = { docs: 0, vectors: 0, fenced: 0 };
-    for await (const docs of unitDocs(store, unit, options.page)) {
+    const result: UnitResult = { docs: 0, vectors: 0, fenced: 0, unparsable: 0 };
+    for await (const docs of unitDocs(store, unit, options.page, result)) {
       const vectors = await readVectors(store, plan, docs.map((d) => d.id), options.dimensions);
       const loaded = await engine.load(docs.map((doc) => ({ doc, f32b64: vectors.get(doc.id)?.toString("base64") })), meta.version, meta.avgdl ?? undefined);
       if (loaded.failed.length > 0) throw new MigrateError(`load failed for ${loaded.failed.length} documents, first ${JSON.stringify(loaded.failed[0])}`, 3);
@@ -404,6 +408,7 @@ export async function fill(store: Redis, engine: SearchEngine, qdrant: Qdrant, o
     written.docs += result.docs;
     written.vectors += result.vectors;
     written.fenced += result.fenced;
+    written.unparsable += result.unparsable;
     if (++finished % 50 === 0) options.log(`${finished} units this run, ${written.docs} docs, ${written.vectors} vectors`);
   }
   return { version: meta.version, plan: plan.report, units: units.length, skipped: done.size, written };
@@ -636,16 +641,12 @@ async function main(): Promise<number> {
       return 0;
     }
     if (command === "fill") {
-      try {
-        const r = await fill(store, engine, qdrant, { page, dimensions, allowNonempty: args["allow-nonempty"], log });
-        log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them; ${((Date.now() - started) / 1000).toFixed(1)} s`);
-        const settling = Date.now();
-        await engine.settled();
-        log(`keyword weights settled in ${((Date.now() - settling) / 1000).toFixed(1)} s`);
-        return 0;
-      } finally {
-        await addEmbeddingCalls(store, guard.refused).catch(() => undefined);
-      }
+      const r = await fill(store, engine, qdrant, { page, dimensions, allowNonempty: args["allow-nonempty"], log });
+      log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them, ${r.written.unparsable} records not JSON; ${((Date.now() - started) / 1000).toFixed(1)} s`);
+      const settling = Date.now();
+      await engine.settled();
+      log(`keyword weights settled in ${((Date.now() - settling) / 1000).toFixed(1)} s`);
+      return 0;
     }
     const result = await verify(store, engine, qdrant, { page, dimensions, rate, guard });
     console.log(`VERIFY ${result.ok ? "OK" : "FAIL"}`);
@@ -653,6 +654,7 @@ async function main(): Promise<number> {
     log(`verify took ${((Date.now() - started) / 1000).toFixed(1)} s`);
     return result.ok ? 0 : 1;
   } finally {
+    if (guard.refused > 0) await addEmbeddingCalls(store, guard.refused).catch(() => undefined);
     store.close();
     guard.uninstall();
   }

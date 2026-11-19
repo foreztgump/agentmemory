@@ -20,7 +20,7 @@ export class FakeRedis implements Redis {
         const pattern = m >= 0 ? new RegExp(`^${rest[m + 1]!.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`) : null;
         const keys = [...this.data.keys()].filter((key) => !pattern || pattern.test(key)).sort();
         const at = Number(rest[0]);
-        const count = Number(rest[rest.indexOf("COUNT") + 1]);
+        const count = countOf(rest);
         const next = at + count >= keys.length ? 0 : at + count;
         return [Buffer.from(String(next)), keys.slice(at, at + count).map((x) => Buffer.from(x, "latin1"))];
       }
@@ -41,7 +41,7 @@ export class FakeRedis implements Redis {
       case "HSCAN": {
         const fields = [...(hash(rest[0]!)?.entries() ?? [])];
         const at = Number(rest[1]);
-        const count = Number(rest[rest.indexOf("COUNT") + 1]);
+        const count = countOf(rest);
         const next = at + count >= fields.length ? 0 : at + count;
         return [Buffer.from(String(next)), fields.slice(at, at + count).flatMap(([f, v]) => [Buffer.from(f, "latin1"), v])];
       }
@@ -56,4 +56,11 @@ export class FakeRedis implements Redis {
   }
 
   close(): void {}
+}
+
+function countOf(args: string[]): number {
+  const at = args.indexOf("COUNT");
+  const count = at >= 0 ? Number(args[at + 1]) : NaN;
+  if (!Number.isInteger(count) || count < 1) throw new Error("fake redis: SCAN and HSCAN need COUNT <positive integer>");
+  return count;
 }

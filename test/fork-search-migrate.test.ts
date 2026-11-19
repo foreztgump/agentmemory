@@ -156,9 +156,11 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
 
   it("loads documents and stored vectors and verifies them", async () => {
     const { qdrant, engine } = await setup("fill");
-    const store = new FakeRedis(fixture());
+    const data = fixture();
+    data.get("state:mem:obs:ses_1")!.set("obs_bad", Buffer.from("{not json"));
+    const store = new FakeRedis(data);
     const result = await fill(store, engine, qdrant, options);
-    expect(result.written).toEqual({ docs: 8, vectors: 4, fenced: 0 });
+    expect(result.written).toEqual({ docs: 8, vectors: 4, fenced: 0, unparsable: 1 });
     const checked = await verifyAll(store, engine, qdrant);
     expect(checked.lines.join("\n")).toContain("OK   vectors: stored-and-indexable 4 index 4; 3 stored vectors have no indexable record, 4 documents have no stored vector");
     expect(checked.ok, checked.lines.join("\n")).toBe(true);
@@ -188,7 +190,7 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     const last = await fill(store, engine, qdrant, options);
     expect(last.skipped).toBeGreaterThan(0);
     const again = await fill(store, engine, qdrant, options);
-    expect(again.written).toEqual({ docs: 0, vectors: 0, fenced: 0 });
+    expect(again.written).toEqual({ docs: 0, vectors: 0, fenced: 0, unparsable: 0 });
     expect(await qdrant.count()).toBe(8);
     const checked = await verifyAll(store, engine, qdrant);
     expect(checked.ok, checked.lines.join("\n")).toBe(true);
