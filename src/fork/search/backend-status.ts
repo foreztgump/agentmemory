@@ -66,8 +66,6 @@ export interface SearchBackendService {
   /** Probes the backend (bounded) and reads cached counters. */
   status(): Promise<SearchBackendStatus>;
   degradedNotice(): DegradedNotice | null;
-  /** True once a reconcile pass has finished, so the status page can take missing counts from it. */
-  readonly reconciled: boolean;
 }
 
 /** Provided by the app's search module at boot, so the fork code does not import it. */
@@ -95,6 +93,21 @@ export function searchBackendProblems(s: SearchBackendStatus | null | undefined)
       code: "search-reconcile-failing",
       message: `The search index reconcile failed: ${s.reconcile.error}.`,
       fix: "The next pass retries. Check the server log if this stays.",
+    });
+  }
+  if (s.missingDocuments === null && s.reconcile.state === "off") {
+    problems.push({
+      level: "info",
+      code: "search-documents-unchecked",
+      message: "Reconcile is off, so the search index is not checked for records it is missing.",
+      fix: "Set AM_SEARCH_RECONCILE_INTERVAL_MS above 0 to check and backfill them.",
+    });
+  } else if (s.missingDocuments === null && s.state === "healthy") {
+    problems.push({
+      level: "info",
+      code: "search-reconcile-pending",
+      message: "The first reconcile pass since start has not finished, so missing search documents are not counted yet.",
+      fix: "No action needed. The count appears when the pass ends; on an empty index that is the time it takes to fill it.",
     });
   }
   if (s.missingDocuments !== null && s.missingDocuments > 0) {

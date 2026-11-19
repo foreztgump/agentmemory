@@ -151,6 +151,7 @@ export class Reconciler {
       await outbox.drainFor(1000);
       const counts = new Map(await client.sessionCounts());
       const sessionIds = await scanRows<Session, string>(kv, KV.sessions, (s) => s.id);
+      this.state = { ...this.state, sessions: sessionIds.length };
       const known = new Set(sessionIds);
       const units: Unit[] = [];
       for (const id of counts.keys()) if (!known.has(id)) units.push({ kind: "gone", sessionId: id });

@@ -60,10 +60,6 @@ export class DiskBackendService implements SearchBackendService {
     };
   }
 
-  get reconciled(): boolean {
-    return this.parts.reconciler.missing() !== null;
-  }
-
   degradedNotice(): DegradedNotice | null {
     const now = this.parts.health.current;
     if (now.ok) return null;

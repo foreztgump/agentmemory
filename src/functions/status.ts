@@ -342,7 +342,7 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
       message: "The keyword index is still rebuilding from stored data, so the check for observations missing from search waits until it finishes.",
       fix: "No action needed. The check runs on the next health update after the rebuild.",
     });
-  } else if (missingObservations === null && !input.searchBackend?.missing) {
+  } else if (missingObservations === null && !input.searchBackend) {
     const backendTimedOut = input.searchBackendEnabled && !input.searchBackend;
     problems.push({
       level: "info",

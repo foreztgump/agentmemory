@@ -194,7 +194,7 @@ describe.skipIf(!QDRANT_URL)("reconcile on live Qdrant", () => {
     await putSession(r, "ses_b", [obs("obs_b1", "gamma", "ses_b")]);
     await r.kv.set(KV.memories, "mem_1", memory("mem_1", "delta"));
     r.runtime.service.start(hooks(r));
-    expect(r.runtime.service.reconciled).toBe(false);
+    expect(r.runtime.reconciler.missing()).toBeNull();
 
     await r.runtime.reconciler.runPass();
     expect(await liveIds(r, "ses_a")).toEqual(["obs_a1", "obs_a2"]);
@@ -484,7 +484,7 @@ describe.skipIf(!QDRANT_URL)("fix round on live Qdrant", () => {
     createSearchRuntime({ kv: r.kv as never, embeddingProvider: null }, "disk");
     r.runtime.service.start(hooks(r));
     await r.runtime.reconciler.runPass();
-    expect(r.runtime.service.reconciled).toBe(true);
+    expect(r.runtime.reconciler.missing()).not.toBeNull();
     const report = await createStatusReporter({ trigger: async () => null } as never, r.kv as never, {})({ health: null });
     expect(report.index.sessions).toBe(2);
     expect(report.index.missingObservations).toBe(0);

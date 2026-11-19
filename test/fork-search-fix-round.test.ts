@@ -21,7 +21,7 @@ describe("status timeout attribution (#14)", () => {
       registerSearchBackend("disk", () => ({
         ...runtime,
         backend: "disk",
-        service: { reconciled: true, status: () => new Promise(() => {}) } as never,
+        service: { status: () => new Promise(() => {}) } as never,
       }));
       createSearchRuntime({ kv: kv as never, embeddingProvider: null }, "disk");
     } else {
@@ -64,7 +64,7 @@ describe("status in disk mode before a reconcile pass has finished (restart diag
     registerSearchBackend("disk", () => ({
       ...runtime,
       backend: "disk",
-      service: { reconciled: false, status: async () => status } as never,
+      service: { status: async () => status } as never,
     }));
     createSearchRuntime({ kv: kv as never, embeddingProvider: null }, "disk");
     const report = await createStatusReporter({ trigger: async () => null } as never, kv as never, {})({ health: null });

@@ -405,8 +405,8 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         sdk.trigger({ function_id: "mem::graph-stats", payload: {} }) as Promise<GraphStatsInput>,
         STATUS_CHECK_TIMEOUT_MS,
       ),
-      // Once a search service has reconciled it reports what is missing; no scan per status call.
-      keywordRebuildRunning || searchService?.reconciled ? Promise.resolve(null) : cached ? Promise.resolve(cached) : valueWithin(scan.run(), STATUS_CHECK_TIMEOUT_MS),
+      // A search service's reconciler reports what is missing; this scan would hold every unindexed row of an empty index.
+      keywordRebuildRunning || searchService ? Promise.resolve(null) : cached ? Promise.resolve(cached) : valueWithin(scan.run(), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(
         kv.get<AuditMigrationState>(KV.auditMonths, AUDIT_MIGRATION_STATE_KEY),
         STATUS_CHECK_TIMEOUT_MS,
