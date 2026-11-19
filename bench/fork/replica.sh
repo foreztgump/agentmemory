@@ -3,6 +3,10 @@
 #
 #   replica.sh up <backup-dir|dump.rdb|none>  fresh volumes, load the snapshot, start agentmemory, wait until ready
 #   replica.sh valkey <backup-dir|dump.rdb|none>  same, but stop before starting agentmemory
+#                                        (with REPLICA_STORE=kvrocks it also runs `kvrocks` below)
+#   replica.sh kvrocks                   copy the loaded Valkey into Kvrocks (resumable), verify it,
+#                                        stop Valkey, and restart Kvrocks so its memory.peak starts fresh
+#   replica.sh migrate copy|verify|status [args]  run scripts/fork/kvrocks-migrate.ts on the replica network
 #   replica.sh app                       start agentmemory on the loaded Valkey and wait until ready
 #   replica.sh wait                      wait until the running agentmemory is ready
 #   replica.sh restart-valkey            restart Valkey and wait until it has loaded its AOF
@@ -14,7 +18,7 @@
 #   replica.sh down                      remove every container, volume and network the replica created
 #
 # Settings (environment): AM_IMAGE (required for up/app), REPLICA_PROJECT (default amreplica),
-# AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, AGENTMEMORY_SCOPE_GUARD, READY_TIMEOUT_S,
+# REPLICA_STORE (valkey or kvrocks, default valkey), KVROCKS_MEM_LIMIT, AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, AGENTMEMORY_SCOPE_GUARD, READY_TIMEOUT_S,
 # REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container).
 set -euo pipefail
 
@@ -29,6 +33,9 @@ log() { echo "replica: $*" >&2; }
 
 container() { echo "${REPLICA_PROJECT}-$1-1"; }
 vcli() { docker exec "$(container valkey)" valkey-cli "$@"; }
+STORE="${REPLICA_STORE:-valkey}"
+[[ "$STORE" == valkey || "$STORE" == kvrocks ]] || die "REPLICA_STORE must be valkey or kvrocks"
+KVROCKS_URL="redis://:replica-dummy-kvrocks@kvrocks:6666"
 
 snapshot_rdb() {
   local src="$1"
@@ -90,6 +97,7 @@ load_valkey() {
   down
   docker volume create "${REPLICA_PROJECT}_valkey-data" >/dev/null
   docker volume create "${REPLICA_PROJECT}_agentmemory-data" >/dev/null
+  docker volume create "${REPLICA_PROJECT}_kvrocks-data" >/dev/null
   if [[ -n "$rdb" ]]; then
     log "copying snapshot into the Valkey volume"
     docker run --rm --network none -v "${REPLICA_PROJECT}_valkey-data:/data" -v "$(dirname "$rdb"):/src:ro" \
@@ -118,6 +126,25 @@ load_valkey() {
   done
   restart_valkey
   log "valkey loaded $(vcli dbsize | tr -d '\r') keys, AOF on"
+  if [[ "$STORE" == kvrocks ]]; then to_kvrocks; fi
+}
+
+migrate() {
+  client_up
+  docker exec -i -e MIGRATE_SOURCE_URL=redis://valkey:6379 -e MIGRATE_TARGET_URL="$KVROCKS_URL" "$(container client)" \
+    node --import tsx scripts/fork/kvrocks-migrate.ts "$@"
+}
+
+# Copy, verify, then leave Kvrocks as the only store: Valkey stops, and Kvrocks
+# restarts so its memory.peak no longer includes the import.
+to_kvrocks() {
+  "${COMPOSE[@]}" --profile kvrocks up -d --wait kvrocks >&2
+  local started=$SECONDS
+  migrate copy >&2
+  log "copy took $((SECONDS - started)) s"
+  migrate verify >&2
+  "${COMPOSE[@]}" stop valkey >&2
+  "${COMPOSE[@]}" --profile kvrocks up -d --wait --force-recreate kvrocks >&2
 }
 
 # Restart Valkey so it loads from its AOF as production does after a restart,
@@ -169,12 +196,15 @@ wait_ready() {
 
 app() {
   : "${AM_IMAGE:?set AM_IMAGE}"
+  if [[ "$STORE" == kvrocks ]]; then export REPLICA_REDIS_URL="$KVROCKS_URL"; fi
   "${COMPOSE[@]}" --profile app up -d --no-recreate agentmemory >&2
   wait_ready
 }
 
 counts() {
-  docker exec "$(container valkey)" sh -c 'valkey-cli --scan --pattern "state:*" | while read -r k; do echo "$(valkey-cli hlen "$k") $k"; done' |
+  local cli=valkey-cli port=6379
+  if [[ "$STORE" == kvrocks ]]; then cli=redis-cli port=6666; fi
+  docker exec "$(container "$STORE")" sh -c '"$1" -p "$2" --scan --pattern "state:*" | while read -r k; do echo "$("$1" -p "$2" hlen "$k") $k"; done' sh "$cli" "$port" |
     sed -E 's/ state:/ /; s/^([0-9]+) mem:obs:.*/\1 mem:obs:<session>/; s/^([0-9]+) mem:index:bm25:vec:[0-9]+$/\1 mem:index:bm25:vec:<bucket>/;
             s/^([0-9]+) mem:idx:obs:[0-9]+$/\1 mem:idx:obs:<shard>/; s/^([0-9]+) mem:capture:events:.*/\1 mem:capture:events:<shard>/;
             s/^([0-9]+) mem:audit:[0-9]{4}-[0-9]{2}$/\1 mem:audit:<month>/; s/^([0-9]+) mem:emb:.*/\1 mem:emb:<obs>/' |
@@ -184,8 +214,8 @@ counts() {
 down() {
   docker rm -f "$(container client)" >/dev/null 2>&1 || true
   # The compose file requires AM_IMAGE; down never starts a container, so any value will do.
-  AM_IMAGE="${AM_IMAGE:-none}" "${COMPOSE[@]}" --profile app down -v --remove-orphans >/dev/null 2>&1 || true
-  docker volume rm "${REPLICA_PROJECT}_valkey-data" "${REPLICA_PROJECT}_agentmemory-data" >/dev/null 2>&1 || true
+  AM_IMAGE="${AM_IMAGE:-none}" "${COMPOSE[@]}" --profile app --profile kvrocks down -v --remove-orphans >/dev/null 2>&1 || true
+  docker volume rm "${REPLICA_PROJECT}_valkey-data" "${REPLICA_PROJECT}_agentmemory-data" "${REPLICA_PROJECT}_kvrocks-data" >/dev/null 2>&1 || true
 }
 
 case "${1:-}" in
@@ -193,6 +223,8 @@ case "${1:-}" in
   prefetch) prefetch_workers ;;
   valkey) [[ $# -ge 2 ]] || die "usage: replica.sh valkey <backup-dir|dump.rdb|none>"; load_valkey "$2" ;;
   app) app ;;
+  kvrocks) to_kvrocks ;;
+  migrate) shift; migrate "$@" ;;
   restart-valkey) restart_valkey ;;
   wait) wait_ready ;;
   counts) counts ;;

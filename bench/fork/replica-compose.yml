@@ -24,6 +24,28 @@ services:
       timeout: 3s
       retries: 300
 
+  # REPLICA_STORE=kvrocks: replica.sh copies the loaded Valkey into this
+  # service with scripts/fork/kvrocks-migrate.ts, stops Valkey and points
+  # agentmemory here. Same settings as deploy/coolify/docker-compose.yml.
+  kvrocks:
+    image: apache/kvrocks:2.17.0
+    profiles: [kvrocks]
+    command: [--requirepass, replica-dummy-kvrocks, --rocksdb.block_cache_size, "384", --rocksdb.write_buffer_size, "64",
+              --rocksdb.max_write_buffer_number, "2", --rocksdb.max_background_jobs, "2"]
+    mem_limit: "${KVROCKS_MEM_LIMIT:-1280m}"
+    memswap_limit: "${KVROCKS_MEM_LIMIT:-1280m}"
+    restart: "no"
+    networks: [replica]
+    environment:
+      REDISCLI_AUTH: replica-dummy-kvrocks
+    volumes:
+      - kvrocks-data:/var/lib/kvrocks
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 6666 ping | grep -qx PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
   agentmemory:
     image: ${AM_IMAGE:?set AM_IMAGE}
     mem_limit: "${AM_MEM_LIMIT:-2560m}"
@@ -40,7 +62,7 @@ services:
       III_TELEMETRY_ENABLED: "false"
       AGENTMEMORY_VIEWER_HOST: 0.0.0.0
       AGENTMEMORY_STATE_BACKEND: redis
-      AGENTMEMORY_REDIS_URL: redis://valkey:6379
+      AGENTMEMORY_REDIS_URL: "${REPLICA_REDIS_URL:-redis://valkey:6379}"
       AGENTMEMORY_SECRET: replica-dummy-secret
       # "warn" records every whole-collection read in /data/scope-guard-inventory.json.
       AGENTMEMORY_SCOPE_GUARD: "${AGENTMEMORY_SCOPE_GUARD:-}"
@@ -57,11 +79,10 @@ services:
       CONSOLIDATION_ENABLED: "false"
       AUTO_FORGET_ENABLED: "false"
       AGENTMEMORY_SESSION_SWEEP_ENABLED: "false"
+    # No depends_on: replica.sh starts the store and waits for it, and with
+    # REPLICA_STORE=kvrocks Valkey must stay stopped.
     volumes:
       - agentmemory-data:/data
-    depends_on:
-      valkey:
-        condition: service_healthy
 
 networks:
   replica:
@@ -75,3 +96,6 @@ volumes:
   agentmemory-data:
     external: true
     name: ${REPLICA_PROJECT:-amreplica}_agentmemory-data
+  kvrocks-data:
+    external: true
+    name: ${REPLICA_PROJECT:-amreplica}_kvrocks-data

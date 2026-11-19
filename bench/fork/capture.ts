@@ -1,14 +1,14 @@
 // Capture throughput over REST, as hooks deliver events: POST /agentmemory/observe
 // with the profile's hook-type mix and payload sizes, then wait until every event
-// is stored as an observation (counted in Valkey). Reports end-to-end obs/s.
+// is stored as an observation (counted in the state store). Reports end-to-end obs/s.
 // Runs on the replica network (replica.sh client).
 //
-//   node --import tsx bench/fork/capture.ts --profile <file> [--count 2000] [--concurrency 8]
+//   node --import tsx bench/fork/capture.ts --profile <file> [--count 2000] [--concurrency 8] [--store-url redis://valkey:6379]
 import { readFileSync } from "node:fs";
-import { connect } from "node:net";
 import { parseArgs } from "node:util";
 import { mulberry32, pickWeighted, sampleQuantile } from "./lib/stats.js";
 import { Corpus, type Profile } from "./lib/synthetic.js";
+import { connectRedis } from "../../scripts/fork/lib/resp.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -17,7 +17,7 @@ const { values: args } = parseArgs({
     concurrency: { type: "string", default: "8" },
     sessions: { type: "string", default: "20" },
     url: { type: "string", default: "http://agentmemory:3111" },
-    valkey: { type: "string", default: "valkey" },
+    "store-url": { type: "string", default: "redis://valkey:6379" },
     secret: { type: "string", default: "replica-dummy-secret" },
     "timeout-s": { type: "string", default: "900" },
   },
@@ -52,23 +52,14 @@ function event(i: number) {
   };
 }
 
-function valkey(command: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const socket = connect(6379, args.valkey!, () => socket.write(`${command}\r\n`));
-    let buf = "";
-    socket.on("data", (d) => {
-      buf += d.toString();
-      if (buf.endsWith("\r\n")) { socket.end(); resolve(buf); }
-    });
-    socket.setTimeout(10_000, () => socket.destroy(new Error(`valkey ${command} timed out`)));
-    socket.on("error", reject);
-  });
-}
-
 async function stored(): Promise<number> {
-  let n = 0;
-  for (const s of sessions) n += Number((await valkey(`HLEN state:mem:obs:${s}`)).slice(1));
-  return n;
+  const redis = await connectRedis(args["store-url"]!, 10_000);
+  try {
+    const lengths = await redis.pipeline(sessions.map((s) => ["HLEN", `state:mem:obs:${s}`]));
+    return lengths.reduce<number>((sum, n) => sum + (n as number), 0);
+  } finally {
+    redis.close();
+  }
 }
 
 const statuses: Record<string, number> = {};
@@ -99,7 +90,7 @@ async function storedOrZero(): Promise<number> {
   try {
     return await stored();
   } catch (error) {
-    if (++countFailures === 1) console.error(`valkey count failed: ${(error as Error).message}`);
+    if (++countFailures === 1) console.error(`store count failed: ${(error as Error).message}`);
     return 0;
   }
 }
