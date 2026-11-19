@@ -186,3 +186,28 @@ describe("stream backpressure", () => {
     expect(stuck.destroyed).toBe(true);
   });
 });
+
+describe("export stream handler", () => {
+  it("survives a client that resets the connection mid-export", async () => {
+    const { Writable } = await import("node:stream");
+    const { exportStreamHandler } = await import("../src/fork/export-stream.js");
+    const source = mockKV();
+    seed(source, 20, 20, 2000);
+    let written = 0;
+    let calls = 0;
+    const stream = new Writable({
+      highWaterMark: 1024,
+      write(chunk, _enc, callback) {
+        written += chunk.length;
+        calls++;
+        if (written > 100_000) callback(Object.assign(new Error("write ECONNRESET"), { code: "ECONNRESET" }));
+        else setImmediate(callback);
+      },
+    });
+    const response = { sendMessage: vi.fn(), close: vi.fn(), stream };
+    const handler = exportStreamHandler(source as unknown as StateKV);
+    await expect(handler({ path_params: {}, query_params: {}, body: undefined, headers: {}, method: "GET", request_body: {} as never, response })).resolves.toBeUndefined();
+    expect(stream.destroyed).toBe(true);
+    expect(calls).toBeLessThanOrEqual(3);
+  });
+});

@@ -160,12 +160,14 @@ export function exportStreamHandler(kv: StateKV) {
     res.status(200);
     res.headers({ "content-type": "application/x-ndjson", "cache-control": "no-cache", "x-accel-buffering": "no" });
     const stream = res.stream as Writable;
+    let streamError: Error | undefined;
+    stream.on("error", (error) => { streamError = error; });
     const write = (line: string) => writeLine(stream, line);
     try {
       const { parts, rows } = await streamExport(kv, write);
       logger.info("Streamed export complete", { parts, rows });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = streamError?.message ?? (error instanceof Error ? error.message : String(error));
       logger.warn("Streamed export failed", { error: message });
       await write(JSON.stringify({ t: "error", message })).catch(() => {});
     } finally {
