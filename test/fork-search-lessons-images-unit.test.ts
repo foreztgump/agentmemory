@@ -165,6 +165,37 @@ describe("RemoteKeywordIndex.addIfChanged", () => {
     await drained;
     expect(apply.mock.calls.flatMap(([ops]) => ops).map((op) => op.k)).toEqual(["doc", "doc"]);
   });
+
+  it("convergence re-sends a lesson whose earlier write the outbox dropped, even with unchanged text", async () => {
+    vi.useFakeTimers();
+    const { convergeLessons } = await import("../src/fork/search/lessons.js");
+    let reachable = false;
+    const landed: Op[] = [];
+    const apply = vi.fn(async (ops: Op[]) => {
+      if (!reachable) throw new Error("worker down");
+      landed.push(...ops);
+      return applied(ops);
+    });
+    const client = { apply, clear: async () => {} } as unknown as SearchWorkerClient;
+    const tight = { ...limits, maxOps: 0 };
+    const outbox = new SearchOutbox(client, tight);
+    const index = new RemoteKeywordIndex(client, outbox, new DocLedger(), new StatsCache(client, outbox));
+    const row: Lesson = {
+      id: "lsn_1", content: "always pin the digest", context: "", confidence: 0.6, reinforcements: 0, source: "manual",
+      sourceIds: [], tags: [], createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", decayRate: 0.05,
+    };
+    const kv = { getMany: async () => [row] } as never;
+    await convergeLessons(index, kv, [row.id]);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(outbox.counters.spilled).toBe(1);
+    reachable = true;
+    tight.maxOps = 100;
+    await convergeLessons(index, kv, [row.id]);
+    const drained = outbox.drainFor(30_000);
+    await vi.runAllTimersAsync();
+    await drained;
+    expect(landed).toEqual([expect.objectContaining({ k: "doc", id: "lsn_1", layer: "lesson" })]);
+  });
 });
 
 describe("worker routing", () => {

@@ -71,6 +71,50 @@ describe("lessons lexical Qdrant requests", () => {
     for (const [, , body] of facets()) expect(body).toMatchObject({ exact: true, filter: { must_not: [TOMBSTONE] } });
     expect(call.mock.calls.some(([, path]) => path.endsWith("/points/query"))).toBe(false);
   });
+
+  it("re-reads the vocabulary after a write in one facet call sized from the last read", async () => {
+    const qdrant = new Qdrant({ url: "http://qdrant.test", collection: "t1167fix_resize", dimensions: DIMS, timeoutMs: 1000, oversampling: 6, layout: "lessons" });
+    vi.spyOn(qdrant, "ensure").mockResolvedValue();
+    vi.spyOn(qdrant, "count").mockResolvedValue(1);
+    const vocabulary = Array.from({ length: 5000 }, (_, i) => ({ value: `redis${i}`, count: 1 }));
+    const call = vi.spyOn(qdrant, "call").mockImplementation(async (_method, path, raw) => {
+      const body = raw as { key?: string; limit?: number };
+      if (path.endsWith("/facet")) return body.key === "dl" ? { hits: [{ value: 1, count: 1 }] } : { hits: vocabulary.slice(0, body.limit) };
+      if (path.endsWith("/points/scroll")) return { points: [{ id: "a", payload: { doc_id: "a", session_id: "lesson", terms: ["redis0"], dl: 1 } }], next_page_offset: null };
+      return {};
+    });
+    const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
+    const facets = () => call.mock.calls.filter(([, , body]) => (body as { key?: string })?.key === "terms").map(([, , body]) => (body as { limit: number }).limit);
+    await engine.keyword("redis", 10, "all");
+    const first = facets().length;
+    await engine.apply([], 1000);
+    await engine.keyword("redis", 10, "all");
+    expect(facets().slice(first)).toHaveLength(1);
+  });
+
+  it("bounds the terms filter when prefix expansion is wide, and still scores every matching lesson", async () => {
+    const qdrant = new Qdrant({ url: "http://qdrant.test", collection: "t1167fix_wide", dimensions: DIMS, timeoutMs: 1000, oversampling: 6, layout: "lessons" });
+    vi.spyOn(qdrant, "ensure").mockResolvedValue();
+    vi.spyOn(qdrant, "count").mockResolvedValue(3);
+    const vocabulary = [...Array.from({ length: 3000 }, (_, i) => ({ value: `redis${i}`, count: 1 })), { value: "zebra", count: 1 }];
+    const points = [
+      { id: "a", payload: { doc_id: "a", session_id: "lesson", terms: ["redis7"], dl: 1 } },
+      { id: "b", payload: { doc_id: "b", session_id: "lesson", terms: ["redis2999", "redis2999"], dl: 2 } },
+      { id: "z", payload: { doc_id: "z", session_id: "lesson", terms: ["zebra"], dl: 1 } },
+    ];
+    const call = vi.spyOn(qdrant, "call").mockImplementation(async (_method, path, raw) => {
+      const body = raw as { key?: string; limit?: number };
+      if (path.endsWith("/facet")) return body.key === "dl" ? { hits: [{ value: 1, count: 2 }, { value: 2, count: 1 }] } : { hits: vocabulary.slice(0, body.limit) };
+      if (path.endsWith("/points/scroll")) return { points, next_page_offset: null };
+      return {};
+    });
+    const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
+    const hits = await engine.keyword("redis", 10, "all");
+    expect(hits.map(({ id }) => id).sort()).toEqual(["a", "b"]);
+    const scrolls = call.mock.calls.filter(([, path]) => path.endsWith("/points/scroll")).map(([, , body]) => body as { filter: { must?: Array<{ match?: { any?: string[] } }> } });
+    const anyLengths = scrolls.flatMap(({ filter }) => (filter.must ?? []).map((c) => c.match?.any?.length ?? 0));
+    expect(Math.max(0, ...anyLengths)).toBeLessThanOrEqual(1024);
+  });
 });
 
 describe.skipIf(!QDRANT_URL)("lessons lexical live paging and lifecycle", () => {
@@ -108,6 +152,22 @@ describe.skipIf(!QDRANT_URL)("lessons lexical live paging and lifecycle", () => 
     memory.add(next, "lesson");
     await engine.apply([docOp(next)]);
     await compare();
+  }, 60_000);
+
+  it("matches SearchIndex when a query term's prefix expansion is wider than the terms filter bound", async () => {
+    const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
+    await engine.clear("all");
+    const memory = new SearchIndex();
+    const corpus = Array.from({ length: 1200 }, (_, i) => document(`lsn_wide_${i}`, i % 3 ? `redis${i.toString(36)}` : `redis${i.toString(36)} zebra`));
+    corpus.push(document("lsn_wide_other", "zebra crossing"));
+    for (const doc of corpus) memory.add(doc, "lesson");
+    expect((await engine.apply(corpus.map(docOp))).failed).toEqual([]);
+    for (const query of ["redis", "red zebra", "zebra", "redis1"]) {
+      for (const limit of [5, 1000]) {
+        const expected = memory.search(query, limit).map(({ obsId, sessionId, score }) => ({ id: obsId, sessionId, score }));
+        expect(await engine.keyword(query, limit, "all"), `${query} ${limit}`).toEqual(expected);
+      }
+    }
   }, 60_000);
 
   it("keeps older writes fenced and excludes tombstones from cached frequencies", async () => {
