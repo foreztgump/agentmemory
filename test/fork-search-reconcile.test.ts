@@ -154,7 +154,7 @@ async function rig(label: string, withVectors = false): Promise<Rig> {
       (...args: unknown[]) => (down.value ? Promise.reject(new Error("connect ECONNREFUSED qdrant")) : (fn as (...a: unknown[]) => unknown)(...args)),
     ]),
   ) as unknown as SearchWorkerClient;
-  const runtime = createDiskSearchRuntime(client, withVectors, DIMS, NO_TIMERS);
+  const runtime = createDiskSearchRuntime(client, withVectors, DIMS, undefined, NO_TIMERS);
   const kv = mockKV();
   const r = { q, engine, runtime, kv, down };
   rigs.push(r);
@@ -315,7 +315,7 @@ describe.skipIf(!QDRANT_URL)("paced re-embed on live Qdrant", () => {
 
   it("waits between batches so the rate stays at perMinute", async () => {
     const r = await rig("pace", true);
-    const runtime = createDiskSearchRuntime(engineClient(r.engine), true, DIMS, { ...NO_TIMERS, reembedPerMinute: 60 });
+    const runtime = createDiskSearchRuntime(engineClient(r.engine), true, DIMS, undefined, { ...NO_TIMERS, reembedPerMinute: 60 });
     rigs.push({ ...r, runtime });
     registerSearchBackend("disk", () => runtime);
     createSearchRuntime({ kv: r.kv as never, embeddingProvider: fakeProvider }, "disk");
@@ -377,7 +377,7 @@ describe.skipIf(!QDRANT_URL)("degraded backend on live Qdrant", () => {
     const q = qdrantFor(`reconcile_noqdrant_${process.pid}`);
     const unreachable = new (q.constructor as new (c: unknown) => Qdrant)({ ...q.config, url: "http://127.0.0.1:1" });
     const engine = new SearchEngine(unreachable, DEFAULT_AVGDL);
-    const runtime = createDiskSearchRuntime(engineClient(engine), false, DIMS, NO_TIMERS);
+    const runtime = createDiskSearchRuntime(engineClient(engine), false, DIMS, undefined, NO_TIMERS);
     const status = await runtime.service.status();
     runtime.stats.stop();
     await runtime.outbox.stop(10);

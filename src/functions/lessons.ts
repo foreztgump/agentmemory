@@ -7,6 +7,9 @@ import { lessonToObservation } from "../state/memory-utils.js";
 import { recordAudit } from "./audit.js";
 import { deleteFacetsForTargets } from "./facets.js";
 import { collectAll } from "../state/kv.js";
+import { logger } from "../logger.js";
+import { getSearchRuntime } from "../state/search-ports.js";
+import { convergeLessons, diskLessonCandidates, type LessonCandidates } from "../fork/search/lessons.js";
 
 // Dedicated BM25 index for lessons, with the full records cached
 // alongside it. Recall previously listed every lesson from KV and
@@ -21,14 +24,54 @@ const lessonRecords = new Map<string, Lesson>();
 let lessonIndexBuild: Promise<void> | null = null;
 let lessonIndexGeneration = 0;
 
-export function resetLessonIndex(): void {
+let lessonKv: StateKV | null = null;
+
+function clearLessonIndex(): void {
   lessonIndexGeneration++;
   lessonIndex = null;
   lessonRecords.clear();
 }
 
+/**
+ * Replay and import write KV.lessons directly. Memory mode drops the index to
+ * rebuild on the next recall. Disk mode has no lazy rebuild, so it converges
+ * the lessons collection to KV for the ids the caller changed.
+ */
+export async function resetLessonIndex(changedIds: readonly string[]): Promise<void> {
+  const disk = getSearchRuntime().lessons;
+  if (!disk) return clearLessonIndex();
+  if (!lessonKv) {
+    logger.warn("lesson index not converged: lesson KV is not registered");
+    return;
+  }
+  try {
+    await convergeLessons(disk, lessonKv, changedIds);
+  } catch (err) {
+    logger.warn("lesson index not converged", { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 function noteLessonMutation(): void {
-  if (!lessonIndex && lessonIndexBuild) resetLessonIndex();
+  if (!lessonIndex && lessonIndexBuild) clearLessonIndex();
+}
+
+function rememberLesson(lesson: Lesson): void {
+  const disk = getSearchRuntime().lessons;
+  if (disk) disk.addIfChanged(lessonToObservation(lesson), "lesson");
+  else lessonRecords.set(lesson.id, lesson);
+}
+
+function forgetLesson(id: string): void {
+  const disk = getSearchRuntime().lessons;
+  if (disk) disk.remove(id);
+  else lessonRecords.delete(id);
+}
+
+async function lessonCandidates(kv: StateKV, query: string, fetchLimit: number): Promise<LessonCandidates> {
+  const disk = getSearchRuntime().lessons;
+  if (disk) return diskLessonCandidates(disk, kv, query, fetchLimit);
+  const idx = await ensureLessonIndex(kv);
+  return { hits: idx.search(query, fetchLimit), lessonOf: (id) => lessonRecords.get(id) };
 }
 
 async function ensureLessonIndex(kv: StateKV): Promise<SearchIndex> {
@@ -90,6 +133,7 @@ function mergeSourceIds(existing: string[] | undefined, incoming: string[] | und
 }
 
 export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
+  lessonKv = kv;
   sdk.registerFunction("mem::lesson-save", 
     async (data: {
       content: string;
@@ -118,7 +162,7 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
           existing.sourceIds = mergeSourceIds(existing.sourceIds, data.sourceIds);
         }
         await kv.set(KV.lessons, existing.id, existing);
-        lessonRecords.set(existing.id, existing);
+        rememberLesson(existing);
         if (indexedTextChanged && lessonIndex) {
           lessonIndex.remove(existing.id);
           lessonIndex.add(lessonToObservation(existing), "lesson");
@@ -162,7 +206,7 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
       };
 
       await kv.set(KV.lessons, lesson.id, lesson);
-      lessonRecords.set(lesson.id, lesson);
+      rememberLesson(lesson);
       if (lessonIndex) lessonIndex.add(lessonToObservation(lesson), "lesson");
       noteLessonMutation();
 
@@ -188,17 +232,16 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
       const minConfidence = data.minConfidence ?? 0.1;
       const limit = data.limit ?? 10;
 
-      const idx = await ensureLessonIndex(kv);
       const filtering = !!data.project || minConfidence > 0.1;
       const fetchLimit = filtering
         ? Math.max(limit * 10, 100)
         : Math.max(limit * 5, 50);
-      const hits = idx.search(data.query, fetchLimit);
+      const { hits, lessonOf } = await lessonCandidates(kv, data.query, fetchLimit);
       const maxHit = hits.length > 0 ? hits[0].score : 0;
 
       const scored: Array<{ lesson: Lesson; score: number }> = [];
       for (let i = 0; i < hits.length; i++) {
-        const l = lessonRecords.get(hits[i].obsId);
+        const l = lessonOf(hits[i].obsId);
         if (!l || l.deleted || l.confidence < minConfidence) continue;
         if (data.project && l.project !== data.project) continue;
 
@@ -277,7 +320,7 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
       reinforceLesson(lesson);
 
       await kv.set(KV.lessons, lesson.id, lesson);
-      lessonRecords.set(lesson.id, lesson);
+      rememberLesson(lesson);
       noteLessonMutation();
 
       try {
@@ -305,7 +348,7 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
       lesson.updatedAt = new Date().toISOString();
 
       await kv.set(KV.lessons, lesson.id, lesson);
-      lessonRecords.delete(lesson.id);
+      forgetLesson(lesson.id);
       if (lessonIndex) lessonIndex.remove(lesson.id);
       noteLessonMutation();
       await deleteFacetsForTargets(kv, [lesson.id]);
@@ -380,10 +423,10 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
       for (const l of dirty) {
         if (l.deleted) {
           softDeletedIds.push(l.id);
-          lessonRecords.delete(l.id);
+          forgetLesson(l.id);
           if (lessonIndex) lessonIndex.remove(l.id);
         } else {
-          lessonRecords.set(l.id, l);
+          rememberLesson(l);
         }
       }
       if (dirty.length > 0) noteLessonMutation();

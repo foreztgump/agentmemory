@@ -65,6 +65,7 @@ import { withoutObservationSource } from "../functions/observation-source.js";
 import { clearSessionFinalize, scheduleSessionFinalize } from "../functions/session-finalize.js";
 import { getSummaryTriggerTimeoutMs, requestSummaryRefresh } from "../functions/summary-state.js";
 import { registerCompressionApi } from "./compression.js";
+import { exportStreamHandler } from "../fork/export-stream.js";
 import {
   getFinalizeIdleMs,
   isGraphExtractionEnabled,
@@ -2099,6 +2100,13 @@ export function registerApiTriggers(
     type: "http",
     function_id: "api::import",
     config: { api_path: "/agentmemory/import", http_method: "POST" },
+  });
+
+  sdk.registerFunction("api::export-stream", exportStreamHandler(kv));
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::export-stream",
+    config: { api_path: "/agentmemory/export/stream", http_method: "GET", middleware_function_ids: ["middleware::api-auth"] },
   });
 
   sdk.registerFunction("api::relations", 

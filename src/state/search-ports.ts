@@ -62,6 +62,14 @@ export interface KeywordIndexPort {
   ): number;
 }
 
+export interface LessonIndexPort {
+  add(obs: CompressedObservation, layer?: SearchResultLayer): void;
+  /** add() that sends nothing when the index already holds this content, so strengthening a lesson costs no write. */
+  addIfChanged(obs: CompressedObservation, layer?: SearchResultLayer): void;
+  remove(id: string): void;
+  search(query: string, limit?: number, layer?: SearchLayer): MaybePromise<ScoredId[]>;
+}
+
 export interface VectorStorePort {
   add(obsId: string, sessionId: string, embedding: Float32Array): void;
   remove(obsId: string): void;
@@ -77,6 +85,34 @@ export interface VectorStorePort {
   ): MaybePromise<ScoredId[]>;
   readonly size: number;
   clear(): MaybePromise<void>;
+}
+
+/** One stored image embedding, as mem::vision-embed builds it. */
+export interface ImageEmbedding {
+  imageRef: string;
+  vector: number[];
+  modelName: string;
+  dimensions: number;
+  updatedAt: string;
+  sessionId?: string;
+  observationId?: string;
+}
+
+export interface ImageSearchResult {
+  imageRef: string;
+  score: number;
+  sessionId?: string;
+  observationId?: string;
+  updatedAt: string;
+}
+
+export interface ImageIndexPort {
+  /** Idempotent upsert by imageRef. A remote index enqueues; it never blocks the caller. */
+  put(embedding: ImageEmbedding): void;
+  /** Idempotent: the image no longer appears in search. */
+  remove(imageRef: string): void;
+  /** Exact cosine top-K over the images that pass the session filter; `total` counts those images. Throws when the index is unreachable. */
+  search(query: Float32Array, topK: number, sessionId?: string): Promise<{ results: ImageSearchResult[]; total: number }>;
 }
 
 export interface IndexPersistencePort {
@@ -108,6 +144,10 @@ export interface SearchRuntime<
   readonly backend: SearchBackend;
   readonly keyword: K;
   readonly vector: V | null;
+  /** Lessons in their own keyword index; absent in memory mode, where lessons.ts keeps its own. */
+  readonly lessons?: LessonIndexPort | null;
+  /** Image embeddings searched in the index; absent in memory mode, where vision-search reads the KV rows. */
+  readonly images?: ImageIndexPort | null;
   openPersistence(): P;
   /** Background repair and health of a backend outside the app worker; memory mode has none. */
   readonly service?: SearchBackendService;

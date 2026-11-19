@@ -97,6 +97,12 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
     this.outbox.put({ k: "doc", id: obs.id, sessionId: obs.sessionId, layer, ts: Number.isFinite(ts) ? ts : Date.now(), rev, fields });
   }
 
+  /** add() that sends nothing when the ledger already holds this content, as for a lesson whose confidence changed but not its text. */
+  addIfChanged(obs: CompressedObservation, layer: SearchResultLayer = "observation"): void {
+    if (this.ledger.get(obs.id)?.rev === contentRev(termSourceOf(obs))) return;
+    this.add(obs, layer);
+  }
+
   remove(id: string): void {
     const previous = this.ledger.get(id);
     this.ledger.replace(id, { rev: null });

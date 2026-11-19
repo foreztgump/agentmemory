@@ -188,7 +188,7 @@ async function deriveCrystalAndLessons(
       lessonIds.push(lessonId);
     } catch {}
   }
-  if (lessonIds.length > 0) resetLessonIndex();
+  if (lessonIds.length > 0) await resetLessonIndex(lessonIds);
 
   // Content-addressed on sessionId so re-importing the same session
   // upserts the crystal in place instead of creating a new one.

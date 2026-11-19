@@ -1,10 +1,8 @@
 import { base64ToFloat32 } from "../../state/vector-index.js";
 import { isSearchLayer, isSearchResultLayer, type SearchLayer, type SearchResultLayer } from "../../state/search-layer.js";
-import { extractTerms } from "../../state/term-extraction.js";
+import { extractTerms, queryTerms } from "../../state/term-extraction.js";
 import { logger } from "../../logger.js";
 import {
-  nextOpVersion,
-  seedOpVersion,
   type ApplyResult,
   type ContentRev,
   type DocOp,
@@ -18,16 +16,18 @@ import {
   type StatsResult,
 } from "../search/protocol.js";
 import { querySparse, termsSparse } from "./bm25-sparse.js";
+import { expandLexicalTerms, lexicalBm25, type LexicalDocument } from "./lexical-bm25.js";
 import { pointId, type Qdrant } from "./qdrant.js";
+import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
 
 interface ScoredPoint { id: string; score: number; payload?: { doc_id?: string; session_id?: string } }
 interface RecordPoint {
   id: string;
-  payload?: { doc_id?: string; session_id?: string; layer?: string; rev?: string; deleted?: boolean; terms?: unknown; v?: unknown };
+  payload?: { doc_id?: string; session_id?: string; layer?: string; rev?: string; deleted?: boolean; terms?: unknown; dl?: number; lexical_order?: [number, number]; v?: unknown };
 }
 
 const HIT_PAYLOAD = ["doc_id", "session_id"];
-const MAX_LIMIT = 1000;
+export const MAX_LIMIT = 1000;
 const LAYERS: SearchResultLayer[] = ["memory", "observation", "lesson", "insight"];
 
 // Stored BM25 weights are rewritten once the corpus mean drifts this far from
@@ -35,21 +35,9 @@ const LAYERS: SearchResultLayer[] = ["memory", "observation", "lesson", "insight
 const AVGDL_DRIFT = 0.1;
 const REWEIGHT_PAGE = 256;
 const DL_FACET_LIMIT = 100_000;
+const LESSON_TERMS_FILTER_LIMIT = 1024;
 
-/**
- * Every point carries `v`, the version of the last invocation that changed
- * it, and a delete leaves a tombstone (`deleted: true`, no vectors). An op
- * applies only to a point whose `v` is not newer than its own, so a late
- * duplicate of an older invocation cannot overwrite a newer one or undo a
- * delete. Points written before versions existed have no `v` and count as older.
- */
-const notNewerThan = (version: OpVersion) => ({ should: [{ key: "v", range: { lte: version } }, { is_empty: { key: "v" } }] });
-const TOMBSTONE = { key: "deleted", match: { value: true } };
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
-
-function validVersion(version: unknown): OpVersion | null {
-  return typeof version === "number" && Number.isSafeInteger(version) && version > 0 ? version : null;
-}
 
 function meanLength(docs: string[][]): number | null {
   const total = docs.reduce((n, terms) => n + terms.length, 0);
@@ -71,7 +59,7 @@ function toHits(points: ScoredPoint[]): Hit[] {
   return points.flatMap((p) => (p.payload?.doc_id ? [{ id: p.payload.doc_id, sessionId: p.payload.session_id ?? "", score: p.score }] : []));
 }
 
-function clampLimit(limit: unknown): number {
+export function clampLimit(limit: unknown): number {
   return typeof limit === "number" && Number.isFinite(limit) ? Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit))) : 20;
 }
 
@@ -97,43 +85,22 @@ function opError(op: unknown): string | null {
 
 export class SearchEngine {
   private ensured: Promise<void> | null = null;
+  private vocabulary: Promise<Map<string, number>> | null = null;
+  private lastVocabularySize = 0;
   /** The mean document length new BM25 weights are computed with; null until read from the collection. */
   private avgdl: number | null = null;
   private corpusChanged = false;
   private reweighting: Promise<void> | null = null;
   /** Bumped when clear("all") drops the collection; a reweighting pass from before it stops. */
   private collectionEpoch = 0;
-  private versionFloor: Promise<unknown> | null = null;
+  private readonly clock: VersionClock;
 
-  constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number) {}
-
-  /** The highest version stored, tombstones included; this process's own stamps start above it. */
-  async maxVersion(): Promise<OpVersion> {
-    await this.ready();
-    const res = await this.qdrant.call<{ points: Array<{ payload?: { v?: unknown } }> }>("POST", `${this.qdrant.path}/points/scroll`, {
-      filter: { must: [{ key: "v", range: { gte: 1 } }] },
-      order_by: { key: "v", direction: "desc" },
-      limit: 1,
-      with_payload: ["v"],
-      with_vector: false,
-    });
-    const version = validVersion(res.points?.[0]?.payload?.v) ?? 0;
-    seedOpVersion(version);
-    return version;
+  constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number) {
+    this.clock = new VersionClock(qdrant, () => this.ready());
   }
 
-  /** A caller's version, or one stamped here above every version stored. */
-  private async versionFor(rawVersion: unknown): Promise<OpVersion> {
-    const version = validVersion(rawVersion);
-    if (version !== null) {
-      seedOpVersion(version);
-      return version;
-    }
-    await (this.versionFloor ??= this.maxVersion().catch((error) => {
-      this.versionFloor = null;
-      throw error;
-    }));
-    return nextOpVersion();
+  maxVersion(): Promise<OpVersion> {
+    return this.clock.maxVersion();
   }
 
   /** Resolves once no reweighting pass is running. */
@@ -157,7 +124,8 @@ export class SearchEngine {
    * deleted is dropped (reported in `fenced`).
    */
   async apply(rawOps: unknown[], rawVersion?: unknown): Promise<ApplyResult> {
-    const version = await this.versionFor(rawVersion);
+    this.vocabulary = null;
+    const version = await this.clock.versionFor(rawVersion);
     const failed: ApplyResult["failed"] = [];
     const ops: Op[] = [];
     const terms = new Map<DocOp, string[]>();
@@ -205,13 +173,17 @@ export class SearchEngine {
     const fenced: string[] = [];
     const written: Array<{ id: string; rev: ContentRev }> = [];
     let applied = 0;
+    let lexicalPosition = 0;
     for (const op of ops) {
       const id = pointId(op.id);
       switch (op.k) {
         case "doc": {
           const docTerms = terms.get(op)!;
           const bm25 = termsSparse(docTerms, avgdl);
-          const payload = { doc_id: op.id, session_id: op.sessionId, layer: op.layer, ts: op.ts, rev: op.rev, v: version, dl: docTerms.length, ad: avgdl, terms: docTerms };
+          const payload = {
+            doc_id: op.id, session_id: op.sessionId, layer: op.layer, ts: op.ts, rev: op.rev, v: version, dl: docTerms.length, ad: avgdl, terms: docTerms,
+            ...(this.qdrant.config.layout === "lessons" ? { lexical_order: [version, lexicalPosition++] } : {}),
+          };
           docPoints.push({ id, vector: { bm25 }, payload: { ...payload, dense: false } });
           docPayloads.push({ set_payload: { payload, filter: { must: [{ has_id: [id] }, notNewerThan(version)], must_not: [TOMBSTONE] } } });
           docWeights.push({ id, vector: { bm25 } });
@@ -271,7 +243,13 @@ export class SearchEngine {
         { set_payload: { payload: { dense: false }, filter: claimed } },
       );
     }
-    if (operations.length > 0) await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, { operations });
+    if (operations.length > 0) {
+      try {
+        await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, { operations });
+      } finally {
+        this.vocabulary = null;
+      }
+    }
     if (terms.size > 0 || ops.some((op) => op.k === "del")) this.corpusDidChange();
     // A vector change applied only if its claim held: the point is live and carries this version.
     // A vector delete on a tombstone or an absent point leaves no vector either way.
@@ -338,6 +316,7 @@ export class SearchEngine {
   private async corpusMean(): Promise<number | null> {
     const res = await this.qdrant.call<{ hits: Array<{ value: number; count: number }> }>("POST", `${this.qdrant.path}/facet`, {
       key: "dl",
+      filter: { must_not: [TOMBSTONE] },
       limit: DL_FACET_LIMIT,
       exact: true,
     });
@@ -351,6 +330,7 @@ export class SearchEngine {
   }
 
   private corpusDidChange(): void {
+    if (this.qdrant.config.layout === "lessons") return;
     this.corpusChanged = true;
     this.reweighting ??= this.reweightWhileChanging().finally(() => {
       this.reweighting = null;
@@ -406,6 +386,9 @@ export class SearchEngine {
 
   async keyword(query: unknown, limit: unknown, layer: unknown): Promise<Hit[]> {
     if (typeof query !== "string") return [];
+    if (this.qdrant.config.layout === "lessons") {
+      return this.lessonKeyword(query, clampLimit(limit), isSearchLayer(layer) ? layer : "all");
+    }
     const sparse = querySparse(query);
     if (sparse.indices.length === 0) return [];
     await this.ready();
@@ -418,6 +401,75 @@ export class SearchEngine {
       with_payload: HIT_PAYLOAD,
     });
     return toHits(res.points);
+  }
+
+  private lessonVocabulary(): Promise<Map<string, number>> {
+    if (this.vocabulary) return this.vocabulary;
+    const pending = this.readVocabulary().catch((error) => {
+      if (this.vocabulary === pending) this.vocabulary = null;
+      throw error;
+    });
+    this.vocabulary = pending;
+    return pending;
+  }
+
+  private async readVocabulary(): Promise<Map<string, number>> {
+    let limit = Math.max(1024, 2 * this.lastVocabularySize);
+    for (;;) {
+      const { hits } = await this.qdrant.call<{ hits: Array<{ value: string; count: number }> }>("POST", `${this.qdrant.path}/facet`, {
+        key: "terms",
+        filter: { must_not: [TOMBSTONE] },
+        exact: true,
+        limit,
+      });
+      if (hits.length < limit) {
+        this.lastVocabularySize = hits.length;
+        return new Map(hits.map(({ value, count }) => [value, count]));
+      }
+      limit *= 2;
+    }
+  }
+
+  private async lessonKeyword(query: string, limit: number, layer: SearchLayer): Promise<Hit[]> {
+    const weightedTerms = queryTerms(query);
+    if (weightedTerms.length === 0) return [];
+    await this.ready();
+    const [frequencies, count, averageLength] = await Promise.all([
+      this.lessonVocabulary(),
+      this.qdrant.count({ must_not: [TOMBSTONE] }),
+      this.corpusMean(),
+    ]);
+    if (count === 0 || averageLength === null) return [];
+    const expanded = expandLexicalTerms(weightedTerms, frequencies);
+    const terms = new Set(expanded.flatMap(({ term, prefixes }) => [term, ...prefixes]));
+    const filter = {
+      must: [
+        ...(terms.size <= LESSON_TERMS_FILTER_LIMIT ? [{ key: "terms", match: { any: [...terms] } }] : []),
+        ...(layer === "all" ? [] : [{ key: "layer", match: { value: layer } }]),
+      ],
+      must_not: [TOMBSTONE],
+    };
+    // ponytail: above the 1024-term filter ceiling, scroll every live lesson; retained candidates still grow with matching lessons. Upgrade to disk-backed postings and exact top-K scoring for larger corpora.
+    const documents: Array<LexicalDocument & { order: [number, number] }> = [];
+    let offset: string | undefined;
+    do {
+      const page = await this.qdrant.call<{ points: RecordPoint[]; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
+        filter,
+        limit: REWEIGHT_PAGE,
+        ...(offset ? { offset } : {}),
+        with_payload: ["doc_id", "session_id", "terms", "dl", "lexical_order"],
+        with_vector: false,
+      });
+      for (const { payload } of page.points) {
+        if (!payload?.doc_id || typeof payload.dl !== "number" || !Array.isArray(payload.terms) || !payload.terms.every((term) => typeof term === "string")) continue;
+        const matchedTerms = payload.terms.filter((term) => terms.has(term));
+        if (matchedTerms.length === 0) continue;
+        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: matchedTerms, dl: payload.dl, order: payload.lexical_order ?? [0, 0] });
+      }
+      offset = page.next_page_offset ?? undefined;
+    } while (offset);
+    documents.sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || (a.id < b.id ? -1 : Number(a.id > b.id)));
+    return lexicalBm25(documents, expanded, frequencies, count, averageLength, limit);
   }
 
   async vector(f32b64: unknown, limit: unknown, layer: unknown, oversampling: number): Promise<Hit[]> {
@@ -490,9 +542,12 @@ export class SearchEngine {
 
   async clear(scope: unknown): Promise<void> {
     if (scope !== "all" && scope !== "vectors") throw new Error("clear scope must be all or vectors");
+    this.vocabulary = null;
     if (scope === "all") {
       await this.ready();
       await this.qdrant.drop();
+      this.vocabulary = null;
+      this.lastVocabularySize = 0;
       this.collectionEpoch++;
       this.corpusChanged = false;
       this.ensured = null;

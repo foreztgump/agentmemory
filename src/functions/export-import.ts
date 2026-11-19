@@ -1,6 +1,6 @@
 import { pinGraphState } from "../state/graph-generation.js";
 import { persistGraphRecords, validateGraphRecords } from "../state/graph-ingestion.js";
-import { MAX_IMPORT_OBS_PER_SESSION } from "../config.js";
+import { IMPORT_LIMITS } from "./import-limits.js";
 import type { IIIClient } from "iii-sdk";
 import { markCaptureEventDeleted } from "../capture/event-record.js";
 import type {
@@ -73,7 +73,7 @@ async function runChunked<T>(
 const EXPORT_OVERSIZE_HINT =
   "narrow the range with ?maxSessions / ?offset, page the rest with ?collectionLimit / ?collectionOffset, or ask for a subset with ?collections=";
 
-const EXPORT_COLLECTIONS: ReadonlyArray<readonly [keyof ExportData, string]> = [
+export const EXPORT_COLLECTIONS: ReadonlyArray<readonly [keyof ExportData, string]> = [
   ["graphNodes", KV.graphNodes],
   ["graphEdges", KV.graphEdges],
   ["semanticMemories", KV.semantic],
@@ -324,11 +324,15 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
         };
       }
 
-      const MAX_SESSIONS = 10_000;
-      const MAX_MEMORIES = 50_000;
-      const MAX_SUMMARIES = 10_000;
-      const MAX_TOTAL_OBSERVATIONS = 500_000;
-      const MAX_ACCESS_LOGS = 50_000;
+      const {
+        sessions: MAX_SESSIONS,
+        memories: MAX_MEMORIES,
+        summaries: MAX_SUMMARIES,
+        observations: MAX_TOTAL_OBSERVATIONS,
+        accessLogs: MAX_ACCESS_LOGS,
+        observationBuckets: MAX_OBS_BUCKETS,
+        observationsPerSession: MAX_IMPORT_OBS_PER_SESSION,
+      } = IMPORT_LIMITS;
 
       if (!Array.isArray(importData.sessions)) {
         return { success: false, error: "sessions must be an array" };
@@ -365,7 +369,6 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
           error: `Too many summaries (max ${MAX_SUMMARIES})`,
         };
       }
-      const MAX_OBS_BUCKETS = 10_000;
       const obsBuckets = Object.keys(importData.observations);
       if (obsBuckets.length > MAX_OBS_BUCKETS) {
         return {
@@ -543,7 +546,7 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
           await runChunked(lessons, (l) =>
             kv.delete(KV.lessons, l.id),
           );
-          resetLessonIndex();
+          await resetLessonIndex(lessons.map((l) => l.id));
           await runChunked(insights, (i) =>
             kv.delete(KV.insights, i.id),
           );
@@ -763,7 +766,7 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
           }
           await kv.set(KV.lessons, lesson.id, lesson);
         });
-        resetLessonIndex();
+        await resetLessonIndex(importData.lessons.map((l) => l.id));
       }
       if (importData.insights) {
         await runChunked(importData.insights, async (insight) => {
