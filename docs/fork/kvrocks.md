@@ -46,13 +46,20 @@ The cache cap does not bound a whole-hash read: one `HGETALL` costs about 5× th
 
 ## The adapter's reply timeout
 
-iii's redis adapter sends every state call over one connection behind a lock, and fails a call whose reply takes longer than the redis client's default response timeout, about 500 ms, with `Failed to get group from Redis: timed out`. It retries only a dropped connection. Its only setting is `redis_url`.
+iii's redis adapter (state worker 0.22.22) sends every state call over one connection behind a lock, and fails a call whose reply takes longer than 500 ms. That limit is redis-rs 1.7.0's `DEFAULT_RESPONSE_TIMEOUT`, which the adapter gets by calling `client.get_connection_manager()` with no config. Nothing sets it: the adapter's config schema is closed (`redis_url` only), the redis URL parser reads only `db`, `user`, `pass` and `protocol`, and no environment variable reaches it. State 0.23.3 and the workers repo's `main` are the same. The adapter retries only a dropped connection.
 
-Valkey answers a whole-hash read from RAM: a 2,000-observation session (about 10.7 MB) lists in about 20 ms. Kvrocks takes 55 ms for the same `HGETALL` alone, about 160 ms through the engine, and more under load. On the first boot after the copy, the index rebuild lists ten sessions at a time while Kvrocks starts cold. In two of three runs, the two 2,000-observation sessions timed out. The rebuild skipped them, 4,000 observations stayed out of the keyword index, and the replica never became ready.
+Valkey answers a whole-hash read from RAM: a 2,000-observation session (about 10.7 MB) lists in about 20 ms. Kvrocks takes 55 ms for the same `HGETALL` alone, about 160 ms through the engine, and more under load. On the first boot after the copy, the index rebuild lists ten sessions at a time while Kvrocks starts cold. Before TEE-1163, in two of three runs the two 2,000-observation sessions timed out and the replica never became ready.
 
-`StateKV.list` now catches that one error on the redis backend and reads the same scope again through `state::list_keys` and point reads (`src/fork/kv/list-timeout.ts`), each far below the limit. It returns the same rows in the same order. Valkey never reaches the fallback.
+The only reads the adapter offers are `state::list` (`HGETALL`), `state::list_keys` (`HKEYS`), `state::get` and `state::list_groups` (`SCAN`, paged inside the adapter). So `StateKV` bounds the replies itself (`src/fork/kv/redis-replies.ts`):
 
-What is still exposed, measured through the engine on buddy's data: `list_keys` of `mem:graph:retrieval-data` (148,945 keys) takes 260-510 ms, and a whole `list` of `mem:semantic` (14,336 rows) 310-360 ms. Both grow with data. A `list_keys` has no smaller read through iii to fall back to. The lasting fix is in iii: a configurable response timeout, or a paged list built on `HSCAN`.
+- `list` on the redis backend reads the scope's keys first. It sends one `state::list` only when the scope holds at most 500 rows (1.4 MB of the largest rows measured, observations at 2.8 KB). A larger scope is read row by row with `state::get`, so no `HGETALL` grows with the data. The row-by-row read costs about 1.7 times one `HGETALL` (430-470 ms against 244-276 ms for 4,431 rows), because the adapter serialises every call.
+- If a small `state::list` still times out, `list` reads the same scope by keys and logs `state::list timed out on the redis store`. That line counts as an adapter timeout when you check a run.
+- `listKeys`, `iterate` and `listPage` each send one `HKEYS` of the whole scope. That reply still grows with the number of keys, and iii has no smaller form. A listed scope past 40,000 keys logs `nearing the adapter's reply limit` once per process.
+- Point-read-only scopes are never listed (`src/fork/kv/scope-classes.ts`, enforced by `npm run test:scope-guard`). The largest is `mem:graph:retrieval-data`: 649,577 keys on main, and its `HKEYS` times out at today's size.
+
+**Ceiling.** Cold, at 3x main's data with the app busy, `HKEYS` measured up to 5.9 µs per key, so a listed scope reaches the limit at about 85,000 keys. The largest listed scopes today are main's graph nodes and name index (21,282 keys) and its current audit month (18,236). Past the warning, shard that scope or get a paged `state::list_keys` into iii.
+
+**Upstream change that would remove the ceiling** (iii-hq/workers, `state/src/adapters.rs`): build the connection with `client.get_connection_manager_with_config(ConnectionManagerConfig::new().set_response_timeout(...))` from a new optional `response_timeout_ms` in `RedisAdapterConfig`, and add paged `state::list_keys` and `state::list` that take `{ cursor, count }` and run `HSCAN`, as `list_groups` already pages with `SCAN`.
 
 ## Measured on buddy's snapshot
 
