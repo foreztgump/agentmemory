@@ -12,7 +12,7 @@ services:
     # store, so raise it as the store grows.
     mem_limit: "${AGENTMEMORY_MEM_LIMIT:-2560m}"
     depends_on:
-      valkey:
+      kvrocks:
         condition: service_healthy
     # Coolify treats the compose file as the single source of truth: a variable
     # set in the dashboard only reaches the container if it is referenced here.
@@ -78,9 +78,10 @@ services:
       AGENTMEMORY_AUDIT_RETENTION_MONTHS: "${AGENTMEMORY_AUDIT_RETENTION_MONTHS:-}"
       AGENTMEMORY_AUDIT_MIGRATE_MAX_BYTES: "${AGENTMEMORY_AUDIT_MIGRATE_MAX_BYTES:-}"
       # The file backend holds every scope in the engine process; on this host it
-      # measured 2.4 GB of engine RSS against 0.6 GB engine plus Valkey.
+      # measured 2.4 GB of engine RSS against 0.6 GB engine plus Valkey. The
+      # redis backend reaches Kvrocks through iii's redis adapter.
       AGENTMEMORY_STATE_BACKEND: "redis"
-      AGENTMEMORY_REDIS_URL: "redis://valkey:6379"
+      AGENTMEMORY_REDIS_URL: "redis://:${KVROCKS_PASSWORD:?}@kvrocks:6666"
       AGENTMEMORY_STATE_SAVE_INTERVAL_MS: "${AGENTMEMORY_STATE_SAVE_INTERVAL_MS:-}"
       # How long the worker may go without serving, at boot or after a crash,
       # before the container exits and Docker restarts it. Upstream default.
@@ -176,6 +177,45 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Records and the knowledge graph live in Kvrocks (RocksDB on disk) behind
+  # iii's redis state adapter. RAM is the capped block cache plus memtables;
+  # data growth lands on disk. A whole-hash read costs about 5x the hash size in
+  # transient RSS, which the cap does not bound, so agentmemory pages its reads.
+  # KVROCKS_PASSWORD goes into a redis:// URL: use hex or URL-safe characters.
+  kvrocks:
+    image: apache/kvrocks:2.17.0
+    restart: unless-stopped
+    command:
+      - --requirepass
+      - "${KVROCKS_PASSWORD:?}"
+      - --rocksdb.block_cache_size
+      - "384"
+      - --rocksdb.write_buffer_size
+      - "64"
+      - --rocksdb.max_write_buffer_number
+      - "2"
+      - --rocksdb.max_background_jobs
+      - "2"
+    mem_limit: "${KVROCKS_MEM_LIMIT:-1280m}"
+    memswap_limit: "${KVROCKS_MEM_LIMIT:-1280m}"
+    environment:
+      REDISCLI_AUTH: "${KVROCKS_PASSWORD:?}"
+    volumes:
+      - kvrocks-data:/var/lib/kvrocks
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 6666 ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # The previous store, kept only as the migration source and for rollback
+  # (deploy/coolify/README.md, "Moving the store to Kvrocks"). It starts only
+  # with the profile: docker compose --profile valkey-source up -d valkey.
   # appendonly because the default snapshot policy can lose minutes of writes;
   # noeviction because an LRU policy would silently drop memories at the cap,
   # which also means writes fail once the store reaches VALKEY_MAXMEMORY.
@@ -184,6 +224,7 @@ services:
   # the two together.
   valkey:
     image: valkey/valkey:9
+    profiles: [valkey-source]
     restart: unless-stopped
     command: valkey-server --appendonly yes --appendfsync everysec --maxmemory ${VALKEY_MAXMEMORY:-2gb} --maxmemory-policy noeviction
     mem_limit: "${VALKEY_MEM_LIMIT:-3g}"
@@ -248,4 +289,5 @@ services:
 volumes:
   agentmemory-data:
   qdrant-data:
+  kvrocks-data:
   valkey-data:

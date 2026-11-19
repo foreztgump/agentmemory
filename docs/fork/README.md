@@ -59,6 +59,10 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 
 `scripts/fork/replay-day.ts` drives a compressed day of traffic against a running server so the inventory fills. `scripts/fork/read-inventory.ts` turns inventory snapshots taken at boot, at the end of the replay and after one-off calls into one row per collection and call site, with calls and bytes per day. The buddy run is in `docs/fork/baseline/read-inventory.md`.
 
+## Records on Kvrocks
+
+[kvrocks.md](kvrocks.md) describes the Kvrocks state store (TEE-1163): the stack service, the resumable Valkey-to-Kvrocks copy and its verify (`scripts/fork/kvrocks-migrate.ts`), and how the replica and the bench run on Kvrocks.
+
 ## Baseline and benchmarks
 
 [baseline/README.md](baseline/README.md) records the in-memory system's numbers on a replica of buddy's stack and on synthetic stores, and how to re-run them. The scripts are in `bench/fork/`, and `bench/fork/ceilings.json` fails a run that regresses.

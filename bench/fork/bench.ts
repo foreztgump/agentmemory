@@ -36,6 +36,9 @@ const { values: args } = parseArgs({
 const REPO = resolve(import.meta.dirname, "../..");
 const REPLICA = resolve(import.meta.dirname, "replica.sh");
 const project = process.env.REPLICA_PROJECT ?? "amreplica";
+// The state store under test: replica.sh loads Valkey, and with REPLICA_STORE=kvrocks copies it into Kvrocks.
+const store = process.env.REPLICA_STORE ?? "valkey";
+const storeUrl = store === "kvrocks" ? "redis://:replica-dummy-kvrocks@kvrocks:6666" : "redis://valkey:6379";
 const container = (service: string) => `${project}-${service}-1`;
 const MiB = 1024 * 1024;
 
@@ -126,7 +129,7 @@ try {
   const startedAt = Date.parse(spawnSync("docker", ["inspect", "-f", "{{.State.StartedAt}}", container("agentmemory")], { encoding: "utf8" }).stdout.trim());
   measured["boot.seconds"] = Math.round((readyAt - startedAt) / 100) / 10;
   measured["boot.peakMiB.agentmemory"] = mib(cgroup("agentmemory", "memory.peak"));
-  measured["boot.peakMiB.valkey"] = mib(cgroup("valkey", "memory.peak"));
+  measured[`boot.peakMiB.${store}`] = mib(cgroup(store, "memory.peak"));
   const index = JSON.parse(replica("client", "node", "bench/fork/ready.mjs", "http://agentmemory:3111", "replica-dummy-secret", "--print"));
   measured["index.bm25Documents"] = index.bm25Documents;
   measured["index.vectorDocuments"] = index.vectorDocuments ?? 0;
@@ -135,9 +138,9 @@ try {
   console.error(`bench: ready in ${measured["boot.seconds"]}s; idling ${steadyMinutes} min`);
   await new Promise((r) => setTimeout(r, steadyMinutes * 60_000));
   measured["steady.MiB.agentmemory"] = mib(cgroup("agentmemory", "memory.current"));
-  measured["steady.MiB.valkey"] = mib(cgroup("valkey", "memory.current"));
+  measured[`steady.MiB.${store}`] = mib(cgroup(store, "memory.current"));
   measured["steady.anonMiB.agentmemory"] = mib(cgroupStat("agentmemory", "anon"));
-  measured["steady.anonMiB.valkey"] = mib(cgroupStat("valkey", "anon"));
+  measured[`steady.anonMiB.${store}`] = mib(cgroupStat(store, "anon"));
 
   if (args.cases!.length) {
     const evalOut = JSON.parse(replica("client", "node", "--import", "tsx", "bench/fork/eval.ts", ...args.cases!.flatMap((f) => ["--cases", inClient(f)])));
@@ -152,12 +155,12 @@ try {
   }
 
   if (Number(args.capture) > 0) {
-    const cap = JSON.parse(replica("client", "node", "--import", "tsx", "bench/fork/capture.ts", "--profile", inClient(args.profile!), "--count", args.capture!));
+    const cap = JSON.parse(replica("client", "node", "--import", "tsx", "bench/fork/capture.ts", "--profile", inClient(args.profile!), "--count", args.capture!, "--store-url", storeUrl));
     measured["capture.storedPerSecond"] = cap.storedPerSecond;
     if (cap.stored < cap.events) notes.push(`capture stored ${cap.stored} of ${cap.events} events: ${JSON.stringify(cap.statuses)}`);
   }
   measured["run.peakMiB.agentmemory"] = mib(cgroup("agentmemory", "memory.peak"));
-  measured["run.peakMiB.valkey"] = mib(cgroup("valkey", "memory.peak"));
+  measured[`run.peakMiB.${store}`] = mib(cgroup(store, "memory.peak"));
   completed = true;
 } catch (error) {
   console.error(`bench: ${(error as Error).message}`);
@@ -176,7 +179,7 @@ const result = {
   name: args.name,
   at: new Date().toISOString(),
   image: `${process.env.AM_IMAGE} ${image}`,
-  settings: { amMemLimit: args["am-mem-limit"], embedding: args.embedding || "none", steadyMinutes: Number(args["steady-minutes"]), captureEvents: Number(args.capture) },
+  settings: { store, amMemLimit: args["am-mem-limit"], embedding: args.embedding || "none", steadyMinutes: Number(args["steady-minutes"]), captureEvents: Number(args.capture) },
   completed,
   measured,
   notes,

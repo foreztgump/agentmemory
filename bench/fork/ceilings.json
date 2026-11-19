@@ -17,6 +17,24 @@
       { "metric": "index.bm25Documents", "min": 229476 }
     ]
   },
+  "buddy-keyword-kvrocks": {
+    "run": "buddy-keyword on Kvrocks (REPLICA_STORE=kvrocks): the same limits for agentmemory, search, recall and capture, Kvrocks within its 1280m cap (memory.peak includes page cache, which the cgroup reclaims at the cap), and Kvrocks steady anon memory +15% over the 2026-11-19 run (484 MiB)",
+    "limits": [
+      { "metric": "boot.seconds", "max": 78 },
+      { "metric": "boot.peakMiB.agentmemory", "max": 2101 },
+      { "metric": "steady.MiB.agentmemory", "max": 2062 },
+      { "metric": "steady.anonMiB.agentmemory", "max": 1967 },
+      { "metric": "run.peakMiB.agentmemory", "max": 2169 },
+      { "metric": "search.buddy-2026-11-16.p50Ms", "max": 39 },
+      { "metric": "search.buddy-2026-11-16.p95Ms", "max": 88 },
+      { "metric": "capture.storedPerSecond", "min": 50 },
+      { "metric": "recall.buddy-2026-11-16.recallAt10", "min": 0.84 },
+      { "metric": "recall.buddy-2026-11-16.mrr", "min": 0.7147 },
+      { "metric": "index.bm25Documents", "min": 229476 },
+      { "metric": "steady.anonMiB.kvrocks", "max": 557 },
+      { "metric": "run.peakMiB.kvrocks", "max": 1280 }
+    ]
+  },
   "buddy-vectors": {
     "run": "buddy's 2026-11-16 backup with EMBEDDING_PROVIDER=voyage, so the persisted vectors load at boot; agentmemory limit 5g (2560m is OOM-killed during boot)",
     "limits": [
