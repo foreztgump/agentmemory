@@ -4,7 +4,7 @@ import { decodeCursor, encodeCursor } from './list-query.js'
 import { resolveGraphScope, notifyGraphGenerationChange } from './graph-generation.js'
 import { ensureGraphConsistency, noteGraphSnapshotWrite } from './graph-consistency.js'
 import { withGraphIndexMutation, withGraphSnapshotIndexBarrier, withGraphSnapshotUnknownMutation } from './graph-retrieval-index.js'
-import { isRedisListTimeout } from '../fork/kv/list-timeout.js'
+import { WHOLE_LIST_MAX_KEYS, isRedisListTimeout, noteRedisKeys } from '../fork/kv/redis-replies.js'
 import { logger } from '../logger.js'
 
 export type StateBackend = 'file' | 'redis'
@@ -202,17 +202,21 @@ export class StateKV {
   async list<T = unknown>(scope: string): Promise<T[]> {
     scope = await resolveGraphScope(this, scope)
     await ensureGraphConsistency(this, scope)
+    const keys = this.backend === 'redis' ? await this.rawListKeys(scope) : null
     let values: T[]
-    try {
-      values = await this.sdk.trigger<{ scope: string }, T[]>({
-        function_id: 'state::list',
-        payload: { scope },
-      })
-    } catch (error) {
-      if (this.backend !== 'redis' || !isRedisListTimeout(error)) throw error
-      logger.warn('state::list timed out on the redis store; reading the scope by keys', { scope })
-      const keys = await this.rawListKeys(scope)
-      values = (await this.rawGetMany<T>(scope, keys, 16)).filter((value): value is T => value !== null && value !== undefined)
+    if (keys && keys.length > WHOLE_LIST_MAX_KEYS) {
+      values = await this.readByKeys<T>(scope, keys)
+    } else {
+      try {
+        values = await this.sdk.trigger<{ scope: string }, T[]>({
+          function_id: 'state::list',
+          payload: { scope },
+        })
+      } catch (error) {
+        if (!keys || !isRedisListTimeout(error)) throw error
+        logger.warn('state::list timed out on the redis store; reading the scope by keys', { scope })
+        values = await this.readByKeys<T>(scope, keys)
+      }
     }
     if (this.backend !== 'redis' || !Array.isArray(values)) return values
     return orderLikeInsertion(values)
@@ -229,9 +233,14 @@ export class StateKV {
       function_id: 'state::list_keys',
       payload: { scope },
     })
-    if (Array.isArray(result)) return result as string[]
-    const keys = (result as { keys?: unknown })?.keys
-    return Array.isArray(keys) ? (keys as string[]) : []
+    const keys = Array.isArray(result) ? result : (result as { keys?: unknown })?.keys
+    if (!Array.isArray(keys)) return []
+    if (this.backend === 'redis') noteRedisKeys(scope, keys.length)
+    return keys as string[]
+  }
+
+  private async readByKeys<T>(scope: string, keys: string[]): Promise<T[]> {
+    return (await this.rawGetMany<T>(scope, keys, 16)).filter((value): value is T => value !== null && value !== undefined)
   }
 
   async getMany<T = unknown>(
