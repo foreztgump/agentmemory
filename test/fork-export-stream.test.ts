@@ -211,3 +211,17 @@ describe("export stream handler", () => {
     expect(calls).toBeLessThanOrEqual(3);
   });
 });
+
+describe("export stream route", () => {
+  it("registers GET /agentmemory/export/stream behind the auth middleware", async () => {
+    const { registerApiTriggers } = await import("../src/triggers/api.js");
+    const sdk = mockSdk({ looseTrigger: true });
+    registerApiTriggers(sdk as never, mockKV() as never, "secret");
+    expect(sdk.fns.has("api::export-stream")).toBe(true);
+    expect(sdk.registerTrigger).toHaveBeenCalledWith({
+      type: "http",
+      function_id: "api::export-stream",
+      config: { api_path: "/agentmemory/export/stream", http_method: "GET", middleware_function_ids: ["middleware::api-auth"] },
+    });
+  });
+});
