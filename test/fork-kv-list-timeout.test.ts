@@ -38,6 +38,23 @@ describe("StateKV.list on a redis store that times out", () => {
     expect(slow.calls).toContain("state::list_keys");
   });
 
+  it("drops a row deleted between list_keys and the point read, never returning a null row", async () => {
+    const live: Record<string, unknown> = { ...rows };
+    const base = sdk(live, ADAPTER_TIMEOUT);
+    const racing = {
+      trigger: async (req: Call) => {
+        const out = await base.trigger(req);
+        if (req.function_id === "state::list_keys") delete live.obs_7;
+        return out;
+      },
+    };
+    const got = await new StateKV(racing as never, { backend: "redis" }).list<{ id: string }>("mem:obs:s1");
+    const expected = await new StateKV(sdk(live) as never, { backend: "redis" }).list<{ id: string }>("mem:obs:s1");
+    expect(got.every((row) => row !== null && row !== undefined)).toBe(true);
+    expect(got).toEqual(expected);
+    expect(got).toHaveLength(39);
+  });
+
   it("still fails on any other error, and on the file backend", async () => {
     await expect(new StateKV(sdk(rows, "LIST_ERROR: Failed to deserialize value") as never, { backend: "redis" }).list("mem:obs:s1"))
       .rejects.toThrow("deserialize");

@@ -115,6 +115,20 @@ describe("kvrocks migration", () => {
     expect(snapshot(target.data)).toEqual(snapshot(source.data));
   });
 
+  // Kvrocks 2.17.0 INFO has no run_id (checked live); Valkey, the source, does. If the source ever
+  // lacked it, a wiped target must still be copied in full, since resume state lives in the target.
+  it("copies everything into a wiped target even when INFO has no run_id", async () => {
+    const source = new FakeRedis(sourceStore(), "");
+    const target = new FakeRedis(new Map(), "");
+    target.writesBeforeKill = 6;
+    await expect(copy(source, target, options)).rejects.toThrow("killed");
+    const wiped = new FakeRedis(new Map(), "");
+    const result = await copy(source, wiped, options);
+    expect(result.skipped).toBe(0);
+    expect(snapshot(wiped.data)).toEqual(snapshot(source.data));
+    expect((await verify(source, wiped, { page: 50, rate: 1, full: true })).ok).toBe(true);
+  });
+
   it("refuses a target that holds data but no migration marker", async () => {
     const target = new FakeRedis(new Map([["state:mem:sessions", new Map([["s", Buffer.from("{}")]])]]));
     const error = await copy(new FakeRedis(sourceStore()), target, options).catch((e) => e);
