@@ -3,6 +3,7 @@ import type { StateKV } from "../state/kv.js";
 import { KV, generateId } from "../state/schema.js";
 import type { Signal } from "../types.js";
 import { recordAudit } from "./audit.js";
+import { collectAll } from "../state/kv.js";
 
 export function registerSignalsFunction(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction("mem::signal-send", 
@@ -69,7 +70,7 @@ export function registerSignalsFunction(sdk: IIIClient, kv: StateKV): void {
         return { success: false, error: "agentId is required" };
       }
 
-      let signals = await kv.list<Signal>(KV.signals);
+      let signals = await collectAll<Signal>(kv, KV.signals);
       const now = Date.now();
 
       signals = signals.filter((s) => {
@@ -122,7 +123,7 @@ export function registerSignalsFunction(sdk: IIIClient, kv: StateKV): void {
         return { success: false, error: "agentId is required" };
       }
 
-      const signals = await kv.list<Signal>(KV.signals);
+      const signals = await collectAll<Signal>(kv, KV.signals);
       const now = Date.now();
 
       const relevant = signals.filter((s) => {
@@ -179,7 +180,7 @@ export function registerSignalsFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::signal-cleanup", 
     async () => {
-      const signals = await kv.list<Signal>(KV.signals);
+      const signals = await collectAll<Signal>(kv, KV.signals);
       const now = Date.now();
       let removed = 0;
 

@@ -686,12 +686,12 @@ export async function compactGraphProvenance(
     });
 
   if (scope === undefined || scope === "nodes") {
-    const n = await trimScope<GraphNode>(() => kv.list<string>(KV.graphNameIndex), KV.graphNodes);
+    const n = await trimScope<GraphNode>(() => collectAll<string>(kv, KV.graphNameIndex), KV.graphNodes);
     result.nodesScanned = n.scanned;
     result.nodesTrimmed = n.trimmed;
   }
   if (scope === undefined || scope === "edges") {
-    const e = await trimScope<GraphEdge>(() => kv.list<string>(KV.graphEdgeKey), KV.graphEdges);
+    const e = await trimScope<GraphEdge>(() => collectAll<string>(kv, KV.graphEdgeKey), KV.graphEdges);
     result.edgesScanned = e.scanned;
     result.edgesTrimmed = e.trimmed;
   }

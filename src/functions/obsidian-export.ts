@@ -289,9 +289,9 @@ export function registerObsidianExportFunction(
 
         const [memories, lessons, crystals, sessions] = await Promise.all([
           exportTypes.has("memories") ? collectAll<Memory>(kv, KV.memories) : Promise.resolve([] as Memory[]),
-          exportTypes.has("lessons") ? kv.list<Lesson>(KV.lessons) : Promise.resolve([] as Lesson[]),
-          exportTypes.has("crystals") ? kv.list<Crystal>(KV.crystals) : Promise.resolve([] as Crystal[]),
-          exportTypes.has("sessions") ? kv.list<Session>(KV.sessions) : Promise.resolve([] as Session[]),
+          exportTypes.has("lessons") ? collectAll<Lesson>(kv, KV.lessons) : Promise.resolve([] as Lesson[]),
+          exportTypes.has("crystals") ? collectAll<Crystal>(kv, KV.crystals) : Promise.resolve([] as Crystal[]),
+          exportTypes.has("sessions") ? collectAll<Session>(kv, KV.sessions) : Promise.resolve([] as Session[]),
         ]);
 
         for (const m of memories.filter(

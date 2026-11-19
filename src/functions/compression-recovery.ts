@@ -6,6 +6,7 @@ import { compressionInFlight, type CompressResult } from "./compress.js";
 import { compressionRaw, needsCompression, observationRevision, type StoredObservation } from "./compression-state.js";
 import { safeAudit } from "./audit.js";
 import { checkPayloadFrameSize } from "../state/frame-guard.js";
+import { collectAll } from "../state/kv.js";
 
 export interface CompressionScope {
   sessionId?: string;
@@ -76,7 +77,7 @@ export function registerCompressionRecovery(sdk: IIIClient, kv: StateKV): void {
     const after = readCursor(scope);
     const sessions = scope.sessionId
       ? [await kv.get<Session>(KV.sessions, scope.sessionId)].filter((s): s is Session => Boolean(s))
-      : await kv.list<Session>(KV.sessions);
+      : await collectAll<Session>(kv, KV.sessions);
     const eligible = sessions.filter((s) => typeof s.id === "string" && (!scope.project || s.project === scope.project))
       .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     let anchorRows: { sessionId: string; rows: StoredObservation[] } | undefined;

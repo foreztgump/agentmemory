@@ -432,7 +432,7 @@ export async function findUnindexedObservations(
   const idx = getSearchIndex()
   const tracked = await trackedUnindexedObservations(kv, idx, keywordRebuildEpoch)
   if (tracked) return tracked
-  const sessions = await kv.list<Session>(KV.sessions)
+  const sessions = await collectAll<Session>(kv, KV.sessions)
   const indexed = idx.observationCountsBySession()
   const missing: CompressedObservation[] = []
   for (const session of sessions) {
@@ -481,7 +481,7 @@ export async function rebuildIndex(kv: StateKV): Promise<number> {
     })
   }
 
-  const sessions = await kv.list<Session>(KV.sessions)
+  const sessions = await collectAll<Session>(kv, KV.sessions)
   const failedSessions: string[] = []
   // Index each session chunk as it loads instead of accumulating every
   // observation first, so peak memory stays bounded to one chunk.

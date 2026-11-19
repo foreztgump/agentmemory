@@ -1,6 +1,6 @@
 import type { ProjectSessionIndexEntry, Session } from "../types.js";
 import { KV } from "./schema.js";
-import { StateKV } from "./kv.js";
+import { StateKV, collectAll } from "./kv.js";
 import { withKeyedLock } from "./keyed-mutex.js";
 
 const PROJECT_SESSION_INDEX_CAP = 50;
@@ -68,7 +68,7 @@ async function loadStoredProjectSessionEntries(
   kv: StateKV,
   project: string,
 ): Promise<ProjectSessionIndexEntry[]> {
-  const sessions = await kv.list<Session>(KV.sessions);
+  const sessions = await collectAll<Session>(kv, KV.sessions);
   return sessions
     .filter((s) => s.project === project)
     .map((s) => ({
@@ -154,7 +154,7 @@ export async function rebuildAllProjectSessionIndexes(
   const changesSinceListing = new Map<string, RebuildChanges>();
   activeRebuilds.add(changesSinceListing);
   try {
-    const sessions = await kv.list<Session>(KV.sessions);
+    const sessions = await collectAll<Session>(kv, KV.sessions);
     const byProject = new Map<string, ProjectSessionIndexEntry[]>();
     for (const session of sessions) {
       if (!session.project) continue;

@@ -4,6 +4,7 @@ import { KV, generateId } from "../state/schema.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import type { Action, ActionEdge, Checkpoint, CompressedObservation, FunctionMetrics, Sentinel, Session } from "../types.js";
 import { recordAudit } from "./audit.js";
+import { collectAll } from "../state/kv.js";
 
 const VALID_TYPES: Sentinel["type"][] = [
   "webhook",
@@ -206,7 +207,7 @@ export function registerSentinelsFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::sentinel-check", 
     async () => {
-      const sentinels = await kv.list<Sentinel>(KV.sentinels);
+      const sentinels = await collectAll<Sentinel>(kv, KV.sentinels);
       const active = sentinels.filter((s) => s.status === "watching");
       const triggered: string[] = [];
 
@@ -262,7 +263,7 @@ export function registerSentinelsFunction(sdk: IIIClient, kv: StateKV): void {
         if (sentinel.type === "pattern") {
           const cfg = sentinel.config as { pattern: string };
           const regex = new RegExp(cfg.pattern, "i");
-          const sessions = await kv.list<Session>(KV.sessions);
+          const sessions = await collectAll<Session>(kv, KV.sessions);
           let matchedObs: CompressedObservation | null = null;
 
           for (const session of sessions) {
@@ -354,7 +355,7 @@ export function registerSentinelsFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::sentinel-list", 
     async (data: { status?: string; type?: string }) => {
-      let sentinels = await kv.list<Sentinel>(KV.sentinels);
+      let sentinels = await collectAll<Sentinel>(kv, KV.sentinels);
 
       if (data.status) {
         sentinels = sentinels.filter((s) => s.status === data.status);
@@ -374,7 +375,7 @@ export function registerSentinelsFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::sentinel-expire", 
     async () => {
-      const sentinels = await kv.list<Sentinel>(KV.sentinels);
+      const sentinels = await collectAll<Sentinel>(kv, KV.sentinels);
       const now = Date.now();
       let expired = 0;
 
@@ -417,9 +418,9 @@ async function unblockLinkedActions(
 ): Promise<number> {
   if (sentinel.linkedActionIds.length === 0) return 0;
 
-  const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
-  const allSentinels = await kv.list<Sentinel>(KV.sentinels);
-  const allCheckpoints = await kv.list<Checkpoint>(KV.checkpoints);
+  const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
+  const allSentinels = await collectAll<Sentinel>(kv, KV.sentinels);
+  const allCheckpoints = await collectAll<Checkpoint>(kv, KV.checkpoints);
   const gateMap = new Map<string, { status: string }>();
   for (const s of allSentinels) gateMap.set(s.id, { status: s.status === "triggered" ? "passed" : s.status });
   for (const c of allCheckpoints) gateMap.set(c.id, { status: c.status });

@@ -4,6 +4,7 @@ import { KV } from "../state/schema.js";
 import { logger } from "../logger.js";
 import { getFollowupStats, type RecentSearch } from "./smart-search.js";
 import { getFollowupWindowSeconds } from "../config.js";
+import { collectAll } from "../state/kv.js";
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 
@@ -15,8 +16,7 @@ export function registerRecentSearchesSweepFunction(
     "mem::diagnostic::recent-searches-sweep",
     async (): Promise<{ success: true; swept: number; skipped: number }> => {
       const cutoff = Date.now() - RETENTION_MS;
-      const rows = await kv
-        .list<Partial<RecentSearch>>(KV.recentSearches)
+      const rows = await collectAll<Partial<RecentSearch>>(kv, KV.recentSearches)
         .catch(() => []);
       let swept = 0;
       let skipped = 0;

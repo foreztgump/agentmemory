@@ -57,9 +57,9 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       const now = Date.now();
 
       if (categories.includes("actions")) {
-        const actions = await kv.list<Action>(KV.actions);
-        const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
-        const leases = await kv.list<Lease>(KV.leases);
+        const actions = await collectAll<Action>(kv, KV.actions);
+        const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
+        const leases = await collectAll<Lease>(kv, KV.leases);
         const actionMap = new Map(actions.map((a) => [a.id, a]));
 
         for (const action of actions) {
@@ -138,8 +138,8 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("leases")) {
-        const leases = await kv.list<Lease>(KV.leases);
-        const actions = await kv.list<Action>(KV.actions);
+        const leases = await collectAll<Lease>(kv, KV.leases);
+        const actions = await collectAll<Action>(kv, KV.actions);
         const actionIds = new Set(actions.map((a) => a.id));
         let leaseIssues = 0;
 
@@ -182,8 +182,8 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("sentinels")) {
-        const sentinels = await kv.list<Sentinel>(KV.sentinels);
-        const actions = await kv.list<Action>(KV.actions);
+        const sentinels = await collectAll<Sentinel>(kv, KV.sentinels);
+        const actions = await collectAll<Action>(kv, KV.actions);
         const actionIds = new Set(actions.map((a) => a.id));
         let sentinelIssues = 0;
 
@@ -229,7 +229,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("sketches")) {
-        const sketches = await kv.list<Sketch>(KV.sketches);
+        const sketches = await collectAll<Sketch>(kv, KV.sketches);
         let sketchIssues = 0;
 
         for (const sketch of sketches) {
@@ -260,7 +260,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("signals")) {
-        const signals = await kv.list<Signal>(KV.signals);
+        const signals = await collectAll<Signal>(kv, KV.signals);
         let signalIssues = 0;
 
         for (const signal of signals) {
@@ -291,7 +291,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("sessions")) {
-        const sessions = await kv.list<Session>(KV.sessions);
+        const sessions = await collectAll<Session>(kv, KV.sessions);
         let sessionIssues = 0;
 
         for (const session of sessions) {
@@ -405,7 +405,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
         // Counts only live lessons (deleted=true rows are tombstoned).
         // Catches bad confidence values that would silently break recall
         // scoring (memory_lesson_recall multiplies by confidence).
-        const lessons = await kv.list<Lesson>(KV.lessons);
+        const lessons = await collectAll<Lesson>(kv, KV.lessons);
         const live = lessons.filter((l) => !l.deleted);
         let lessonIssues = 0;
         for (const l of live) {
@@ -441,7 +441,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("summaries")) {
-        const summaries = await kv.list<SessionSummary>(KV.summaries);
+        const summaries = await collectAll<SessionSummary>(kv, KV.summaries);
         let summaryIssues = 0;
         for (const s of summaries) {
           // typeof guard before .trim() — a corrupted row with title=null
@@ -526,7 +526,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("crystals")) {
-        const crystals = await kv.list<Crystal>(KV.crystals);
+        const crystals = await collectAll<Crystal>(kv, KV.crystals);
         let crystalIssues = 0;
         for (const c of crystals) {
           if (typeof c.narrative !== "string" || c.narrative.trim().length === 0) {
@@ -668,8 +668,8 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       const now = Date.now();
 
       if (categories.includes("actions")) {
-        const actions = await kv.list<Action>(KV.actions);
-        const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
+        const actions = await collectAll<Action>(kv, KV.actions);
+        const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
         const actionMap = new Map(actions.map((a) => [a.id, a]));
 
         for (const action of actions) {
@@ -695,12 +695,12 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
                   async () => {
                     const fresh = await kv.get<Action>(KV.actions, action.id);
                     if (!fresh || fresh.status !== "blocked") return false;
-                    const freshEdges = await kv.list<ActionEdge>(KV.actionEdges);
+                    const freshEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
                     const freshDeps = freshEdges.filter(
                       (e) =>
                         e.sourceActionId === fresh.id && e.type === "requires",
                     );
-                    const freshActions = await kv.list<Action>(KV.actions);
+                    const freshActions = await collectAll<Action>(kv, KV.actions);
                     const freshMap = new Map(
                       freshActions.map((a) => [a.id, a]),
                     );
@@ -754,12 +754,12 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
                   async () => {
                     const fresh = await kv.get<Action>(KV.actions, action.id);
                     if (!fresh || fresh.status !== "pending") return false;
-                    const freshEdges = await kv.list<ActionEdge>(KV.actionEdges);
+                    const freshEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
                     const freshDeps = freshEdges.filter(
                       (e) =>
                         e.sourceActionId === fresh.id && e.type === "requires",
                     );
-                    const freshActions = await kv.list<Action>(KV.actions);
+                    const freshActions = await collectAll<Action>(kv, KV.actions);
                     const freshMap = new Map(
                       freshActions.map((a) => [a.id, a]),
                     );
@@ -794,8 +794,8 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("leases")) {
-        const leases = await kv.list<Lease>(KV.leases);
-        const actions = await kv.list<Action>(KV.actions);
+        const leases = await collectAll<Lease>(kv, KV.leases);
+        const actions = await collectAll<Action>(kv, KV.actions);
         const actionIds = new Set(actions.map((a) => a.id));
 
         for (const lease of leases) {
@@ -880,7 +880,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("sentinels")) {
-        const sentinels = await kv.list<Sentinel>(KV.sentinels);
+        const sentinels = await collectAll<Sentinel>(kv, KV.sentinels);
 
         for (const sentinel of sentinels) {
           if (
@@ -932,7 +932,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("sketches")) {
-        const sketches = await kv.list<Sketch>(KV.sketches);
+        const sketches = await collectAll<Sketch>(kv, KV.sketches);
 
         for (const sketch of sketches) {
           if (
@@ -958,7 +958,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
                   return false;
                 }
 
-                const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
+                const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
                 const actionIdSet = new Set(fresh.actionIds);
                 for (const edge of allEdges) {
                   if (
@@ -1006,7 +1006,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("signals")) {
-        const signals = await kv.list<Signal>(KV.signals);
+        const signals = await collectAll<Signal>(kv, KV.signals);
 
         for (const signal of signals) {
           if (

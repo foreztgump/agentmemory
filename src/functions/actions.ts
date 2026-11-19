@@ -5,6 +5,7 @@ import { withKeyedLock } from "../state/keyed-mutex.js";
 import { pageAfterCursor, sortByKeyDesc } from "../state/list-query.js";
 import type { Action, ActionEdge } from "../types.js";
 import { recordAudit } from "./audit.js";
+import { collectAll } from "../state/kv.js";
 
 export function registerActionsFunction(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction("mem::action-create", 
@@ -211,7 +212,7 @@ export function registerActionsFunction(sdk: IIIClient, kv: StateKV): void {
       limit?: number;
       cursor?: string;
     }) => {
-      let actions = await kv.list<Action>(KV.actions);
+      let actions = await collectAll<Action>(kv, KV.actions);
 
       if (data.status) {
         actions = actions.filter((a) => a.status === data.status);
@@ -253,14 +254,14 @@ export function registerActionsFunction(sdk: IIIClient, kv: StateKV): void {
         return { success: false, error: "action not found" };
       }
 
-      const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
+      const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
       const edges = allEdges.filter(
         (e) =>
           e.sourceActionId === data.actionId ||
           e.targetActionId === data.actionId,
       );
 
-      const children = (await kv.list<Action>(KV.actions)).filter(
+      const children = (await collectAll<Action>(kv, KV.actions)).filter(
         (a) => a.parentId === data.actionId,
       );
 
@@ -273,14 +274,14 @@ async function propagateCompletion(
   kv: StateKV,
   completedActionId: string,
 ): Promise<void> {
-  const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
+  const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
   const unlockEdges = allEdges.filter(
     (e) =>
       e.targetActionId === completedActionId &&
       (e.type === "requires" || e.type === "unlocks"),
   );
 
-  const allActions = await kv.list<Action>(KV.actions);
+  const allActions = await collectAll<Action>(kv, KV.actions);
   const actionMap = new Map(allActions.map((a) => [a.id, a]));
 
   for (const edge of unlockEdges) {

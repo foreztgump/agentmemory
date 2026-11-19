@@ -1,7 +1,7 @@
 import type { IIIClient } from "iii-sdk";
 import type { EmbeddingProvider } from "../types.js";
 import { KV } from "../state/schema.js";
-import { StateKV } from "../state/kv.js";
+import { StateKV, collectAll } from "../state/kv.js";
 import { isManagedImagePath } from "../utils/image-store.js";
 import { recordAudit } from "./audit.js";
 import { logger } from "../logger.js";
@@ -114,7 +114,7 @@ export function registerVisionSearchFunctions(
 
       if (!queryVec) return { success: false, error: "failed to build query vector" };
 
-      const stored = await kv.list<StoredEmbedding>(KV.imageEmbeddings);
+      const stored = await collectAll<StoredEmbedding>(kv, KV.imageEmbeddings);
       const filtered = data?.sessionId
         ? stored.filter((s) => s.sessionId === data.sessionId)
         : stored;

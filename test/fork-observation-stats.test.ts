@@ -273,10 +273,6 @@ describe("capture inbox paging", () => {
     const { registerCaptureFunctions } = await import("../src/functions/capture.js");
     registerObserveFunction(h.sdk as never, h.kv, undefined, 500);
     const controller = registerCaptureFunctions(h.sdk as never, h.kv);
-    const accepted = (await h.call("mem::capture", {
-      payload: { sessionId: "ses_inbox", project: "proj", cwd: "/tmp", hookType: "post_tool_use", timestamp: new Date().toISOString(), data: { tool_name: "Read" } },
-    })) as { status: string; state?: string };
-    expect(accepted).toMatchObject({ status: "accepted", state: "completed" });
     const now = new Date().toISOString();
     for (const [key, status] of [["k_pending", "pending"], ["k_dead", "dead"]] as const) {
       await h.kv.set(KV.captureInbox, key, {
@@ -286,6 +282,10 @@ describe("capture inbox paging", () => {
         payload: { sessionId: "ses_inbox", project: "proj", cwd: "/tmp", hookType: "post_tool_use", timestamp: now, data: { tool_name: key } },
       });
     }
+    const accepted = (await h.call("mem::capture", {
+      payload: { sessionId: "ses_inbox", project: "proj", cwd: "/tmp", hookType: "post_tool_use", timestamp: new Date().toISOString(), data: { tool_name: "Read" } },
+    })) as { status: string; state?: string };
+    expect(accepted).toMatchObject({ status: "accepted", state: "completed" });
     expect(await h.call("mem::capture-list", {})).toMatchObject({ total: 2 });
     expect(await controller.sweep()).toMatchObject({ processed: 1, recovered: 1 });
     expect(await controller.prune()).toBeGreaterThanOrEqual(1);

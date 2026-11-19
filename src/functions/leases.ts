@@ -4,6 +4,7 @@ import { KV, generateId } from "../state/schema.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import type { Action, Lease } from "../types.js";
 import { recordAudit } from "./audit.js";
+import { collectAll } from "../state/kv.js";
 
 const DEFAULT_LEASE_TTL_MS = 10 * 60 * 1000;
 const MAX_LEASE_TTL_MS = 60 * 60 * 1000;
@@ -32,7 +33,7 @@ export function registerLeasesFunction(sdk: IIIClient, kv: StateKV): void {
           return { success: false, error: "action is blocked" };
         }
 
-        const existingLeases = await kv.list<Lease>(KV.leases);
+        const existingLeases = await collectAll<Lease>(kv, KV.leases);
         const activeLease = existingLeases.find(
           (l) =>
             l.actionId === data.actionId &&
@@ -96,7 +97,7 @@ export function registerLeasesFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       return withKeyedLock(`mem:action:${data.actionId}`, async () => {
-        const leases = await kv.list<Lease>(KV.leases);
+        const leases = await collectAll<Lease>(kv, KV.leases);
         const activeLease = leases.find(
           (l) =>
             l.actionId === data.actionId &&
@@ -153,7 +154,7 @@ export function registerLeasesFunction(sdk: IIIClient, kv: StateKV): void {
       const ttl = Math.min(rawTtl, MAX_LEASE_TTL_MS);
 
       return withKeyedLock(`mem:action:${data.actionId}`, async () => {
-        const leases = await kv.list<Lease>(KV.leases);
+        const leases = await collectAll<Lease>(kv, KV.leases);
         const activeLease = leases.find(
           (l) =>
             l.actionId === data.actionId &&
@@ -186,7 +187,7 @@ export function registerLeasesFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::lease-cleanup", 
     async () => {
-      const leases = await kv.list<Lease>(KV.leases);
+      const leases = await collectAll<Lease>(kv, KV.leases);
       const now = Date.now();
       let expired = 0;
 
@@ -215,7 +216,7 @@ export function registerLeasesFunction(sdk: IIIClient, kv: StateKV): void {
               });
 
               const action = await kv.get<Action>(KV.actions, currentLease.actionId);
-              const otherActiveLease = (await kv.list<Lease>(KV.leases)).some(
+              const otherActiveLease = (await collectAll<Lease>(kv, KV.leases)).some(
                 (l) =>
                   l.id !== currentLease.id &&
                   l.actionId === currentLease.actionId &&

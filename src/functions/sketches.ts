@@ -4,6 +4,7 @@ import { KV, generateId } from "../state/schema.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import type { Action, ActionEdge, Sketch } from "../types.js";
 import { safeAudit } from "./audit.js";
+import { collectAll } from "../state/kv.js";
 
 export function registerSketchesFunction(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction("mem::sketch-create", 
@@ -192,7 +193,7 @@ export function registerSketchesFunction(sdk: IIIClient, kv: StateKV): void {
 
         const actionIdSet = new Set(sketch.actionIds);
 
-        const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
+        const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
         for (const edge of allEdges) {
           if (
             actionIdSet.has(edge.sourceActionId) ||
@@ -228,7 +229,7 @@ export function registerSketchesFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::sketch-list", 
     async (data: { status?: string; project?: string }) => {
-      let sketches = await kv.list<Sketch>(KV.sketches);
+      let sketches = await collectAll<Sketch>(kv, KV.sketches);
 
       if (data.status) {
         sketches = sketches.filter((s) => s.status === data.status);
@@ -253,7 +254,7 @@ export function registerSketchesFunction(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::sketch-gc", 
     async () => {
-      const sketches = await kv.list<Sketch>(KV.sketches);
+      const sketches = await collectAll<Sketch>(kv, KV.sketches);
       const now = Date.now();
       let collected = 0;
 
@@ -277,7 +278,7 @@ export function registerSketchesFunction(sdk: IIIClient, kv: StateKV): void {
 
           const actionIdSet = new Set(current.actionIds);
 
-          const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
+          const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
           for (const edge of allEdges) {
             if (
               actionIdSet.has(edge.sourceActionId) ||

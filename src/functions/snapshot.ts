@@ -67,12 +67,11 @@ export function registerSnapshotFunction(
         await ensureGitRepo(snapshotDir);
         const ts = new Date().toISOString();
 
-        const sessions = await kv.list<Session>(KV.sessions);
+        const sessions = await collectAll<Session>(kv, KV.sessions);
         const memories = await collectAll<Memory>(kv, KV.memories);
         const graphNodes = await collectAll<GraphNode>(kv, KV.graphNodes);
         const graphEdges = await collectAll<GraphEdge>(kv, KV.graphEdges);
-        const accessLogs = await kv
-          .list<AccessLogExport>(KV.accessLog)
+        const accessLogs = await collectAll<AccessLogExport>(kv, KV.accessLog)
           .catch(() => [] as AccessLogExport[]);
 
         const observations: Record<string, unknown[]> = {};

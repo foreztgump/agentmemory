@@ -26,6 +26,7 @@ import { indexRecords } from "./search.js";
 import { logger } from "../logger.js";
 import { rawFromObservationSource } from "./observation-source.js";
 import { budgetImportedObservationSources } from "./observation-source-budget.js";
+import { collectAll } from "../state/kv.js";
 
 export const MAX_FILES_DEFAULT = 200;
 export const MAX_FILES_UPPER_BOUND = 1000;
@@ -327,7 +328,7 @@ export function registerReplayFunctions(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction(
     "mem::replay::sessions",
     async (): Promise<{ success: true; sessions: Session[] }> => {
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = await collectAll<Session>(kv, KV.sessions);
       sessions.sort((a, b) => (b.startedAt || "").localeCompare(a.startedAt || ""));
       return { success: true, sessions };
     },

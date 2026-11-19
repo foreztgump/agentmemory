@@ -137,7 +137,7 @@ export function registerRetentionFunctions(
       const [memories, semanticMems, allLogs] = await Promise.all([
         collectAll<Memory>(kv, KV.memories),
         collectAll<SemanticMemory>(kv, KV.semantic),
-        kv.list<unknown>(KV.accessLog).catch(() => [] as unknown[]),
+        collectAll<unknown>(kv, KV.accessLog).catch(() => [] as unknown[]),
       ]);
       const logsById = new Map<string, AccessLog>();
       for (const raw of allLogs) {
@@ -308,7 +308,7 @@ export function registerRetentionFunctions(
       const maxEvict = Math.min(1000, Math.max(0, maxEvictRaw));
       const { decrementImageRef } = await import("./image-refs.js");
 
-      const allScores = await kv.list<RetentionScore>(KV.retentionScores);
+      const allScores = await collectAll<RetentionScore>(kv, KV.retentionScores);
       const candidates = allScores
         .filter((s) => s.score < threshold)
         .sort((a, b) => a.score - b.score)

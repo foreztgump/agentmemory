@@ -422,7 +422,7 @@ async function collectSyncData(
   }
 
   if (scopes.includes("actions")) {
-    let all = await kv.list<Action>(KV.actions);
+    let all = await collectAll<Action>(kv, KV.actions);
     if (syncFilter?.project) {
       all = all.filter((a) => a.project === syncFilter.project);
     }

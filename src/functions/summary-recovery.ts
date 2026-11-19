@@ -7,6 +7,7 @@ import { logger } from "../logger.js";
 import { compressionInFlight } from "./compress.js";
 import { compressionRaw, needsCompression, type StoredObservation } from "./compression-state.js";
 import { getSummaryTriggerTimeoutMs, summaryCovers, summaryObservations } from "./summary-state.js";
+import { collectAll } from "../state/kv.js";
 
 export const SUMMARY_RETRY_MS = 30_000;
 export const SUMMARY_RETRY_MAX_MS = 60 * 60_000;
@@ -101,7 +102,7 @@ export function registerSummaryRecoveryFunction(sdk: IIIClient, kv: StateKV, has
   });
   sdk.registerFunction("mem::summary-recover", async (data?: { now?: number }) => {
     const now = typeof data?.now === "number" && Number.isFinite(data.now) ? data.now : Date.now();
-    const pending = await kv.list<SessionSummaryRepair>(KV.summaryRepairs);
+    const pending = await collectAll<SessionSummaryRepair>(kv, KV.summaryRepairs);
     const ready = pending.filter((entry) => entry && typeof entry.sessionId === "string" &&
       typeof entry.token === "string" && Number.isFinite(entry.dueAt) &&
       (entry.dueAt <= now || (entry.lastError === "no_provider" && hasProvider())) && !active.has(entry.sessionId))

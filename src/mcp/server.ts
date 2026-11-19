@@ -1315,7 +1315,7 @@ export function registerMcpEndpoints(
             const branch = typeof args.branch === "string" ? args.branch : undefined;
             const repo = typeof args.repo === "string" ? args.repo : undefined;
             const limit = Math.max(1, Math.min(500, asNumber(args.limit, 100) ?? 100));
-            const all = await kv.list(KV.commits);
+            const all = await collectAll(kv, KV.commits);
             const filtered = (all as Array<{ branch?: string; repo?: string; linkedAt?: string }>)
               .filter((c) => !branch || c.branch === branch)
               .filter((c) => !repo || c.repo === repo)
@@ -1414,7 +1414,7 @@ export function registerMcpEndpoints(
 
       try {
         if (uri === "agentmemory://status") {
-          const sessions = await kv.list<Session>(KV.sessions);
+          const sessions = await collectAll<Session>(kv, KV.sessions);
           const memories = await collectAll<Memory>(kv, KV.memories);
           const healthData = await kv.list(KV.health).catch(() => []);
           return {
@@ -1479,7 +1479,7 @@ export function registerMcpEndpoints(
               body: { error: "Invalid percent-encoding in URI" },
             };
           }
-          const summaries = await kv.list<SessionSummary>(KV.summaries);
+          const summaries = await collectAll<SessionSummary>(kv, KV.summaries);
           const filtered = summaries
             .filter((s) => s.project === projectName)
             .sort(
@@ -1582,7 +1582,7 @@ export function registerMcpEndpoints(
         if (teamProfileMatch) {
           try {
             const teamId = decodeURIComponent(teamProfileMatch[1]);
-            const items = await kv.list(KV.teamShared(teamId));
+            const items = await collectAll(kv, KV.teamShared(teamId));
             return {
               status_code: 200,
               body: {
@@ -1760,7 +1760,7 @@ export function registerMcpEndpoints(
               };
             }
             const session = await kv.get<Session>(KV.sessions, sessionId);
-            const summaries = await kv.list<SessionSummary>(KV.summaries);
+            const summaries = await collectAll<SessionSummary>(kv, KV.summaries);
             const summary = summaries.find((s) => s.sessionId === sessionId);
             return {
               status_code: 200,

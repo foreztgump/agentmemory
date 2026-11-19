@@ -297,7 +297,7 @@ describe("durable capture", () => {
 
   it("does not write a second observation when the crash came after the write", async () => {
     const kv = mockKV();
-    const { capture, controller, sdk } = await boot(kv);
+    const { capture, sdk } = await boot(kv);
     const done = await capture(payload("after-write"), "evc_000000000012");
     const [eventScope] = [...kv.store.keys()].filter((k) => k.startsWith("mem:capture:events:"));
     const completed = [...kv.store.get(eventScope!)!.values()][0] as Record<string, unknown>;
@@ -313,7 +313,8 @@ describe("durable capture", () => {
     });
     const observeCalls = vi.fn(sdk.fns.get("mem::observe")!);
     sdk.fns.set("mem::observe", observeCalls);
-    await controller.sweep();
+    const { registerCaptureFunctions } = await import("../src/functions/capture.js");
+    await registerCaptureFunctions(sdk as never, kv as never).sweep();
     expect(observeCalls).toHaveBeenCalledTimes(1);
     expect(await observeCalls.mock.results[0]!.value).toMatchObject({ observationId: done.observationId, existing: true });
     expect(observations(kv)).toHaveLength(1);

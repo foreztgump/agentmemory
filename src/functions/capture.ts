@@ -19,7 +19,8 @@ import {
 import { restoreIndexEntries } from "./observe.js";
 import { prunePromptLedgers } from "../capture/prompt-ledger.js";
 import { scrubRecord } from "./privacy.js";
-import { countRows, scanRows } from "../fork/kv/paged-scan.js";
+import { scanRows } from "../fork/kv/paged-scan.js";
+import { RowIndex } from "../fork/kv/row-index.js";
 import { runtimeConfigPath } from "../cli/engine-launch.js";
 import { captureDurableAfterMs, engineStateConfigPaths } from "../cli/engine-config.js";
 import {
@@ -217,14 +218,9 @@ export function registerCaptureFunctions(
   let lastPruneAt: string | null = null;
   let lastBootDrain: CaptureStatus["lastBootDrain"] = null;
   let sweeping: Promise<{ processed: number; recovered: number; deadLettered: number }> | null = null;
-  let inboxSize: number | null = null;
+  const inboxIndex = new RowIndex<InboxRecord, InboxEntry>(kv, KV.captureInbox, ({ payload: _payload, ...entry }) => entry);
   const timers: Array<ReturnType<typeof setInterval>> = [];
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
-
-  async function currentInboxSize(): Promise<number> {
-    if (inboxSize === null) inboxSize = await countRows(kv, KV.captureInbox);
-    return inboxSize;
-  }
 
   async function complete(rec: InboxRecord, observationId: string): Promise<void> {
     const done: CompletedEvent = {
@@ -239,7 +235,7 @@ export function registerCaptureFunctions(
     };
     if (rec.eventSource === "client") await kv.set(eventScope(rec.key), rec.key, done);
     await kv.delete(KV.captureInbox, rec.key);
-    if (inboxSize !== null) inboxSize = Math.max(0, inboxSize - 1);
+    inboxIndex.drop(rec.key);
     counters.completed++;
   }
 
@@ -286,6 +282,7 @@ export function registerCaptureFunctions(
       const dead: InboxRecord = { ...rec, status: "dead", updatedAt: now.toISOString(), deadAt: now.toISOString(), lastError: message };
       delete dead.nextAttemptAt;
       await kv.set(KV.captureInbox, rec.key, dead);
+      inboxIndex.put(dead);
       counters.deadLettered++;
       logger.warn("capture moved to dead letters", { eventId: rec.eventId, attempts: rec.attempts, error: message });
       return { status: "rejected", eventId: rec.eventId, error: message, retryable: false, observationId: rec.observationId };
@@ -293,6 +290,7 @@ export function registerCaptureFunctions(
     const nextAttemptAt = new Date(now.getTime() + backoffMs(rec.attempts, policy)).toISOString();
     const retrying: InboxRecord = { ...rec, status: "retrying", updatedAt: now.toISOString(), nextAttemptAt, lastError: message };
     await kv.set(KV.captureInbox, rec.key, retrying);
+    inboxIndex.put(retrying);
     counters.retried++;
     logger.warn("capture processing failed, will retry", { eventId: rec.eventId, attempts: rec.attempts, nextAttemptAt, error: message });
     return { status: "accepted", state: "retrying", eventId: rec.eventId, observationId: rec.observationId, attempts: rec.attempts, nextAttemptAt, error: message };
@@ -330,7 +328,7 @@ export function registerCaptureFunctions(
         counters.duplicates++;
         return { status: "duplicate", state: queued.status, eventId, observationId: queued.observationId, deduplicated: true };
       }
-      if ((await currentInboxSize()) >= policy.inboxMax) {
+      if ((await inboxIndex.size()) >= policy.inboxMax) {
         counters.rejected++;
         return { status: "rejected", eventId, error: `capture inbox is full (${policy.inboxMax} unprocessed events)`, retryable: true };
       }
@@ -351,7 +349,7 @@ export function registerCaptureFunctions(
         payload: { ...cleanPayload, data: scrubRecord(cleanPayload.data) },
       };
       await kv.set(KV.captureInbox, key, rec);
-      if (inboxSize !== null) inboxSize++;
+      inboxIndex.put(rec);
       counters.accepted++;
       return attempt(rec);
     });
@@ -360,12 +358,15 @@ export function registerCaptureFunctions(
   async function retryOne(key: string, force: boolean): Promise<"recovered" | "dead" | "waiting" | "gone"> {
     return withKeyedLock(`capture:${key}`, async () => {
       const rec = await kv.get<InboxRecord>(KV.captureInbox, key);
-      if (!rec) return "gone";
+      if (!rec) {
+        inboxIndex.drop(key);
+        return "gone";
+      }
       if (rec.status === "dead" && !force) return "waiting";
       if (!force && rec.status === "retrying" && rec.nextAttemptAt && Date.parse(rec.nextAttemptAt) > Date.now()) return "waiting";
       if (rec.eventSource === "client" && (await kv.get<CompletedEvent>(eventScope(key), key))?.state === "deleted") {
         await kv.delete(KV.captureInbox, key);
-        if (inboxSize !== null) inboxSize = Math.max(0, inboxSize - 1);
+        inboxIndex.drop(key);
         counters.duplicates++;
         return "gone";
       }
@@ -377,12 +378,8 @@ export function registerCaptureFunctions(
     });
   }
 
-  const inboxEntries = () =>
-    scanRows<InboxRecord, InboxEntry>(kv, KV.captureInbox, ({ payload: _payload, ...entry }) => entry);
-
   async function runSweep(): Promise<{ processed: number; recovered: number; deadLettered: number }> {
-    const records = await inboxEntries();
-    inboxSize = records.length;
+    const records = await inboxIndex.entries();
     let processed = 0;
     let recovered = 0;
     let deadLettered = 0;
@@ -428,17 +425,16 @@ export function registerCaptureFunctions(
         }
       }
     }
-    const inbox = await inboxEntries().catch(() => [] as InboxEntry[]);
-    const dead = inbox.filter((r) => r && r.status === "dead").sort((a, b) => (b.deadAt ?? "").localeCompare(a.deadAt ?? ""));
+    const scanned = await inboxIndex.reload().catch(() => [] as InboxEntry[]);
+    const dead = scanned.filter((r) => r && r.status === "dead").sort((a, b) => (b.deadAt ?? "").localeCompare(a.deadAt ?? ""));
     for (let j = 0; j < dead.length; j++) {
       const rec = dead[j]!;
       if (j >= policy.deadMax || Date.parse(rec.deadAt ?? rec.updatedAt) < cutoff) {
-        await kv.delete(KV.captureInbox, rec.key).catch(() => {});
+        await kv.delete(KV.captureInbox, rec.key).then(() => inboxIndex.drop(rec.key), () => {});
         removed++;
       }
     }
     removed += await prunePromptLedgers(kv, cutoff, policy.eventsMax);
-    inboxSize = null;
     counters.pruned += removed;
     lastPruneAt = new Date().toISOString();
     return removed;
@@ -496,8 +492,7 @@ export function registerCaptureFunctions(
   async function status(): Promise<CaptureStatus> {
     let inbox: CaptureStatus["inbox"] = null;
     try {
-      const records = await inboxEntries();
-      inboxSize = records.length;
+      const records = await inboxIndex.entries();
       const live = records.filter((r) => r.status !== "dead");
       const next = live
         .map((r) => r.nextAttemptAt)
@@ -530,7 +525,7 @@ export function registerCaptureFunctions(
   sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string }) => capture(input));
 
   sdk.registerFunction("mem::capture-retry", async (input: { eventId?: string; key?: string; all?: boolean } = {}) => {
-    const records = await inboxEntries();
+    const records = await inboxIndex.entries();
     const targets = records.filter((r) => {
       if (input.key) return r.key === input.key;
       if (input.eventId) return r.eventId === input.eventId;

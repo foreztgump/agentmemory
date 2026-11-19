@@ -3,6 +3,7 @@ import type { StateKV } from "../state/kv.js";
 import { KV, generateId } from "../state/schema.js";
 import type { Action, ActionEdge, Crystal, MemoryProvider } from "../types.js";
 import { scrubRecord } from "./privacy.js";
+import { collectAll } from "../state/kv.js";
 
 interface CrystalDigest {
   narrative: string;
@@ -46,7 +47,7 @@ export function registerCrystallizeFunction(
         actions.push(action);
       }
 
-      const allEdges = await kv.list<ActionEdge>(KV.actionEdges);
+      const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
       const idSet = new Set(data.actionIds);
       const relevantEdges = allEdges.filter(
         (e) => idSet.has(e.sourceActionId) || idSet.has(e.targetActionId),
@@ -113,7 +114,7 @@ export function registerCrystallizeFunction(
       limit?: number;
     }) => {
       const limit = data.limit ?? 20;
-      let crystals = await kv.list<Crystal>(KV.crystals);
+      let crystals = await collectAll<Crystal>(kv, KV.crystals);
 
       if (data.project) {
         crystals = crystals.filter((c) => c.project === data.project);
@@ -156,7 +157,7 @@ export function registerCrystallizeFunction(
       const dryRun = data.dryRun ?? false;
       const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
 
-      let allActions = await kv.list<Action>(KV.actions);
+      let allActions = await collectAll<Action>(kv, KV.actions);
 
       allActions = allActions.filter(
         (a) =>

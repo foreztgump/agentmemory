@@ -10,7 +10,7 @@ import type {
 } from "../types.js";
 import { getSearchResultLayer, isSearchLayer, matchesSearchLayer, type SearchLayer, type SearchResultLayer } from "../state/search-layer.js";
 import { KV } from "../state/schema.js";
-import { StateKV } from "../state/kv.js";
+import { StateKV, collectAll } from "../state/kv.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import {
   indexObservationSession,
@@ -422,7 +422,7 @@ async function findObservation(
     if (obs) return { observation: obs, layer: "observation" };
   }
 
-  const sessions = await kv.list<{ id: string }>(KV.sessions);
+  const sessions = await collectAll<{ id: string }>(kv, KV.sessions);
   for (let i = 0; i < sessions.length; i += 5) {
     const batch = sessions.slice(i, i + 5);
     const results = await Promise.all(

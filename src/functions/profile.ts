@@ -36,7 +36,7 @@ export function registerProfileFunction(sdk: IIIClient, kv: StateKV): void {
         }
       }
 
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = await collectAll<Session>(kv, KV.sessions);
       const projectSessions = sessions.filter(
         (s) => s.project === project,
       );

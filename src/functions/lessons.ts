@@ -6,6 +6,7 @@ import { SearchIndex } from "../state/search-index.js";
 import { lessonToObservation } from "../state/memory-utils.js";
 import { recordAudit } from "./audit.js";
 import { deleteFacetsForTargets } from "./facets.js";
+import { collectAll } from "../state/kv.js";
 
 // Dedicated BM25 index for lessons, with the full records cached
 // alongside it. Recall previously listed every lesson from KV and
@@ -36,7 +37,7 @@ async function ensureLessonIndex(kv: StateKV): Promise<SearchIndex> {
     const generation = lessonIndexGeneration;
     lessonIndexBuild = (async () => {
       const idx = new SearchIndex();
-      const all = await kv.list<Lesson>(KV.lessons);
+      const all = await collectAll<Lesson>(kv, KV.lessons);
       if (generation !== lessonIndexGeneration) return;
       for (const l of all) {
         if (!l.deleted) {
@@ -243,7 +244,7 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
     }) => {
       const limit = data.limit ?? 50;
       const minConfidence = data.minConfidence ?? 0;
-      let lessons = await kv.list<Lesson>(KV.lessons);
+      let lessons = await collectAll<Lesson>(kv, KV.lessons);
 
       lessons = lessons.filter(
         (l) => !l.deleted && l.confidence >= minConfidence,
@@ -321,7 +322,7 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::lesson-decay-sweep", 
     async () => {
-      const lessons = await kv.list<Lesson>(KV.lessons);
+      const lessons = await collectAll<Lesson>(kv, KV.lessons);
       let decayed = 0;
       let softDeleted = 0;
       const now = Date.now();
