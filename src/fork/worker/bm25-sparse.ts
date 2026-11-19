@@ -29,7 +29,11 @@ const TRAILING_PUNCTUATION = /[./\\\]^_]+$/u;
 const PREFIX_WEIGHT = 0.5;
 
 export function docSparse(fields: TermSource, avgdl: number): Sparse {
-  const terms = extractTerms(fields);
+  return termsSparse(extractTerms(fields), avgdl);
+}
+
+/** BM25 document weights for the extracted terms of one document, normalised by the corpus mean length. */
+export function termsSparse(terms: readonly string[], avgdl: number): Sparse {
   const counts = new Map<string, number>();
   for (const t of terms) counts.set(t, (counts.get(t) ?? 0) + 1);
   const norm = K1 * (1 - B + (B * terms.length) / avgdl);

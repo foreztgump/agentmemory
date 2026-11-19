@@ -40,8 +40,10 @@ export interface KeywordIndexPort {
 
   layerOf(id: string): SearchResultLayer | undefined;
   sessionOf(id: string): string | undefined;
-  /** false may mean unknown for a remote index; callers treat add() as an upsert. */
+  /** false may mean unknown for a remote index until prefetch() ran for the id; callers treat add() as an upsert. */
   has(id: string): boolean;
+  /** A remote index loads these ids so has/sessionOf/layerOf answer for them; an in-process index knows them already. */
+  prefetch?(ids: readonly string[]): Promise<void>;
   readonly size: number;
 
   observationCountsBySession(): MaybePromise<Map<string, number>>;

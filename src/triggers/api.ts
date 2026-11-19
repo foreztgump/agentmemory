@@ -1595,6 +1595,7 @@ export function registerApiTriggers(
         .slice(0, 200);
       if (ids.length === 0) return { status_code: 400, body: { error: "ids required" } };
       const index = getSearchIndex();
+      await index.prefetch?.(ids);
       const sessions: Record<string, string> = {};
       for (const id of ids) {
         const sessionId = index.sessionOf(id);

@@ -70,6 +70,8 @@ export class Qdrant {
       ["session_id", "keyword"],
       ["ts", "integer"],
       ["dense", "bool"],
+      ["dl", "integer"],
+      ["ad", "float"],
     ] as const) {
       await this.call("PUT", `${this.path}/index?wait=true`, { field_name, field_schema });
     }

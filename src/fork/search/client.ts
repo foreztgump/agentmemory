@@ -7,7 +7,9 @@ import {
   type HealthResult,
   type Hit,
   type HitsResult,
+  type LookupResult,
   type Op,
+  type OpVersion,
   type ScanMissingResult,
   type SessionCountsResult,
   type StatsResult,
@@ -15,7 +17,9 @@ import {
 
 /** The whole search::* protocol as the app worker sees it. */
 export interface SearchWorkerClient {
-  apply(ops: Op[]): Promise<ApplyResult>;
+  apply(ops: Op[], version?: OpVersion): Promise<ApplyResult>;
+  /** Live documents among ids; unknown and deleted ids are absent. */
+  lookup(ids: string[]): Promise<LookupResult["items"]>;
   keyword(query: string, limit: number, layer: SearchLayer): Promise<Hit[]>;
   vector(f32b64: string, limit: number, layer: SearchLayer): Promise<Hit[]>;
   stats(): Promise<StatsResult>;
@@ -33,7 +37,8 @@ export function iiiSearchClient(sdk: IIIClient): SearchWorkerClient {
   const call = <T>(function_id: string, payload: unknown, timeoutMs = READ_TIMEOUT_MS) =>
     sdk.trigger<unknown, T>({ function_id, payload, timeoutMs });
   return {
-    apply: (ops) => call<ApplyResult>(SEARCH_FN.apply, { ops }, WRITE_TIMEOUT_MS),
+    apply: (ops, version) => call<ApplyResult>(SEARCH_FN.apply, { ops, version }, WRITE_TIMEOUT_MS),
+    lookup: async (ids) => (await call<LookupResult>(SEARCH_FN.lookup, { ids })).items,
     keyword: async (query, limit, layer) => (await call<HitsResult>(SEARCH_FN.keyword, { query, limit, layer }, SEARCH_TIMEOUT_MS)).hits,
     vector: async (f32b64, limit, layer) => (await call<HitsResult>(SEARCH_FN.vector, { f32b64, limit, layer }, SEARCH_TIMEOUT_MS)).hits,
     stats: () => call<StatsResult>(SEARCH_FN.stats, {}),

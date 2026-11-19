@@ -4,13 +4,13 @@ export interface SearchWorkerSettings {
   collection: string;
   dimensions: number;
   oversampling: number;
-  /** Mean document length in terms; frozen so a document's sparse weights never need rewriting. */
+  /** Mean document length in terms, used only until the collection holds a document. */
   avgdl: number;
 }
 
 // Mean term count per document of the synthetic corpus shaped like buddy's store
-// (bench/fork/profiles/buddy-2026-11-16.json); keyword top-10 agreement with the
-// in-memory index peaked there (0.964, against 0.927 at 40 and 0.934 at 100).
+// (bench/fork/profiles/buddy-2026-11-16.json). The worker replaces it with the
+// collection's own mean as soon as it holds a document.
 export const DEFAULT_AVGDL = 70;
 
 function positive(env: Record<string, string | undefined>, name: string, fallback: number): number {
@@ -18,6 +18,13 @@ function positive(env: Record<string, string | undefined>, name: string, fallbac
   if (!raw) return fallback;
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) throw new Error(`${name}=${raw} must be a positive number`);
+  return value;
+}
+
+// Qdrant answers every query with 422 when quantization oversampling is below 1.
+function atLeastOne(env: Record<string, string | undefined>, name: string, fallback: number): number {
+  const value = positive(env, name, fallback);
+  if (value < 1) throw new Error(`${name}=${value} must be at least 1`);
   return value;
 }
 
@@ -33,7 +40,7 @@ export function loadSearchWorkerSettings(env: Record<string, string | undefined>
     qdrantApiKey: env.AM_QDRANT_API_KEY?.trim() || undefined,
     collection,
     dimensions: Math.floor(positive(env, "AM_SEARCH_DIMENSIONS", 1024)),
-    oversampling: positive(env, "AM_SEARCH_OVERSAMPLING", 6),
+    oversampling: atLeastOne(env, "AM_SEARCH_OVERSAMPLING", 6),
     avgdl: positive(env, "AM_SEARCH_AVGDL", DEFAULT_AVGDL),
   };
 }

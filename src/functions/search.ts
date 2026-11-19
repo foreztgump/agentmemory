@@ -438,6 +438,7 @@ export async function findUnindexedObservations(
     const known = session.observationCount ?? 0
     if (known > 0 && known <= (indexed.get(session.id) ?? 0)) continue
     const observations = await kv.list<CompressedObservation>(KV.observations(session.id))
+    await idx.prefetch?.(observations.map((obs) => obs.id))
     for (const obs of observations) {
       if (!obs.title || !obs.narrative || idx.has(obs.id)) continue
       missing.push(obs)

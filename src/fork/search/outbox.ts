@@ -1,7 +1,7 @@
 import type { SearchResultLayer } from "../../state/search-layer.js";
 import { logger } from "../../logger.js";
 import type { SearchWorkerClient } from "./client.js";
-import type { ClearScope, ContentRev, DelOp, DocOp, Op, VecDelOp, VecOp } from "./protocol.js";
+import { nextOpVersion, type ClearScope, type ContentRev, type DelOp, type DocOp, type Op, type VecDelOp, type VecOp } from "./protocol.js";
 
 export interface OutboxLimits {
   maxOps: number;
@@ -17,6 +17,7 @@ const MAX_BACKOFF_MS = 5000;
 /** Pending writes for one id: at most one document change and one vector change, flushed in that order. */
 interface Slot {
   firstSeq: number;
+  lastSeq: number;
   doc?: DocOp | DelOp;
   vec?: VecOp | VecDelOp;
   bytes: number;
@@ -43,7 +44,7 @@ function slotBytes(slot: Slot): number {
 }
 
 export interface OutboxCounters {
-  /** Ops dropped because the outbox hit its cap while the worker was unreachable. */
+  /** Ops dropped because the outbox hit its cap while the worker was unreachable. A healthy worker never loses a write here. */
   spilled: number;
   /** Vectors the worker refused because their record changed after embedding started. */
   fenced: number;
@@ -79,15 +80,22 @@ export class SearchOutbox {
     const seq = ++this.seq;
     let slot = this.slots.get(op.id);
     if (!slot) {
-      slot = { firstSeq: seq, bytes: 0 };
+      slot = { firstSeq: seq, lastSeq: seq, bytes: 0 };
       this.slots.set(op.id, slot);
     }
+    slot.lastSeq = seq;
     this.bytes -= slot.bytes;
     merge(slot, op);
     slot.bytes = slotBytes(slot);
     this.bytes += slot.bytes;
-    if (this.slots.size > this.limits.maxOps || this.bytes > this.limits.maxBytes) this.spill();
-    this.schedule(this.limits.flushMs);
+    if (this.failures > 0) {
+      if (this.overCap()) this.spill(seq);
+      this.schedule(this.limits.flushMs);
+    } else if (this.slots.size >= this.limits.batch) {
+      this.flushNow();
+    } else {
+      this.schedule(this.limits.flushMs);
+    }
   }
 
   /** Writes queued before this call are dropped; the worker clears before any later write. */
@@ -116,11 +124,7 @@ export class SearchOutbox {
   async drainFor(maxWaitMs: number): Promise<void> {
     const target = this.seq;
     if (this.drained(target)) return;
-    if (this.timer && this.failures === 0) {
-      clearTimeout(this.timer);
-      this.timer = null;
-      this.schedule(0);
-    }
+    if (this.failures === 0) this.flushNow();
     await new Promise<void>((resolve) => {
       const waiter = { target, resolve };
       this.waiters.push(waiter);
@@ -148,6 +152,13 @@ export class SearchOutbox {
       w.resolve();
       return false;
     });
+  }
+
+  /** A full batch or a waiting reader does not wait out the flush delay; a backoff still applies. */
+  private flushNow(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.schedule(0);
   }
 
   private schedule(delayMs: number): void {
@@ -184,9 +195,12 @@ export class SearchOutbox {
         continue;
       }
       const batch = this.take();
+      const sentThrough = this.seq;
       this.inFlightMinSeq = batch[0]![1].firstSeq;
       try {
-        const result = await this.client.apply(batch.flatMap(([, slot]) => [slot.doc, slot.vec].filter((op): op is Op => op !== undefined)));
+        // A fresh version per invocation: a retry outranks the attempt it replaces if that one still lands.
+        const ops = batch.flatMap(([, slot]) => [slot.doc, slot.vec].filter((op): op is Op => op !== undefined));
+        const result = await this.client.apply(ops, nextOpVersion());
         this.failures = 0;
         this.counters.fenced += result.fenced.length;
         this.counters.failed += result.failed.length;
@@ -194,6 +208,7 @@ export class SearchOutbox {
       } catch (err) {
         this.requeue(batch);
         this.recordFailure(err);
+        if (this.overCap()) this.spill(sentThrough);
         return;
       } finally {
         this.inFlightMinSeq = Infinity;
@@ -240,12 +255,12 @@ export class SearchOutbox {
         continue;
       }
       this.bytes -= old.bytes;
+      old.lastSeq = slot.lastSeq;
       if (slot.doc) merge(old, slot.doc);
       if (slot.vec) merge(old, slot.vec);
       old.bytes = slotBytes(old);
       this.bytes += old.bytes;
     }
-    if (this.slots.size > this.limits.maxOps || this.bytes > this.limits.maxBytes) this.spill();
   }
 
   private recordFailure(err: unknown): void {
@@ -259,13 +274,27 @@ export class SearchOutbox {
     }
   }
 
-  // The heap bound is the invariant. The index is derived from the records,
-  // so dropped writes are repaired by reconcile rather than kept here.
-  private spill(): void {
-    const dropped = this.slots.size;
+  private overCap(): boolean {
+    return this.slots.size > this.limits.maxOps || this.bytes > this.limits.maxBytes;
+  }
+
+  // While the worker is unreachable the heap bound is the invariant: the
+  // index is derived from the records, so dropped writes are repaired by
+  // reconcile rather than kept here. A healthy worker drains a burst of any
+  // size, and a write queued after the last failed send is never dropped.
+  // ponytail: a healthy burst is held in full until it drains; backpressure
+  // on the bulk paths (indexRecords) would bound it if an import outgrows the heap.
+  private spill(throughSeq: number): void {
+    let dropped = 0;
+    for (const [id, slot] of this.slots) {
+      if (!this.overCap()) break;
+      if (slot.lastSeq > throughSeq) continue;
+      this.slots.delete(id);
+      this.bytes -= slot.bytes;
+      dropped++;
+    }
+    if (dropped === 0) return;
     this.counters.spilled += dropped;
-    this.slots.clear();
-    this.bytes = 0;
     logger.error("search outbox full; dropped queued writes until reconcile repairs them", { dropped, spilledTotal: this.counters.spilled });
     this.notify();
   }
@@ -294,6 +323,11 @@ export class DocLedger {
 
   get(id: string): DocEntry | undefined {
     return this.entries.get(id);
+  }
+
+  /** Changes on every clear(), so a slow reader can tell its answer predates one. */
+  get epoch(): number {
+    return this.clears;
   }
 
   replace(id: string, entry: DocEntry): void {

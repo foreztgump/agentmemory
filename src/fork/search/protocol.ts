@@ -11,6 +11,7 @@ export const SEARCH_FN = {
   scanMissingVectors: "search::scan-missing-vectors",
   clear: "search::clear",
   health: "search::health",
+  lookup: "search::lookup",
 } as const;
 
 /** Content hash of a document's indexed text; the fence a vector must match to be stored. */
@@ -28,7 +29,22 @@ export type Op = DocOp | DelOp | VecOp | VecDelOp;
 
 export type ClearScope = "all" | "vectors";
 
-export interface ApplyRequest { ops: Op[] }
+/**
+ * Orders apply invocations. The worker drops an op whose version is older
+ * than the last one it applied to that id, so an invocation that timed out
+ * and completes after its retry cannot overwrite the retry or undo a delete.
+ */
+export type OpVersion = number;
+
+let lastVersion = 0;
+
+/** Microseconds since the epoch, bumped to stay strictly increasing within this process. */
+export function nextOpVersion(): OpVersion {
+  lastVersion = Math.max(lastVersion + 1, Date.now() * 1000);
+  return lastVersion;
+}
+
+export interface ApplyRequest { ops: Op[]; version?: OpVersion }
 export interface ApplyResult {
   applied: number;
   /** Vectors dropped because the record changed or was deleted after embedding started. */
@@ -57,6 +73,9 @@ export interface ScanMissingResult {
   items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }>;
   next?: string;
 }
+
+export interface LookupRequest { ids: string[] }
+export interface LookupResult { items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }> }
 
 export interface ClearRequest { scope: ClearScope }
 export interface HealthResult { ok: boolean; collection: string; dimensions: number; status: string; error?: string }
