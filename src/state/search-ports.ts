@@ -1,4 +1,5 @@
 import type { IIIClient } from "iii-sdk";
+import type { SearchBackendService } from "../fork/search/backend-status.js";
 import type { CompressedObservation, EmbeddingProvider } from "../types.js";
 import type { StateKV } from "./kv.js";
 import type { SearchLayer, SearchLayerResolver, SearchResultLayer } from "./search-layer.js";
@@ -28,12 +29,17 @@ export interface RevisionToken {
 /** Opaque identity: the same token means no add or remove happened since it was read. */
 export type VectorToken = object;
 
+export interface SearchOpts {
+  /** Throw instead of returning [] when the backend cannot answer, for a caller with its own fallback. */
+  strict?: boolean;
+}
+
 export interface KeywordIndexPort {
   /** Idempotent upsert by obs.id. A remote index enqueues; it never blocks the caller. */
   add(obs: CompressedObservation, layer?: SearchResultLayer): void;
   remove(id: string): void;
   clear(): MaybePromise<void>;
-  search(query: string, limit?: number, layer?: SearchLayer): MaybePromise<ScoredId[]>;
+  search(query: string, limit?: number, layer?: SearchLayer, opts?: SearchOpts): MaybePromise<ScoredId[]>;
 
   watchRevision(id: string): RevisionToken;
   invalidateRevision(id: string): void;
@@ -103,6 +109,8 @@ export interface SearchRuntime<
   readonly keyword: K;
   readonly vector: V | null;
   openPersistence(): P;
+  /** Background repair and health of a backend outside the app worker; memory mode has none. */
+  readonly service?: SearchBackendService;
 }
 
 export type MemorySearchRuntime = SearchRuntime<SearchIndex, VectorIndex, IndexPersistence>;

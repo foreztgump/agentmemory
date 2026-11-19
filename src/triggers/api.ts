@@ -31,6 +31,7 @@ import {
   isBm25RebuildIncomplete,
   rankMemoryIds,
 } from "../functions/search.js";
+import { getSearchRuntime } from "../state/search-ports.js";
 import {
   LIST_PAGE_MAX,
   decodeCursor,
@@ -391,19 +392,21 @@ export interface StatusReporterDeps {
 export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusReporterDeps) {
   return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number } = {}): Promise<StatusReport> {
     const idx = getSearchIndex();
+    const searchService = getSearchRuntime().service;
     const keywordRebuildRunning = isKeywordRebuildInProgress();
     const scan = unindexedScanFor(kv);
     const cached = scan.last && options.scanMaxAgeMs !== undefined && Date.now() - scan.last.at < options.scanMaxAgeMs
       ? scan.last.value
       : null;
-    const [health, functionMetrics, graph, unindexed, auditMigrationState, stateStore, capture, graphIndex, observationCounts, documentKinds] = await Promise.all([
+    const [health, functionMetrics, graph, unindexed, auditMigrationState, stateStore, capture, graphIndex, observationCounts, documentKinds, searchBackend] = await Promise.all([
       options.health !== undefined ? Promise.resolve(options.health) : valueWithin(getLatestHealth(kv), STATUS_CHECK_TIMEOUT_MS),
       deps.metricsStore ? valueWithin(deps.metricsStore.getAll(), STATUS_CHECK_TIMEOUT_MS) : Promise.resolve([]),
       valueWithin(
         sdk.trigger({ function_id: "mem::graph-stats", payload: {} }) as Promise<GraphStatsInput>,
         STATUS_CHECK_TIMEOUT_MS,
       ),
-      keywordRebuildRunning ? Promise.resolve(null) : cached ? Promise.resolve(cached) : valueWithin(scan.run(), STATUS_CHECK_TIMEOUT_MS),
+      // Once a search service has reconciled it reports what is missing; no scan per status call.
+      keywordRebuildRunning || searchService?.reconciled ? Promise.resolve(null) : cached ? Promise.resolve(cached) : valueWithin(scan.run(), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(
         kv.get<AuditMigrationState>(KV.auditMonths, AUDIT_MIGRATION_STATE_KEY),
         STATUS_CHECK_TIMEOUT_MS,
@@ -413,6 +416,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
       valueWithin(getGraphIndexMigrationStatus(kv), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(Promise.resolve(idx.observationCountsBySession()), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(Promise.resolve(idx.documentKindCounts()), STATUS_CHECK_TIMEOUT_MS),
+      searchService ? valueWithin(searchService.status(), STATUS_CHECK_TIMEOUT_MS) : Promise.resolve(null),
     ]);
     const observationsIndexed = [...(observationCounts?.values() ?? [])].reduce((a, n) => a + n, 0);
     const circuit =
@@ -455,7 +459,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         observationsIndexed,
         memoriesIndexed: documentKinds?.memories,
         lessonsIndexed: documentKinds?.lessons,
-        missingObservations: unindexed ? unindexed.missing.length : null,
+        missingObservations: searchBackend?.missing?.observations ?? (unindexed ? unindexed.missing.length : null),
         sessions: unindexed ? unindexed.sessions : null,
         bm25Incomplete: isBm25RebuildIncomplete(),
         keywordRebuildRunning,
@@ -473,6 +477,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
       stateStore,
       capture: capture ?? null,
       observeDedup: { skippedSinceStart: getDedupSkippedCount(), windowSeconds: Math.round(DEDUP_WINDOW_MS / 1000) },
+      searchBackend,
     });
   };
 }

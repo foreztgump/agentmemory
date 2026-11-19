@@ -515,7 +515,8 @@ describe("status wiring", () => {
 
   it("time-boxes every status probe so a slow store cannot hang the page", () => {
     const reporter = api.slice(api.indexOf("export function createStatusReporter"), api.indexOf("export function createConsolidationStatusReader"));
-    expect(reporter.match(/valueWithin\(/g)?.length).toBe(9);
+    expect(reporter.match(/valueWithin\(/g)?.length).toBe(10);
+    expect(reporter).toContain("valueWithin(searchService.status(), STATUS_CHECK_TIMEOUT_MS)");
     expect(reporter).toContain("valueWithin(Promise.resolve(idx.observationCountsBySession()), STATUS_CHECK_TIMEOUT_MS)");
     expect(reporter).toContain("valueWithin(Promise.resolve(idx.documentKindCounts()), STATUS_CHECK_TIMEOUT_MS)");
     expect(reporter).toContain("valueWithin(getGraphIndexMigrationStatus(kv), STATUS_CHECK_TIMEOUT_MS)");
