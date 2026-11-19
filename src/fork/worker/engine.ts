@@ -394,8 +394,9 @@ export class SearchEngine {
     if (this.qdrant.config.layout === "lessons") {
       return this.lessonKeyword(query, clampLimit(limit), isSearchLayer(layer) ? layer : "all");
     }
-    this.prefixes?.fillInBackground();
-    const sparse = querySparse(query, this.prefixes ? (terms) => this.prefixes!.expand(terms) : undefined);
+    const prefixes = this.prefixes;
+    prefixes?.fillInBackground();
+    const sparse = querySparse(query, prefixes ? (terms) => prefixes.expand(terms) : undefined);
     if (sparse.indices.length === 0) return [];
     await this.ready();
     if (this.avgdl === null) this.corpusDidChange();

@@ -221,6 +221,13 @@ describe.each(backends)("prefix expansion contract: %s", (_name, make, skip) => 
     expect(await search("zorb rollout")).toEqual(["obs_tron", "obs_zorb", "mem_zorbmax"]);
   });
 
+  it.skipIf(skip)("adds a query term's prefix score to another query term's exact score for the same indexed term", async () => {
+    const scoreOf = async (query: string) => (await b.keyword.search(query, 10)).find((h) => h.obsId === "obs_tron")!.score;
+    const exactOnly = await scoreOf("zorbtron");
+    const both = await scoreOf("zorb zorbtron");
+    expect(both / exactOnly).toBeGreaterThan(1.3);
+  });
+
   it.skipIf(skip)("drops a deleted document reached through a prefix", async () => {
     b.keyword.remove("obs_quell");
     await b.settle();

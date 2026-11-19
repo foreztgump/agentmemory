@@ -74,7 +74,15 @@ describe("PrefixVocabulary", () => {
     await vocab.settled();
     vocab.observe(Array.from({ length: 1000 }, (_, i) => `term${i}`));
     expect(vocab.size).toBe(100);
-    expect(vocab.refusedTerms).toBe(900);
+    expect(vocab.refusals).toBe(900);
+  });
+
+  it("holds no more than its bound after scrolling a collection with more distinct terms", async () => {
+    const { vocab } = vocabulary([["a1", "a2"], ["a3", "a4"], ["a5", "a1"]], { maxTerms: 3 });
+    vocab.fillInBackground();
+    await vocab.settled();
+    expect(vocab.size).toBe(3);
+    expect(vocab.refusals).toBe(2);
   });
 
   it("serves searches without expansion while the first scroll runs", async () => {

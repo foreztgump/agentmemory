@@ -56,8 +56,8 @@ export class PrefixVocabulary {
     return this.df.size;
   }
 
-  /** Terms not learned because the vocabulary was full. */
-  get refusedTerms(): number {
+  /** Term occurrences (not distinct terms) declined because the vocabulary was full. */
+  get refusals(): number {
     return this.refused;
   }
 
@@ -160,7 +160,13 @@ export class PrefixVocabulary {
       if (epoch !== this.epoch) return;
       for (const { payload } of page.points) {
         if (!Array.isArray(payload?.terms)) continue;
-        for (const term of new Set(payload.terms)) if (typeof term === "string") counted.set(term, (counted.get(term) ?? 0) + 1);
+        for (const term of new Set(payload.terms)) {
+          if (typeof term !== "string") continue;
+          const known = counted.get(term);
+          if (known !== undefined) counted.set(term, known + 1);
+          else if (counted.size < this.limits.maxTerms) counted.set(term, 1);
+          else this.refused++;
+        }
       }
       offset = page.next_page_offset ?? undefined;
     } while (offset);

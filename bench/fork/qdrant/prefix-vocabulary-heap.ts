@@ -21,14 +21,18 @@ const vocabulary = new PrefixVocabulary(emptyCollection, async () => {});
 vocabulary.fillInBackground();
 await vocabulary.settled();
 const started = performance.now();
+let slowestDocMs = 0;
 for (let i = 0; i < offer; i += 40) {
-  vocabulary.observe(Array.from({ length: Math.min(40, offer - i) }, (_, j) => `t${(i + j).toString(36)}_${((i + j) * 7919).toString(36)}`));
+  const terms = Array.from({ length: Math.min(40, offer - i) }, (_, j) => `t${(i + j).toString(36)}_${((i + j) * 7919).toString(36)}`);
+  const doc = performance.now();
+  vocabulary.observe(terms);
+  slowestDocMs = Math.max(slowestDocMs, performance.now() - doc);
 }
 const observeMs = performance.now() - started;
 gc();
 const heapMiB = (process.memoryUsage().heapUsed - before) / 2 ** 20;
 const maxTerms = DEFAULT_VOCABULARY_LIMITS.maxTerms;
-const result = { offered: offer, terms: vocabulary.size, maxTerms, refused: vocabulary.refusedTerms, heapMiB: +heapMiB.toFixed(1), ceilingMiB, bytesPerTerm: Math.round((heapMiB * 2 ** 20) / vocabulary.size), observeMs: Math.round(observeMs) };
+const result = { offered: offer, terms: vocabulary.size, maxTerms, refused: vocabulary.refusals, heapMiB: +heapMiB.toFixed(1), ceilingMiB, bytesPerTerm: Math.round((heapMiB * 2 ** 20) / vocabulary.size), observeMs: Math.round(observeMs), slowestDocMs: +slowestDocMs.toFixed(1) };
 console.log(JSON.stringify(result));
 const failures = [
   ...(vocabulary.size > maxTerms ? [`terms ${vocabulary.size} above the bound ${maxTerms}`] : []),
