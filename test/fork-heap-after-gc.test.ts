@@ -67,9 +67,14 @@ describe("memory-growth worker RSS", () => {
   const agentmemory = { mib: 200, cmd: "node /app/dist/index.mjs " };
   const amSearch = { mib: 210, cmd: "node /app/dist/fork/worker/main.mjs " };
 
-  it("fails the sample when the am-search worker is missing", async () => {
+  it("fails a disk-mode sample when the am-search worker is missing", async () => {
     const { workerRss } = await import("../bench/fork/lessons/lib.js");
-    expect(() => workerRss([agentmemory], "c1")).toThrow(/no process in c1 matches .*main/);
-    expect(workerRss([agentmemory, amSearch], "c1")).toEqual({ agentmemoryWorkerRssMiB: 200, amSearchRssMiB: 210 });
+    expect(() => workerRss([agentmemory], "c1", true)).toThrow(/no process in c1 matches .*main/);
+    expect(workerRss([agentmemory, amSearch], "c1", true)).toEqual({ agentmemoryWorkerRssMiB: 200, amSearchRssMiB: 210 });
+  });
+
+  it("reports no am-search sample in memory mode, which runs no am-search worker", async () => {
+    const { workerRss } = await import("../bench/fork/lessons/lib.js");
+    expect(workerRss([agentmemory], "c1", false)).toEqual({ agentmemoryWorkerRssMiB: 200, amSearchRssMiB: null });
   });
 });

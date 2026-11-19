@@ -7,7 +7,8 @@ export interface LessonCase {
   query: string;
 }
 
-export function workerRss(procs: Array<{ mib: number; cmd: string }>, container: string): { agentmemoryWorkerRssMiB: number; amSearchRssMiB: number } {
+/** RSS of the agentmemory worker and, in disk mode, the am-search worker; a missing required worker fails the sample. */
+export function workerRss(procs: Array<{ mib: number; cmd: string }>, container: string, disk: boolean): { agentmemoryWorkerRssMiB: number; amSearchRssMiB: number | null } {
   const pick = (re: RegExp) => {
     const matched = procs.filter((p) => re.test(p.cmd));
     if (matched.length === 0) throw new Error(`no process in ${container} matches ${re}`);
@@ -15,7 +16,7 @@ export function workerRss(procs: Array<{ mib: number; cmd: string }>, container:
   };
   return {
     agentmemoryWorkerRssMiB: pick(/^node \S*dist\/index\.mjs/),
-    amSearchRssMiB: pick(/fork\/worker\/main\.mjs/),
+    amSearchRssMiB: disk ? pick(/fork\/worker\/main\.mjs/) : null,
   };
 }
 
