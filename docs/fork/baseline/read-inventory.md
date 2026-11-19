@@ -184,6 +184,43 @@ These rows were made by the one-off calls after the day ended. Each comes from a
 | client (`replica.sh` probe) | 1 GiB | 34 MiB | | |
 | host proxy (Node TCP forwarder to the internal network) | 128 MiB | 42 MiB | | |
 
+## After TEE-1160, 2026-11-19
+
+The same day was replayed on the TEE-1160 branch (image built at 86e42d1) with `AGENTMEMORY_SCOPE_GUARD=throw`. The guard refused every unpaged `list` of a `paged-only` scope and every whole read of a `point-read-only` scope, so any unconverted read would have failed its call.
+
+- **Every call succeeded.** The replay made 14,348 calls with no failures. Every one-off call also succeeded: the viewer lists, diagnostics, heal, reflect, crystallize, consolidate and auto-forget. Export still returns 413 on buddy's size, as before (TEE-1183).
+- **No whole-collection read of a growing scope is left.** The three tables (recurring, boot and on-demand) have no `list` row on a `paged-only` scope and no row on a `point-read-only` scope. Every remaining read of a growing scope is a paged `iterate` or `listPage`.
+- **Recurring reads fell from about 154 GB a day to 1.24 GB a day.** The window was 60.5 minutes, so timer rows are scaled by 23.80.
+
+| Call site | Before, MB/day | After, MB/day | What changed |
+|---|---|---|---|
+| Health-tick index reconcile, `mem:obs:*` and `mem:sessions` (rows 1 and 6) | 100,356 | 5 | Only sessions written since the last pass, or still holding unindexed rows, are listed again. One full pass happens per boot. |
+| Capture inbox scans from the sweep and health tick (rows 2 and 4) | 39,984 | 82 | The sweep, status and retry read an in-process index. The hourly prune rescans and rebuilds it. |
+| Auto-forget, every session's observations plus `mem:sessions` (rows 3 and 11) | 12,886 | 29 | A session is read only when its stats allow a low-importance row older than 180 days. `mem:sessions` is paged. |
+| Context injection, per-session observations (row 5) | 754 | 823 | Paged, and only matching rows are kept. The bytes are the same per call, and this replay made 9% more of these reads (2,994 against 2,741). |
+| Context and lesson reads of `mem:lessons` (rows 12, 16 and 20) | 30 | 32 | Paged. |
+| Summary recovery, `mem:summary:repairs` (row 14) | 26 | 20 | Paged. |
+| Everything else | 234 | 250 | Unchanged reads of bounded scopes (summaries of one session, metrics), plus paged reads. |
+
+Reads that remain by design:
+- Context injection still reads up to 10 recent sessions without a summary in pages. Its bytes did not fall. Cutting them would need a per-session index of important observations.
+- Export, consolidation, timeline and profile still walk every session's `mem:obs:<session>` scope. That scope is `bounded`, and these run only on demand. The boot index rebuild also walks every session once per start.
+
+**Same output.** `scripts/fork/feature-diff.mjs` ran 35 feature calls and the export pages on a fresh restore with the old image (rebuilt from 817c594) and with the new one (120603f). Times, ids and latencies made during the run were normalized.
+- 33 of 35 calls were byte-identical: context, profile, auto-forget (dry run and real), every viewer list, search, smart search, lesson search, timeline, diagnostics, heal, reflect, crystallize, consolidate and export (413 on both).
+- `health` differed only in worker ids and connect times.
+- `status` differed because the old image's index check timed out and reported `index-check-unavailable`. The new image's check finished and reported 0 missing observations in 3,094 sessions.
+- 13 export pages finished on both images. They were identical except `accessLogs` and `profiles`, which the probe's own reads write. Two runs of the old image differ in the same way.
+
+**Memory.** Limits were the same as above.
+
+| Container | Limit | cgroup `memory.peak` | Highest 2 s sample | Note |
+|---|---|---|---|---|
+| agentmemory | 3584 MiB | 2,629 MiB (before: 2,674) | 2,571 MiB | `anon` peak 2,450 MiB. Worker RSS peak 2.04 GiB. No restarts. The peak is set by the boot rebuild, not by the day's traffic. |
+| valkey | 2560 MiB | 2,560 MiB | 2.23 GiB | `used_memory_peak` 2.18 GB, the same as before. |
+
+Paging all export pages back to back OOMs the worker on both images at this limit. The old image failed after 13 pages and the new one after 19 to 29. That limit is outside TEE-1160 (TEE-1182, TEE-1183).
+
 ## Reproduce
 
 ```sh
