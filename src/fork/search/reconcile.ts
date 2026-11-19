@@ -209,7 +209,7 @@ export class Reconciler {
       }
       this.finishedOnce = true;
       const finished = Date.now();
-      this.state = { state: "idle", startedAt: this.state.startedAt, finishedAt: new Date(finished).toISOString(), durationMs: finished - started, checked, added, deleted, error: null };
+      this.state = { state: "idle", startedAt: this.state.startedAt, finishedAt: new Date(finished).toISOString(), durationMs: finished - started, sessions: sessionIds.length, checked, added, deleted, error: null };
       if (added > 0 || deleted > 0) logger.info("search index reconciled", { added, deleted, checked, durationMs: finished - started });
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
@@ -245,7 +245,9 @@ export class Reconciler {
       if (this.stopped) break;
       // Removed by this process since the records were read: re-adding would undo that delete.
       if (this.deps.keyword.removedHere(id)) continue;
-      const doc = unit.kind === "memories" ? docOfRecord("memory", await kv.get<Memory>(KV.memories, id)) : docs.get(id);
+      const doc = unit.kind === "memories"
+        ? docOfRecord("memory", await kv.get<Memory>(KV.memories, id))
+        : docOfRecord("observation", await kv.get<CompressedObservation>(KV.observations(unit.sessionId), id));
       if (!doc) continue;
       this.deps.keyword.add(doc.obs, doc.layer);
       added++;

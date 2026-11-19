@@ -89,6 +89,7 @@ export interface StatusInputs {
   capture?: CaptureStatus | null;
   observeDedup?: ObserveDedupStatus | null;
   searchBackend?: SearchBackendStatus | null;
+  searchBackendEnabled?: boolean;
 }
 
 export interface ObserveDedupStatus {
@@ -345,8 +346,12 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
     problems.push({
       level: "info",
       code: "index-check-unavailable",
-      message: "The session store did not answer in time, so the search index was not checked for missing observations.",
-      fix: "The check runs again on the next health update. If it keeps timing out, the store is overloaded: check the server log.",
+      message: input.searchBackendEnabled && !input.searchBackend
+        ? "The search backend's status did not answer in time, so the search index was not checked for missing observations."
+        : "The session store did not answer in time, so the search index was not checked for missing observations.",
+      fix: input.searchBackendEnabled && !input.searchBackend
+        ? "The check runs again on the next health update. If it keeps timing out, check the search backend and server log."
+        : "The check runs again on the next health update. If it keeps timing out, the store is overloaded: check the server log.",
     });
   }
 

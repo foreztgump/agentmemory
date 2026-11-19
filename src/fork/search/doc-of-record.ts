@@ -33,6 +33,6 @@ export function docOfRecord(kind: RecordKind, row: unknown): IndexDoc | null {
     obs,
     layer: kind,
     rev: contentRev(termSourceOf(obs)),
-    embedText: observationEmbedText({ title: memory.title, narrative: memory.content, concepts: memory.concepts }),
+    embedText: observationEmbedText(obs),
   };
 }

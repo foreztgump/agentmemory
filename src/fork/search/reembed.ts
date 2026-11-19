@@ -87,11 +87,11 @@ export class ReembedLoop {
       for (const [id, until] of this.cooldown) if (until <= started) this.cooldown.delete(id);
       const candidates = page.items.filter((item) => (this.cooldown.get(item.id) ?? 0) <= started && !vector.has(item.id));
       await keyword.prefetch(candidates.map((item) => item.id));
+      const rows = await Promise.all(candidates.map((item) => hooks.kv.get(item.layer === "memory" ? KV.memories : KV.observations(item.sessionId), item.id)));
       const jobs: Parameters<ServiceHooks["embedBatch"]>[0] = [];
-      for (const item of candidates) {
+      for (const [index, item] of candidates.entries()) {
         const kind = item.layer === "memory" ? "memory" : "observation";
-        const row = kind === "memory" ? await hooks.kv.get(KV.memories, item.id) : await hooks.kv.get(KV.observations(item.sessionId), item.id);
-        const doc = docOfRecord(kind, row);
+        const doc = docOfRecord(kind, rows[index]);
         if (!doc) continue;
         // The index holds older content: write the doc first so the vector is fenced against the new rev.
         if (!keyword.has(item.id) || keyword.revOf(item.id) !== doc.rev) keyword.add(doc.obs, doc.layer);
@@ -106,9 +106,10 @@ export class ReembedLoop {
       const result = await hooks.embedBatch(jobs);
       this.counters.embedded += result.ok;
       this.counters.failed += result.fail;
+      const cooldownUntil = Date.now() + COOLDOWN_MS;
+      for (const job of jobs) if (!vector.has(job.id)) this.cooldown.set(job.id, cooldownUntil);
       if (result.ok === 0 && result.fail > 0) {
         this.failures++;
-        for (const job of jobs) this.cooldown.set(job.id, Date.now() + COOLDOWN_MS);
       } else {
         this.failures = 0;
       }

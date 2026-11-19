@@ -460,7 +460,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         memoriesIndexed: documentKinds?.memories,
         lessonsIndexed: documentKinds?.lessons,
         missingObservations: searchBackend?.missing?.observations ?? (unindexed ? unindexed.missing.length : null),
-        sessions: unindexed ? unindexed.sessions : null,
+        sessions: unindexed ? unindexed.sessions : searchBackend?.reconcile.sessions ?? null,
         bm25Incomplete: isBm25RebuildIncomplete(),
         keywordRebuildRunning,
         pendingVectorBackfill: getPendingVectorBackfillCount(),
@@ -478,6 +478,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
       capture: capture ?? null,
       observeDedup: { skippedSinceStart: getDedupSkippedCount(), windowSeconds: Math.round(DEDUP_WINDOW_MS / 1000) },
       searchBackend,
+      searchBackendEnabled: !!searchService,
     });
   };
 }

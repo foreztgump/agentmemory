@@ -16,6 +16,7 @@ export interface ReconcileReport {
   startedAt: string | null;
   finishedAt: string | null;
   durationMs: number | null;
+  sessions?: number;
   /** Units (a session's observations, the memories, a session gone from the records) compared document by document. */
   checked: number;
   added: number;
@@ -101,7 +102,9 @@ export function searchBackendProblems(s: SearchBackendStatus | null | undefined)
       level: "warn",
       code: "search-documents-missing",
       message: `${s.missingDocuments} stored records are not yet in the search index.`,
-      fix: "No action needed: reconcile adds them in the background.",
+      fix: s.reconcile.state === "off"
+        ? "Reconcile is off. Set AM_SEARCH_RECONCILE_INTERVAL_MS above 0 to backfill them."
+        : "No action needed: reconcile adds them in the background.",
     });
   }
   if (s.droppedWrites > 0) {

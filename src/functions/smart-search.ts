@@ -185,7 +185,8 @@ export function registerSmartSearchFunction(
           returned: scoped.length,
           truncated,
         });
-        return { mode: "expanded", results: scoped, truncated };
+        const degraded = getSearchRuntime().service?.degradedNotice();
+        return { mode: "expanded", results: scoped, truncated, ...(degraded ? { degraded } : {}) };
       }
 
       if (!data.query || typeof data.query !== "string" || !data.query.trim()) {
