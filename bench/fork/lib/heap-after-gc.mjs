@@ -25,15 +25,22 @@ const send = (method, params = {}) => new Promise((resolve, reject) => {
   pending.set(++id, (msg) => { clearTimeout(timer); resolve(msg); });
   ws.send(JSON.stringify({ id, method, params }));
 });
+let ours = false;
 try {
   const target = await send("Runtime.evaluate", { expression: "process.pid", returnByValue: true });
-  if (target.result?.result?.value !== pid) throw new Error(`inspector process does not match pid ${pid}`);
+  ours = target.result?.result?.value === pid;
+  if (!ours) throw new Error(`inspector process does not match pid ${pid}`);
   await send("HeapProfiler.collectGarbage");
   await send("HeapProfiler.collectGarbage");
   const usage = await send("Runtime.getHeapUsage");
   if (usage.error || typeof usage.result?.usedSize !== "number") throw new Error(`Runtime.getHeapUsage failed: ${JSON.stringify(usage.error ?? usage)}`);
   console.log(JSON.stringify({ heapUsedBytes: usage.result.usedSize }));
-  ws.send(JSON.stringify({ id: ++id, method: "Runtime.evaluate", params: { expression: "process._debugEnd?.()" } }));
 } finally {
+  if (ours) {
+    // _debugEnd never replies: the target ends the session, so wait for its close instead.
+    const closed = new Promise((resolve) => { ws.onclose = resolve; setTimeout(resolve, 5_000).unref(); });
+    ws.send(JSON.stringify({ id: ++id, method: "Runtime.evaluate", params: { expression: "process._debugEnd?.()" } }));
+    await closed;
+  }
   ws.close();
 }

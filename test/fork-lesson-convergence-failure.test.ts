@@ -8,10 +8,22 @@ import { KV } from "../src/state/schema.js";
 import { VERSION } from "../src/version.js";
 import type { ExportData } from "../src/types.js";
 import type { resetLessonIndex } from "../src/functions/lessons.js";
-import { mockKV, mockSdk } from "./helpers/mocks.js";
+import { mockSdk } from "./helpers/mocks.js";
 
 const logger = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock("../src/logger.js", () => ({ logger }));
+
+// An inline double: a replace import reads whole scopes, which the scope guard refuses on the shared mockKV.
+function inlineKV() {
+  const store = new Map<string, Map<string, unknown>>();
+  const scope = (name: string) => store.get(name) ?? store.set(name, new Map()).get(name)!;
+  return {
+    get: async <T>(name: string, key: string) => (scope(name).get(key) as T) ?? null,
+    set: async <T>(name: string, key: string, value: T) => (scope(name).set(key, value), value),
+    delete: async (name: string, key: string) => { scope(name).delete(key); },
+    list: async <T>(name: string) => [...scope(name).values()] as T[],
+  };
+}
 
 async function diskModeStack() {
   vi.resetModules();
@@ -19,7 +31,7 @@ async function diskModeStack() {
   const { registerLessonsFunctions } = await import("../src/functions/lessons.js");
   const { registerReplayFunctions } = await import("../src/functions/replay.js");
   const { registerExportImportFunction } = await import("../src/functions/export-import.js");
-  const base = mockKV();
+  const base = inlineKV();
   const kv = { ...base, getMany: vi.fn(async () => { throw new Error("state worker unreachable"); }) };
   const runtime = ports.getSearchRuntime() as unknown as Record<string, unknown>;
   runtime.lessons = { add: vi.fn(), addIfChanged: vi.fn(), remove: vi.fn(), search: vi.fn(async () => []) };

@@ -12,7 +12,7 @@ export async function liveImageHits(
 ): Promise<{ results: ImageSearchResult[]; total: number }> {
   if (found.results.length === 0) return found;
   const rows = await kv.getMany(KV.imageEmbeddings, found.results.map((hit) => hit.imageRef));
-  const results = found.results.filter((_, i) => rows[i] != null);
+  const results = found.results.filter((_, i) => rows[i]);
   return { results, total: found.total - (found.results.length - results.length) };
 }
 

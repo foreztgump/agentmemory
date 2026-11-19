@@ -120,7 +120,8 @@ export function registerVisionSearchFunctions(
       const images = getSearchRuntime().images;
       if (images) {
         try {
-          return { success: true, ...(await liveImageHits(kv, await images.search(queryVec, topK, data?.sessionId))) };
+          const found = await images.search(queryVec, topK, data?.sessionId);
+          return { success: true, ...(await liveImageHits(kv, found)) };
         } catch (err) {
           return { success: false, error: `image search unavailable: ${err instanceof Error ? err.message : String(err)}` };
         }
