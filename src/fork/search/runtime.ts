@@ -87,13 +87,15 @@ export interface CollectionClients {
 }
 
 function createCollectionStores(clients: CollectionClients) {
-  const lessonsOutbox = new SearchOutbox(clients.lessons);
+  const lessonsHealth = new BackendHealth();
+  const lessonsClient = trackHealth(clients.lessons, lessonsHealth);
+  const lessonsOutbox = new SearchOutbox(lessonsClient);
   const imagesOutbox = new SearchOutbox(clients.images);
   return {
     outboxes: [lessonsOutbox, imagesOutbox],
     // Lesson recall reads search hits only, so this index never starts a stats poll.
-    // Its health is its own and never reported: the docs backend status covers docs only (lessons and images reconcile is TEE-1196).
-    lessons: new RemoteKeywordIndex(clients.lessons, lessonsOutbox, new DocLedger(), new StatsCache(clients.lessons, lessonsOutbox), new BackendHealth()),
+    // Lesson health logs failures separately: backend status and reconcile cover docs only (lessons and images reconcile is TEE-1196).
+    lessons: new RemoteKeywordIndex(lessonsClient, lessonsOutbox, new DocLedger(), new StatsCache(lessonsClient, lessonsOutbox), lessonsHealth),
     images: new RemoteImageIndex(clients.images, imagesOutbox),
   };
 }

@@ -196,7 +196,7 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
   }
 
   async observationCountsBySession(): Promise<Map<string, number>> {
-    await this.outbox.drainFor(READ_YOUR_WRITES_MS);
+    if (this.health.ok) await this.outbox.drainFor(READ_YOUR_WRITES_MS);
     try {
       return new Map(await this.client.sessionCounts());
     } catch {

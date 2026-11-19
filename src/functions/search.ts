@@ -579,10 +579,11 @@ async function runKeywordRebuild(
   vectorBackfillSince?: string | null,
 ): Promise<KeywordRebuildResult> {
   const idx = getSearchIndex()
-  if (getSearchRuntime().backend === 'disk') {
+  const runtime = getSearchRuntime()
+  if (runtime.backend === 'disk') {
     // The index lives in the search worker and survives restarts; refreshing the counts is the whole boot cost.
     await idx.documentKindCounts()
-    getSearchRuntime().service?.start({ kv, embedBatch: vectorIndexAddBatchGuarded, embeddingEnabled: () => Boolean(vectorIndex && currentEmbeddingProvider) })
+    runtime.service?.start({ kv, embedBatch: vectorIndexAddBatchGuarded, embeddingEnabled: () => Boolean(vectorIndex && currentEmbeddingProvider) })
     memoryIndexReady = true
     return { documents: idx.size, vectorJobs: [], fullBackfillPending: 0, historicalVectorGaps: 0 }
   }

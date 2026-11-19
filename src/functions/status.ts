@@ -343,7 +343,7 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
       fix: "No action needed. The check runs on the next health update after the rebuild.",
     });
   } else if (missingObservations === null && !input.searchBackend) {
-    const backendTimedOut = input.searchBackendEnabled && !input.searchBackend;
+    const backendTimedOut = Boolean(input.searchBackendEnabled);
     problems.push({
       level: "info",
       code: "index-check-unavailable",

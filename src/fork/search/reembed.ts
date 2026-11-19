@@ -94,7 +94,7 @@ export class ReembedLoop {
         const doc = docOfRecord(kind, rows[index]);
         if (!doc) continue;
         // The index holds older content: write the doc first so the vector is fenced against the new rev.
-        if (!keyword.has(item.id) || keyword.revOf(item.id) !== doc.rev) keyword.add(doc.obs, doc.layer);
+        if (!keyword.has(item.id) || item.rev !== doc.rev) keyword.add(doc.obs, doc.layer);
         jobs.push({ id: item.id, sessionId: item.sessionId, text: doc.embedText, context: { kind, logId: item.id } });
       }
       if (jobs.length === 0) {

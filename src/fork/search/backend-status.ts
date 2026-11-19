@@ -125,7 +125,9 @@ export function searchBackendProblems(s: SearchBackendStatus | null | undefined)
       level: "info",
       code: "search-writes-dropped",
       message: `${s.droppedWrites} search index writes were dropped while the search worker was unreachable.`,
-      fix: "No action needed: reconcile re-derives them from the records.",
+      fix: s.reconcile.state === "off"
+        ? "Reconcile is off. Set AM_SEARCH_RECONCILE_INTERVAL_MS above 0 to re-derive them from the records."
+        : "No action needed: reconcile re-derives them from the records.",
     });
   }
   if (s.missingVectors !== null && s.missingVectors > 0) {

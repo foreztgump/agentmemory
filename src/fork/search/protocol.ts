@@ -117,7 +117,7 @@ export interface DocStub { id: string; sessionId: string; layer: SearchResultLay
 export interface ScanDocsResult { items: DocStub[]; next?: string }
 
 export interface LookupRequest extends CollectionScoped { ids: string[] }
-export interface LookupResult { items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }> }
+export interface LookupResult { items: DocStub[] }
 
 export interface ClearRequest extends CollectionScoped { scope: ClearScope }
 export interface HealthResult { ok: boolean; collection: string; dimensions: number; status: string; error?: string }
