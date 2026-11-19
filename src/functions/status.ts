@@ -343,15 +343,12 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
       fix: "No action needed. The check runs on the next health update after the rebuild.",
     });
   } else if (missingObservations === null && !input.searchBackend?.missing) {
+    const backendTimedOut = input.searchBackendEnabled && !input.searchBackend;
     problems.push({
       level: "info",
       code: "index-check-unavailable",
-      message: input.searchBackendEnabled && !input.searchBackend
-        ? "The search backend's status did not answer in time, so the search index was not checked for missing observations."
-        : "The session store did not answer in time, so the search index was not checked for missing observations.",
-      fix: input.searchBackendEnabled && !input.searchBackend
-        ? "The check runs again on the next health update. If it keeps timing out, check the search backend and server log."
-        : "The check runs again on the next health update. If it keeps timing out, the store is overloaded: check the server log.",
+      message: `The ${backendTimedOut ? "search backend's status" : "session store"} did not answer in time, so the search index was not checked for missing observations.`,
+      fix: `The check runs again on the next health update. If it keeps timing out, ${backendTimedOut ? "check the search backend and server log." : "the store is overloaded: check the server log."}`,
     });
   }
 
