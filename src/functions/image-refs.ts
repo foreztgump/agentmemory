@@ -3,6 +3,7 @@ import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { deleteImage, touchImage } from "../utils/image-store.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
+import { getSearchRuntime } from "../state/search-ports.js";
 
 export async function getImageRefCount(kv: StateKV, filePath: string): Promise<number> {
   const count = await kv.get<number>(KV.imageRefs, filePath);
@@ -22,6 +23,7 @@ export async function decrementImageRef(kv: StateKV, sdk: IIIClient, filePath: s
     const current = await getImageRefCount(kv, filePath);
     if (current <= 1) {
       await kv.delete(KV.imageEmbeddings, filePath);
+      getSearchRuntime().images?.remove(filePath);
       await kv.delete(KV.imageRefs, filePath);
       const { deletedBytes } = await deleteImage(filePath);
       if (deletedBytes > 0) {

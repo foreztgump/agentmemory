@@ -5,6 +5,7 @@ import { StateKV, collectAll } from "../state/kv.js";
 import { isManagedImagePath } from "../utils/image-store.js";
 import { recordAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { getSearchRuntime } from "../state/search-ports.js";
 
 interface StoredEmbedding {
   imageRef: string;
@@ -53,6 +54,7 @@ export function registerVisionSearchFunctions(
           observationId: data.observationId,
         };
         await kv.set(KV.imageEmbeddings, data.imageRef, stored);
+        getSearchRuntime().images?.put(stored);
         await recordAudit(kv, "vision_embed", "mem::vision-embed", [data.imageRef], {
           modelName: imageProvider.name,
           dimensions: stored.dimensions,
@@ -113,6 +115,15 @@ export function registerVisionSearchFunctions(
       }
 
       if (!queryVec) return { success: false, error: "failed to build query vector" };
+
+      const images = getSearchRuntime().images;
+      if (images) {
+        try {
+          return { success: true, ...(await images.search(queryVec, topK, data?.sessionId)) };
+        } catch (err) {
+          return { success: false, error: `image search unavailable: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      }
 
       const stored = await collectAll<StoredEmbedding>(kv, KV.imageEmbeddings);
       const filtered = data?.sessionId
