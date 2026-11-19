@@ -26,7 +26,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPLICA_PROJECT="${REPLICA_PROJECT:-amreplica}"
 COMPOSE=(docker compose -f "$HERE/replica-compose.yml")
 # An overlay such as qdrant/replica-disk.yml (disk-mode search) is added after the base file.
-[[ -n "${REPLICA_COMPOSE_EXTRA:-}" ]] && COMPOSE+=(-f "$REPLICA_COMPOSE_EXTRA")
+if [[ -n "${REPLICA_COMPOSE_EXTRA:-}" ]]; then
+  [[ -f "$REPLICA_COMPOSE_EXTRA" ]] || { echo "replica: no overlay at $REPLICA_COMPOSE_EXTRA" >&2; exit 1; }
+  COMPOSE+=(-f "$(cd "$(dirname "$REPLICA_COMPOSE_EXTRA")" && pwd)/$(basename "$REPLICA_COMPOSE_EXTRA")")
+fi
 COMPOSE+=(-p "$REPLICA_PROJECT")
 SECRET="replica-dummy-secret"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-900}"
