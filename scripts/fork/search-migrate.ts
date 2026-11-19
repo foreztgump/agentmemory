@@ -49,8 +49,8 @@ import {
   STATE_PREFIX,
   STORED_VECTOR_MODEL,
 } from "../../src/fork/search/persisted-vectors.js";
-import { collectionName, docOp, type DocOp, type ImgOp, type OpVersion } from "../../src/fork/search/protocol.js";
-import { DEFAULT_AVGDL, DEFAULT_IMAGE_DIMENSIONS } from "../../src/fork/search/settings.js";
+import { docOp, type DocOp, type ImgOp, type OpVersion } from "../../src/fork/search/protocol.js";
+import { DEFAULT_AVGDL, loadSearchWorkerSettings } from "../../src/fork/search/settings.js";
 import { SearchEngine } from "../../src/fork/worker/engine.js";
 import { ImageEngine } from "../../src/fork/worker/image-engine.js";
 import { pointId, Qdrant } from "../../src/fork/worker/qdrant.js";
@@ -103,10 +103,15 @@ export class FetchGuard {
   install(): this {
     const original = this.original;
     globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
-      if (url.origin === this.allowedOrigin) return original(input, init);
+      let origin: string | null = null;
+      try {
+        origin = new URL(typeof input === "string" || input instanceof URL ? input : input.url).origin;
+      } catch {
+        // counted and refused below
+      }
+      if (origin === this.allowedOrigin) return original(input, init);
       this.refused++;
-      return Promise.reject(new MigrateError(`refused a call to ${url.origin}: the migration makes no calls but to Qdrant`, 4));
+      return Promise.reject(new MigrateError(`refused a call to ${origin ?? "an unparsable URL"}: the migration makes no calls but to Qdrant`, 4));
     }) as typeof fetch;
     return this;
   }
@@ -336,10 +341,8 @@ async function* unitDocs(store: Redis, unit: Unit, page: number, counts?: { unpa
   for await (const pairs of hashPages(store, unit.key, page)) {
     const docs = [];
     for (const [, value] of pairs) {
-      let row: unknown;
-      try {
-        row = JSON.parse(value.toString("utf8"));
-      } catch {
+      const row = parseJson(value);
+      if (row === undefined) {
         if (counts) counts.unparsable++;
         continue;
       }
@@ -468,13 +471,13 @@ async function readMeta(store: Redis): Promise<Meta | null> {
   if (raw === null) return null;
   try {
     const meta = JSON.parse(str(raw)) as { version?: unknown; startedAt?: unknown; avgdl?: unknown };
-    if (typeof meta.version === "number" && Number.isSafeInteger(meta.version) && meta.version > 0 && (meta.avgdl === null || typeof meta.avgdl === "number")) {
+    if (typeof meta.version === "number" && meta.version === MIGRATION_VERSION && (meta.avgdl === null || typeof meta.avgdl === "number")) {
       return meta as Meta;
     }
   } catch {
     // reported below
   }
-  throw new MigrateError(`${MARKER_KEY} ${META_FIELD} is corrupt; remove ${MARKER_KEY} and the collection to start over`, 3);
+  throw new MigrateError(`${MARKER_KEY} ${META_FIELD} is corrupt or from a release with another migration version; remove ${MARKER_KEY} and the collections to start over`, 3);
 }
 
 async function addEmbeddingCalls(store: Redis, calls: number): Promise<void> {
@@ -850,38 +853,36 @@ async function main(): Promise<number> {
   });
   const command = positionals[0];
   const storeUrl = process.env.MIGRATE_STORE_URL;
-  const qdrantUrl = process.env.AM_QDRANT_URL?.trim().replace(/\/+$/, "");
-  const dimensions = Number(process.env.AM_SEARCH_DIMENSIONS?.trim() || STORED_VECTOR_MODEL.dimensions);
-  const imageDimensions = Number(process.env.AM_SEARCH_IMAGE_DIMENSIONS?.trim() || DEFAULT_IMAGE_DIMENSIONS);
   const page = Number(args.page);
   const rate = Number(args.rate);
-  if (!["fill", "verify", "status"].includes(command ?? "") || !storeUrl || !qdrantUrl ||
-      !Number.isInteger(page) || page < 1 || !Number.isInteger(rate) || rate < 1 || !Number.isInteger(dimensions) || dimensions < 1 ||
-      !Number.isInteger(imageDimensions) || imageDimensions < 1) {
+  if (!["fill", "verify", "status"].includes(command ?? "") || !storeUrl || !process.env.AM_QDRANT_URL ||
+      !Number.isInteger(page) || page < 1 || !Number.isInteger(rate) || rate < 1) {
     console.error("usage: MIGRATE_STORE_URL=redis://... AM_QDRANT_URL=http://... [AM_QDRANT_API_KEY=...] search-migrate.ts fill|verify|status [--page 200] [--rate 64] [--allow-nonempty]");
     return 2;
   }
   const log = (line: string) => console.error(`search-migrate: ${line}`);
+  // The worker's own settings, so the migration writes exactly the collections, sizes and names the worker reads.
+  const settings = loadSearchWorkerSettings(process.env);
+  const { dimensions, qdrantUrl } = settings;
   const guard = new FetchGuard(new URL(qdrantUrl).origin).install();
-  const base = process.env.AM_QDRANT_COLLECTION?.trim() || "agentmemory";
   const qdrantOf = (id: "docs" | "lessons" | "images", size: number, layout?: "lessons" | "image") => new Qdrant({
     url: qdrantUrl,
-    apiKey: process.env.AM_QDRANT_API_KEY?.trim() || undefined,
-    collection: collectionName(base, id),
+    apiKey: settings.qdrantApiKey,
+    collection: settings.collections[id],
     dimensions: size,
-    oversampling: 6,
+    oversampling: settings.oversampling,
     timeoutMs: 120_000,
     layout,
   });
   const docs = qdrantOf("docs", dimensions);
   const lessons = qdrantOf("lessons", dimensions, "lessons");
-  const images = qdrantOf("images", imageDimensions, "image");
+  const images = qdrantOf("images", settings.imageDimensions, "image");
   const targets: Targets = {
     docs: { qdrant: docs, engine: new SearchEngine(docs, DEFAULT_AVGDL) },
     lessons: { qdrant: lessons, engine: new SearchEngine(lessons, DEFAULT_AVGDL) },
     images: { qdrant: images, engine: new ImageEngine(images) },
   };
-  log(`${command} ${redactUrl(storeUrl)} -> ${qdrantUrl}/collections/${base}{,_lessons,_images}`);
+  log(`${command} ${redactUrl(storeUrl)} -> ${qdrantUrl}/collections/${settings.collection}{,_lessons,_images}`);
   const store = await connectRedis(storeUrl);
   const started = Date.now();
   try {

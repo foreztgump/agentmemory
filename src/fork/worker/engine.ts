@@ -97,6 +97,8 @@ function opError(op: unknown): string | null {
 export class SearchEngine {
   private ensured: Promise<void> | null = null;
   private vocabulary: Promise<Map<string, number>> | null = null;
+  /** The second part of a lessons point's `lexical_order`; it keeps growing across calls, so writes at one version (a migration's) stay in write order. */
+  private lexicalPosition = 0;
   private lastVocabularySize = 0;
   /** The mean document length new BM25 weights are computed with; null until read from the collection. */
   private avgdl: number | null = null;
@@ -185,14 +187,13 @@ export class SearchEngine {
     const written: Array<{ id: string; rev: ContentRev }> = [];
     let applied = 0;
     const lessons = this.qdrant.config.layout === "lessons";
-    let lexicalPosition = 0;
     for (const op of ops) {
       const id = pointId(op.id);
       switch (op.k) {
         case "doc": {
           const docTerms = terms.get(op)!;
           const bm25 = termsSparse(docTerms, avgdl);
-          const payload = docPayload(op, docTerms, avgdl, version, lessons ? [version, lexicalPosition++] : null);
+          const payload = docPayload(op, docTerms, avgdl, version, lessons ? [version, this.lexicalPosition++] : null);
           docPoints.push({ id, vector: { bm25 }, payload: { ...payload, dense: false } });
           docPayloads.push({ set_payload: { payload, filter: { must: [{ has_id: [id] }, notNewerThan(version)], must_not: [TOMBSTONE] } } });
           docWeights.push({ id, vector: { bm25 } });
@@ -317,14 +318,18 @@ export class SearchEngine {
     if (preset !== null) this.avgdl = preset;
     const weightBy = preset ?? (await this.writeAvgdl(valid.map((v) => v.terms)));
     const lessons = this.qdrant.config.layout === "lessons";
-    const points = valid.map(({ doc, terms, dense }, position) => ({
+    const points = valid.map(({ doc, terms, dense }) => ({
       id: pointId(doc.id),
       vector: { bm25: termsSparse(terms, weightBy), ...(dense ? { dense } : {}) },
-      payload: { ...docPayload(doc, terms, weightBy, version, lessons ? [version, position] : null), dense: dense !== undefined },
+      payload: { ...docPayload(doc, terms, weightBy, version, lessons ? [version, this.lexicalPosition++] : null), dense: dense !== undefined },
     }));
-    await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, {
-      operations: [{ upsert: { points, update_filter: notNewerThan(version) } }],
-    });
+    try {
+      await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, {
+        operations: [{ upsert: { points, update_filter: notNewerThan(version) } }],
+      });
+    } finally {
+      this.vocabulary = null;
+    }
     if (preset === null) this.corpusDidChange();
     const now = await this.storedPayloads(valid.map((v) => v.doc.id));
     const fenced = valid.filter((v) => now.get(v.doc.id)?.v !== version).map((v) => v.doc.id);

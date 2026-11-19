@@ -33,6 +33,7 @@ const qdrant = new Qdrant({
   url: qdrantUrl, apiKey: process.env.AM_QDRANT_API_KEY, collection: process.env.AM_QDRANT_COLLECTION || "agentmemory",
   dimensions: DIMS, oversampling, timeoutMs: 120_000,
 });
+if (!(await qdrant.exists())) throw new Error(`collection ${qdrant.config.collection} is missing on ${qdrantUrl}; run the migration fill first`);
 const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
 const store = await connectRedis(storeUrl);
 

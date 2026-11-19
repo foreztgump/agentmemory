@@ -162,6 +162,8 @@ describe("no embedding provider", () => {
     try {
       await expect(fetch("https://api.voyageai.com/v1/embeddings", { method: "POST" })).rejects.toThrow(/refused/);
       expect(guard.refused).toBe(1);
+      await expect(fetch("not a url")).rejects.toThrow(/refused a call to an unparsable URL/);
+      expect(guard.refused).toBe(2);
     } finally {
       guard.uninstall();
     }
@@ -233,7 +235,14 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
       "POST", `${targets.lessons.qdrant.path}/points`, { ids: [pointId("lsn_1")], with_payload: ["v", "lexical_order", "rev"] },
     );
     expect(point!.payload.v).toBe(MIGRATION_VERSION);
-    expect(point!.payload.lexical_order[0]).toBe(MIGRATION_VERSION);
+    // lsn_1 is on the first page and lsn_3 on the second; both carry version 1, so only the position keeps their write order.
+    const orders = await targets.lessons.qdrant.call<Array<{ payload: { doc_id: string; lexical_order: number[] } }>>(
+      "POST", `${targets.lessons.qdrant.path}/points`, { ids: [pointId("lsn_1"), pointId("lsn_3")], with_payload: ["doc_id", "lexical_order"] },
+    );
+    const order = new Map(orders.map((p) => [p.payload.doc_id, p.payload.lexical_order]));
+    expect(order.get("lsn_1")![0]).toBe(MIGRATION_VERSION);
+    expect(order.get("lsn_3")![0]).toBe(MIGRATION_VERSION);
+    expect(order.get("lsn_3")![1]).toBeGreaterThan(order.get("lsn_1")![1]!);
     expect(point!.payload.rev).toBe(docOp(lessonToObservation(lesson("lsn_1", "prefer kvrocks hashes for paged scans")), "lesson").rev);
 
     const found = await targets.images.engine.query(float32ToBase64(Float32Array.from(imageVec(1))), 5, undefined);
@@ -368,6 +377,13 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     checked = await verifyAll(store, targets);
     expect(line(checked.lines, "images")).toMatch(/^FAIL images: store 2 index 1/);
     expect(line(checked.lines, "lessons")).toMatch(/^FAIL lessons: store 2 index 1/);
+  });
+
+  it("refuses to resume from a marker another migration version wrote", async () => {
+    const { targets } = await setup("marker");
+    const store = new FakeRedis(fixture());
+    store.data.set(MARKER_KEY, new Map([["meta", json({ version: MIGRATION_VERSION + 1, startedAt: "2026-11-01T00:00:00.000Z", avgdl: 30 })]]));
+    await expect(fill(store, targets, options)).rejects.toThrow(/another migration version/);
   });
 
   it("refuses a collection that already holds documents it did not write", async () => {
