@@ -3,8 +3,6 @@ import { isSearchLayer, isSearchResultLayer, type SearchLayer, type SearchResult
 import { extractTerms } from "../../state/term-extraction.js";
 import { logger } from "../../logger.js";
 import {
-  nextOpVersion,
-  seedOpVersion,
   type ApplyResult,
   type ContentRev,
   type DocOp,
@@ -18,6 +16,7 @@ import {
 } from "../search/protocol.js";
 import { querySparse, termsSparse } from "./bm25-sparse.js";
 import { pointId, type Qdrant } from "./qdrant.js";
+import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
 
 interface ScoredPoint { id: string; score: number; payload?: { doc_id?: string; session_id?: string } }
 interface RecordPoint {
@@ -26,7 +25,7 @@ interface RecordPoint {
 }
 
 const HIT_PAYLOAD = ["doc_id", "session_id"];
-const MAX_LIMIT = 1000;
+export const MAX_LIMIT = 1000;
 const LAYERS: SearchResultLayer[] = ["memory", "observation", "lesson", "insight"];
 
 // Stored BM25 weights are rewritten once the corpus mean drifts this far from
@@ -35,20 +34,7 @@ const AVGDL_DRIFT = 0.1;
 const REWEIGHT_PAGE = 256;
 const DL_FACET_LIMIT = 100_000;
 
-/**
- * Every point carries `v`, the version of the last invocation that changed
- * it, and a delete leaves a tombstone (`deleted: true`, no vectors). An op
- * applies only to a point whose `v` is not newer than its own, so a late
- * duplicate of an older invocation cannot overwrite a newer one or undo a
- * delete. Points written before versions existed have no `v` and count as older.
- */
-const notNewerThan = (version: OpVersion) => ({ should: [{ key: "v", range: { lte: version } }, { is_empty: { key: "v" } }] });
-const TOMBSTONE = { key: "deleted", match: { value: true } };
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
-
-function validVersion(version: unknown): OpVersion | null {
-  return typeof version === "number" && Number.isSafeInteger(version) && version > 0 ? version : null;
-}
 
 function meanLength(docs: string[][]): number | null {
   const total = docs.reduce((n, terms) => n + terms.length, 0);
@@ -70,7 +56,7 @@ function toHits(points: ScoredPoint[]): Hit[] {
   return points.flatMap((p) => (p.payload?.doc_id ? [{ id: p.payload.doc_id, sessionId: p.payload.session_id ?? "", score: p.score }] : []));
 }
 
-function clampLimit(limit: unknown): number {
+export function clampLimit(limit: unknown): number {
   return typeof limit === "number" && Number.isFinite(limit) ? Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit))) : 20;
 }
 
@@ -102,37 +88,14 @@ export class SearchEngine {
   private reweighting: Promise<void> | null = null;
   /** Bumped when clear("all") drops the collection; a reweighting pass from before it stops. */
   private collectionEpoch = 0;
-  private versionFloor: Promise<unknown> | null = null;
+  private readonly clock: VersionClock;
 
-  constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number) {}
-
-  /** The highest version stored, tombstones included; this process's own stamps start above it. */
-  async maxVersion(): Promise<OpVersion> {
-    await this.ready();
-    const res = await this.qdrant.call<{ points: Array<{ payload?: { v?: unknown } }> }>("POST", `${this.qdrant.path}/points/scroll`, {
-      filter: { must: [{ key: "v", range: { gte: 1 } }] },
-      order_by: { key: "v", direction: "desc" },
-      limit: 1,
-      with_payload: ["v"],
-      with_vector: false,
-    });
-    const version = validVersion(res.points?.[0]?.payload?.v) ?? 0;
-    seedOpVersion(version);
-    return version;
+  constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number) {
+    this.clock = new VersionClock(qdrant, () => this.ready());
   }
 
-  /** A caller's version, or one stamped here above every version stored. */
-  private async versionFor(rawVersion: unknown): Promise<OpVersion> {
-    const version = validVersion(rawVersion);
-    if (version !== null) {
-      seedOpVersion(version);
-      return version;
-    }
-    await (this.versionFloor ??= this.maxVersion().catch((error) => {
-      this.versionFloor = null;
-      throw error;
-    }));
-    return nextOpVersion();
+  maxVersion(): Promise<OpVersion> {
+    return this.clock.maxVersion();
   }
 
   /** Resolves once no reweighting pass is running. */
@@ -156,7 +119,7 @@ export class SearchEngine {
    * deleted is dropped (reported in `fenced`).
    */
   async apply(rawOps: unknown[], rawVersion?: unknown): Promise<ApplyResult> {
-    const version = await this.versionFor(rawVersion);
+    const version = await this.clock.versionFor(rawVersion);
     const failed: ApplyResult["failed"] = [];
     const ops: Op[] = [];
     const terms = new Map<DocOp, string[]>();

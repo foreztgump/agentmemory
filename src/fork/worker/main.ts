@@ -1,48 +1,33 @@
 import { registerWorker } from "iii-sdk";
-import {
-  SEARCH_FN,
-  type ApplyRequest,
-  type ClearRequest,
-  type KeywordRequest,
-  type LookupRequest,
-  type ScanMissingRequest,
-  type VectorRequest,
-} from "../search/protocol.js";
 import { loadSearchWorkerSettings } from "../search/settings.js";
 import { SearchEngine } from "./engine.js";
+import { ImageEngine } from "./image-engine.js";
 import { Qdrant } from "./qdrant.js";
+import { createSearchHandlers } from "./router.js";
 
 const env = process.env;
 const settings = loadSearchWorkerSettings(env);
-const qdrant = new Qdrant({
-  url: settings.qdrantUrl,
-  apiKey: settings.qdrantApiKey,
-  collection: settings.collection,
-  dimensions: settings.dimensions,
-  oversampling: settings.oversampling,
-  timeoutMs: 30_000,
-});
-const engine = new SearchEngine(qdrant, settings.avgdl);
+const qdrantFor = (collection: string, dimensions: number, layout?: "image") =>
+  new Qdrant({
+    url: settings.qdrantUrl,
+    apiKey: settings.qdrantApiKey,
+    collection,
+    dimensions,
+    oversampling: settings.oversampling,
+    timeoutMs: 30_000,
+    layout,
+  });
+const engine = new SearchEngine(qdrantFor(settings.collections.docs, settings.dimensions), settings.avgdl);
+const engines = {
+  docs: engine,
+  lessons: new SearchEngine(qdrantFor(settings.collections.lessons, settings.dimensions), settings.avgdl),
+  images: new ImageEngine(qdrantFor(settings.collections.images, settings.imageDimensions, "image")),
+};
 const engineUrl = env.III_ENGINE_URL || env.III_URL || `ws://localhost:${env.III_ENGINE_PORT || "49134"}`;
 
 const worker = registerWorker(engineUrl, { workerName: "am-search", invocationTimeoutMs: 60_000 });
 
-const handlers: Record<(typeof SEARCH_FN)[keyof typeof SEARCH_FN], (data: never) => Promise<unknown>> = {
-  [SEARCH_FN.apply]: async (data: Partial<ApplyRequest>) => engine.apply(Array.isArray(data?.ops) ? data.ops : [], data?.version),
-  [SEARCH_FN.lookup]: async (data: Partial<LookupRequest>) => ({ items: await engine.lookup(data?.ids) }),
-  [SEARCH_FN.keyword]: async (data: Partial<KeywordRequest>) => ({ hits: await engine.keyword(data?.query, data?.limit, data?.layer) }),
-  [SEARCH_FN.vector]: async (data: Partial<VectorRequest>) =>
-    ({ hits: await engine.vector(data?.f32b64, data?.limit, data?.layer, settings.oversampling) }),
-  [SEARCH_FN.stats]: async () => engine.stats(),
-  [SEARCH_FN.sessionCounts]: async () => ({ counts: await engine.sessionCounts() }),
-  [SEARCH_FN.scanMissingVectors]: async (data: Partial<ScanMissingRequest>) => engine.scanMissingVectors(data?.cursor, data?.limit),
-  [SEARCH_FN.clear]: async (data: Partial<ClearRequest>) => {
-    await engine.clear(data?.scope);
-    return { ok: true };
-  },
-  [SEARCH_FN.health]: async () => engine.health(),
-  [SEARCH_FN.maxVersion]: async () => ({ version: await engine.maxVersion() }),
-};
+const handlers = createSearchHandlers(engines, settings.oversampling);
 
 for (const [id, handler] of Object.entries(handlers)) worker.registerFunction(id, handler as (data: unknown) => Promise<unknown>);
 

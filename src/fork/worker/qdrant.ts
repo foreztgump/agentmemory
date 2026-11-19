@@ -7,7 +7,24 @@ export interface QdrantConfig {
   dimensions: number;
   oversampling: number;
   timeoutMs: number;
+  /** The collection's shape: `text` is the docs and lessons layout, `image` one exact-search image vector. Default text. */
+  layout?: "text" | "image";
 }
+
+const TEXT_INDEXES = [
+  ["layer", "keyword"],
+  ["session_id", "keyword"],
+  ["ts", "integer"],
+  ["dense", "bool"],
+  ["dl", "integer"],
+  ["ad", "float"],
+  ["v", "integer"],
+] as const;
+
+const IMAGE_INDEXES = [
+  ["session_id", "keyword"],
+  ["v", "integer"],
+] as const;
 
 export class QdrantError extends Error {
   constructor(readonly status: number, message: string) {
@@ -53,6 +70,14 @@ export class Qdrant {
 
   /** The settings measured in docs/fork/spikes/qdrant.md ("Settings for the am-search worker"). */
   async create(): Promise<void> {
+    if (this.config.layout === "image") {
+      await this.call("PUT", this.path, {
+        vectors: { image: { size: this.config.dimensions, distance: "Cosine", datatype: "float32" } },
+        on_disk_payload: true,
+      });
+      await this.createPayloadIndexes();
+      return;
+    }
     await this.call("PUT", this.path, {
       vectors: { dense: { size: this.config.dimensions, distance: "Cosine", datatype: "float16", memory: "cold" } },
       quantization_config: { binary: { memory: "pinned", encoding: "one_bit", query_encoding: "scalar8bits" } },
@@ -65,15 +90,7 @@ export class Qdrant {
   }
 
   private async createPayloadIndexes(): Promise<void> {
-    for (const [field_name, field_schema] of [
-      ["layer", "keyword"],
-      ["session_id", "keyword"],
-      ["ts", "integer"],
-      ["dense", "bool"],
-      ["dl", "integer"],
-      ["ad", "float"],
-      ["v", "integer"],
-    ] as const) {
+    for (const [field_name, field_schema] of this.config.layout === "image" ? IMAGE_INDEXES : TEXT_INDEXES) {
       await this.call("PUT", `${this.path}/index?wait=true`, { field_name, field_schema });
     }
   }
