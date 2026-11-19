@@ -139,6 +139,7 @@ export async function runExportCommand(options: CommandOptions): Promise<number>
   let timer: ReturnType<typeof setTimeout> | undefined;
   let rejectIdle!: (error: Error) => void;
   const idle = new Promise<never>((_, reject) => { rejectIdle = reject; });
+  idle.catch(() => {});
   const resetIdle = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
