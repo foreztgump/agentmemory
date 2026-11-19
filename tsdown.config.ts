@@ -79,6 +79,13 @@ export default defineConfig([
     sourcemap: false,
   },
   {
+    entry: ["src/fork/worker/main.ts"],
+    outDir: "dist/fork/worker",
+    ...shared,
+    clean: false,
+    sourcemap: false,
+  },
+  {
     entry: ["src/mcp/standalone.ts"],
     outDir: "dist",
     ...shared,

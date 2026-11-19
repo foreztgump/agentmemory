@@ -1,3 +1,4 @@
+import type { IIIClient } from "iii-sdk";
 import type { CompressedObservation, EmbeddingProvider } from "../types.js";
 import type { StateKV } from "./kv.js";
 import type { SearchLayer, SearchLayerResolver, SearchResultLayer } from "./search-layer.js";
@@ -45,11 +46,12 @@ export interface KeywordIndexPort {
 
   observationCountsBySession(): MaybePromise<Map<string, number>>;
   documentKindCounts(): MaybePromise<{ memories: number; lessons: number }>;
+  /** Synchronous because vector recovery re-checks it inside its critical section; a remote index answers from cached counts. */
   countMissingDocuments(
     hasDocument: (id: string) => boolean,
     since?: string | null,
     activeIds?: ReadonlySet<string>,
-  ): MaybePromise<number>;
+  ): number;
 }
 
 export interface VectorStorePort {
@@ -85,6 +87,8 @@ export interface IndexPersistencePort {
 export interface SearchRuntimeDeps {
   kv: StateKV;
   embeddingProvider: EmbeddingProvider | null;
+  /** Needed by backends that live in another iii worker. */
+  sdk?: IIIClient;
 }
 
 /** Ports are the defaults; the memory runtime keeps its concrete classes so existing callers stay synchronous. */
@@ -102,8 +106,16 @@ export interface SearchRuntime<
 export type MemorySearchRuntime = SearchRuntime<SearchIndex, VectorIndex, IndexPersistence>;
 
 export const SEARCH_BACKEND_ENV = "AM_SEARCH_BACKEND";
-const SEARCH_BACKENDS = ["memory"] as const;
+const SEARCH_BACKENDS = ["memory", "disk"] as const;
 export type SearchBackend = (typeof SEARCH_BACKENDS)[number];
+export type SearchRuntimeFactory = (deps: SearchRuntimeDeps) => SearchRuntime;
+
+const factories = new Map<Exclude<SearchBackend, "memory">, SearchRuntimeFactory>();
+
+/** A backend other than memory registers itself here, so this module never imports it. */
+export function registerSearchBackend(backend: Exclude<SearchBackend, "memory">, factory: SearchRuntimeFactory): void {
+  factories.set(backend, factory);
+}
 
 export function configuredSearchBackend(env: Record<string, string | undefined> = { [SEARCH_BACKEND_ENV]: getEnvVar(SEARCH_BACKEND_ENV) }): SearchBackend {
   const raw = env[SEARCH_BACKEND_ENV]?.trim() || "memory";
@@ -114,26 +126,33 @@ export function configuredSearchBackend(env: Record<string, string | undefined> 
   return backend;
 }
 
-let current: MemorySearchRuntime | null = null;
+let current: SearchRuntime | null = null;
 
 export function createSearchRuntime(
   deps: SearchRuntimeDeps,
   backend: SearchBackend = configuredSearchBackend(),
-): MemorySearchRuntime {
+): SearchRuntime {
+  if (backend !== "memory") {
+    const factory = factories.get(backend);
+    if (!factory) throw new Error(`${SEARCH_BACKEND_ENV}=${backend} is not registered in this build`);
+    current = factory(deps);
+    return current;
+  }
   const vector = deps.embeddingProvider ? new VectorIndex() : null;
   let persistence: IndexPersistence | null = null;
-  current = {
+  const runtime: MemorySearchRuntime = {
     backend,
     // Callers may have reached getSearchIndex() before boot; they must keep seeing the same index.
-    keyword: current?.keyword ?? new SearchIndex(),
+    keyword: current?.keyword instanceof SearchIndex ? current.keyword : new SearchIndex(),
     vector,
     openPersistence: () => (persistence ??= new IndexPersistence(deps.kv, vector, { requireRecoveryPlan: true })),
   };
-  return current;
+  current = runtime;
+  return runtime;
 }
 
 /** Before createSearchRuntime() runs (unit tests, early boot) this is a memory runtime with no vector store. */
-export function getSearchRuntime(): MemorySearchRuntime {
+export function getSearchRuntime(): SearchRuntime {
   if (!current) {
     current = { backend: "memory", keyword: new SearchIndex(), vector: null, openPersistence: noPersistence };
   }
