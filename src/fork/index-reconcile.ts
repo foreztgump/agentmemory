@@ -1,7 +1,7 @@
 import type { StateKV } from "../state/kv.js";
 import { collectAll } from "../state/kv.js";
 import { KV } from "../state/schema.js";
-import type { SearchIndex } from "../state/search-index.js";
+import type { KeywordIndexPort } from "../state/search-ports.js";
 import type { CompressedObservation, Session } from "../types.js";
 import { ObservationStats, observationStatsOf, sessionOf } from "./kv/observation-stats.js";
 
@@ -10,7 +10,8 @@ export interface UnindexedScan {
   missing: CompressedObservation[];
 }
 
-function unindexedRows(rows: CompressedObservation[], idx: SearchIndex): CompressedObservation[] {
+async function unindexedRows(rows: CompressedObservation[], idx: KeywordIndexPort): Promise<CompressedObservation[]> {
+  await idx.prefetch?.(rows.map((obs) => obs.id));
   return rows.filter((obs) => obs.title && obs.narrative && !idx.has(obs.id));
 }
 
@@ -42,7 +43,7 @@ class UnindexedTracker {
     stats.onWrite((scope, key, deleted) => this.onWrite(scope, key, deleted));
   }
 
-  scan(idx: SearchIndex, epoch: number): Promise<UnindexedScan> {
+  scan(idx: KeywordIndexPort, epoch: number): Promise<UnindexedScan> {
     const run = this.chain.then(() => this.pass(idx, epoch));
     this.chain = run.catch(() => undefined);
     return run;
@@ -68,8 +69,8 @@ class UnindexedTracker {
     }
   }
 
-  private async pass(idx: SearchIndex, epoch: number): Promise<UnindexedScan> {
-    const indexed = idx.observationCountsBySession();
+  private async pass(idx: KeywordIndexPort, epoch: number): Promise<UnindexedScan> {
+    const indexed = await idx.observationCountsBySession();
     const total = indexedTotal(indexed);
     const full = !this.primed || epoch !== this.epoch || total < this.lastIndexedTotal;
     const taken = this.dirty;
@@ -88,7 +89,7 @@ class UnindexedTracker {
     return { sessions: this.sessionIds.size, missing: [...this.missing.values()].flat() };
   }
 
-  private async fullPass(idx: SearchIndex, indexed: Map<string, number>): Promise<void> {
+  private async fullPass(idx: KeywordIndexPort, indexed: Map<string, number>): Promise<void> {
     this.journal = [];
     try {
       const sessions = await collectAll<Session>(this.kv, KV.sessions);
@@ -96,7 +97,7 @@ class UnindexedTracker {
       for (const session of sessions) {
         const known = session.observationCount ?? 0;
         if (known > 0 && known <= (indexed.get(session.id) ?? 0)) continue;
-        const found = unindexedRows(await this.kv.list<CompressedObservation>(KV.observations(session.id)), idx);
+        const found = await unindexedRows(await this.kv.list<CompressedObservation>(KV.observations(session.id)), idx);
         if (found.length > 0) missing.set(session.id, found);
       }
       const journal = this.journal;
@@ -110,7 +111,7 @@ class UnindexedTracker {
     }
   }
 
-  private async incrementalPass(idx: SearchIndex, indexed: Map<string, number>, taken: Set<string>): Promise<void> {
+  private async incrementalPass(idx: KeywordIndexPort, indexed: Map<string, number>, taken: Set<string>): Promise<void> {
     const candidates = new Set([...taken, ...this.missing.keys()]);
     for (const id of candidates) {
       if (!this.sessionIds.has(id)) {
@@ -122,7 +123,7 @@ class UnindexedTracker {
         this.missing.delete(id);
         continue;
       }
-      const found = unindexedRows(await this.kv.list<CompressedObservation>(KV.observations(id)), idx);
+      const found = await unindexedRows(await this.kv.list<CompressedObservation>(KV.observations(id)), idx);
       if (found.length > 0) this.missing.set(id, found);
       else this.missing.delete(id);
     }
@@ -137,7 +138,7 @@ const trackers = new WeakMap<object, UnindexedTracker>();
  */
 export async function trackedUnindexedObservations(
   kv: StateKV,
-  idx: SearchIndex,
+  idx: KeywordIndexPort,
   epoch: number,
 ): Promise<UnindexedScan | undefined> {
   const stats = observationStatsOf(kv);

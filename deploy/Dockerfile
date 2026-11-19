@@ -39,6 +39,7 @@ RUN node --input-type=module -e "await import('@huggingface/transformers')"
 COPY --from=agent-build --chown=node:node /opt/agentmemory/dist ./dist
 COPY --chown=node:node --chmod=644 deploy/runtime/agentmemory.worker.yaml /opt/agentmemory/iii.worker.yaml
 COPY --chown=node:node --chmod=644 deploy/runtime/worker-compose.yaml /opt/agentmemory/worker-compose.yaml
+COPY --chown=node:node --chmod=644 deploy/runtime/am-search.worker-compose.yaml /opt/agentmemory/am-search.worker-compose.yaml
 COPY --chown=node:node --chmod=644 deploy/runtime/supervise.mjs /opt/agentmemory/supervise.mjs
 COPY --chmod=0755 deploy/runtime/entrypoint.sh /usr/local/bin/agentmemory-entrypoint
 

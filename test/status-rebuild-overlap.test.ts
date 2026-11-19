@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
 vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -35,6 +35,11 @@ function storeKV() {
 
 const sdk = { trigger: async () => null };
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
 function seedStore() {
   const kv = storeKV();
   kv.seed(KV.sessions, "ses_1", {
@@ -65,6 +70,28 @@ function codes(report: { problems: Array<{ code: string }> }): string[] {
 }
 
 describe("status while the boot keyword rebuild runs", () => {
+  it.each(["observationCountsBySession", "documentKindCounts", "both"] as const)("bounds remote count probes when %s never answers", async (stalled) => {
+    vi.useFakeTimers();
+    const idx = getSearchIndex();
+    const observations = vi.spyOn(idx, "observationCountsBySession").mockImplementation(() =>
+      stalled === "documentKindCounts" ? new Map([["ses_1", 3]]) : new Promise(() => {}));
+    const kinds = vi.spyOn(idx, "documentKindCounts").mockImplementation(() =>
+      stalled === "observationCountsBySession" ? { memories: 2, lessons: 1 } : new Promise(() => {}));
+    const statusReport = createStatusReporter(sdk as never, seedStore() as never, {});
+    let settled = false;
+    const pending = statusReport({ health: null }).then((report) => { settled = true; return report; });
+    expect(observations).toHaveBeenCalled();
+    expect(kinds).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const report = await pending;
+    expect(settled).toBe(true);
+    expect(report.index.observationsIndexed).toBe(stalled === "documentKindCounts" ? 3 : 0);
+    expect(report.index.memoriesIndexed).toBe(stalled === "observationCountsBySession" ? 2 : undefined);
+    expect(report.index.lessonsIndexed).toBe(stalled === "observationCountsBySession" ? 1 : undefined);
+  });
+
   it("does not report missing observations before the rebuild finishes", async () => {
     getSearchIndex().clear();
     const kv = seedStore();

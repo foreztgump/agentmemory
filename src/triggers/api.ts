@@ -396,7 +396,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
     const cached = scan.last && options.scanMaxAgeMs !== undefined && Date.now() - scan.last.at < options.scanMaxAgeMs
       ? scan.last.value
       : null;
-    const [health, functionMetrics, graph, unindexed, auditMigrationState, stateStore, capture, graphIndex] = await Promise.all([
+    const [health, functionMetrics, graph, unindexed, auditMigrationState, stateStore, capture, graphIndex, observationCounts, documentKinds] = await Promise.all([
       options.health !== undefined ? Promise.resolve(options.health) : valueWithin(getLatestHealth(kv), STATUS_CHECK_TIMEOUT_MS),
       deps.metricsStore ? valueWithin(deps.metricsStore.getAll(), STATUS_CHECK_TIMEOUT_MS) : Promise.resolve([]),
       valueWithin(
@@ -411,9 +411,10 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
       probeStateStore(kv),
       valueWithin(getCaptureController()?.status() ?? Promise.resolve(null), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(getGraphIndexMigrationStatus(kv), STATUS_CHECK_TIMEOUT_MS),
+      valueWithin(Promise.resolve(idx.observationCountsBySession()), STATUS_CHECK_TIMEOUT_MS),
+      valueWithin(Promise.resolve(idx.documentKindCounts()), STATUS_CHECK_TIMEOUT_MS),
     ]);
-    const observationsIndexed = [...idx.observationCountsBySession().values()].reduce((a, n) => a + n, 0);
-    const documentKinds = idx.documentKindCounts();
+    const observationsIndexed = [...(observationCounts?.values() ?? [])].reduce((a, n) => a + n, 0);
     const circuit =
       deps.provider && "circuitState" in deps.provider
         ? (deps.provider.circuitState as { state?: string; failures?: number } | null)
@@ -452,8 +453,8 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         bm25Documents: idx.size,
         vectorDocuments: getVectorIndex()?.size ?? null,
         observationsIndexed,
-        memoriesIndexed: documentKinds.memories,
-        lessonsIndexed: documentKinds.lessons,
+        memoriesIndexed: documentKinds?.memories,
+        lessonsIndexed: documentKinds?.lessons,
         missingObservations: unindexed ? unindexed.missing.length : null,
         sessions: unindexed ? unindexed.sessions : null,
         bm25Incomplete: isBm25RebuildIncomplete(),
@@ -1594,6 +1595,7 @@ export function registerApiTriggers(
         .slice(0, 200);
       if (ids.length === 0) return { status_code: 400, body: { error: "ids required" } };
       const index = getSearchIndex();
+      await index.prefetch?.(ids);
       const sessions: Record<string, string> = {};
       for (const id of ids) {
         const sessionId = index.sessionOf(id);

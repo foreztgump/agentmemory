@@ -14,6 +14,22 @@ describe("Coolify stacks", () => {
     expect(strip(buddy.agentmemory.environment)).toEqual(strip(main.agentmemory.environment));
     expect(buddy.agentmemory.healthcheck).toEqual(main.agentmemory.healthcheck);
     expect(buddy.valkey).toEqual(main.valkey);
+    expect(buddy.qdrant).toEqual(main.qdrant);
+  });
+
+  it.each([["main", main], ["buddy", buddy]])("%s runs Qdrant privately and keeps in-memory search until switched", (_, services) => {
+    expect(services.qdrant.image).toBe("qdrant/qdrant:v1.20.2");
+    expect(services.qdrant.mem_limit).toBe("${QDRANT_MEM_LIMIT:-1g}");
+    expect(services.qdrant.ports).toBeUndefined();
+    expect(services.qdrant.expose).toBeUndefined();
+    expect(services.qdrant.environment.QDRANT__SERVICE__API_KEY).toBe("${QDRANT_API_KEY:?}");
+    expect(services.qdrant.healthcheck.test.join(" ")).toContain("/readyz");
+    expect(services.agentmemory.environment).toMatchObject({
+      AM_SEARCH_BACKEND: "${AM_SEARCH_BACKEND:-memory}",
+      AM_QDRANT_URL: "http://qdrant:6333",
+      AM_QDRANT_API_KEY: "${QDRANT_API_KEY:?}",
+    });
+    expect(services.agentmemory.depends_on.qdrant).toBeUndefined();
   });
 
   it.each([["main", main], ["buddy", buddy]])("%s forwards the fork settings with production defaults", (_, services) => {

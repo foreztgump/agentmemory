@@ -1,5 +1,13 @@
 import { registerWorker } from "iii-sdk";
-import { SEARCH_FN, type ApplyRequest, type ClearRequest, type KeywordRequest, type ScanMissingRequest, type VectorRequest } from "../search/protocol.js";
+import {
+  SEARCH_FN,
+  type ApplyRequest,
+  type ClearRequest,
+  type KeywordRequest,
+  type LookupRequest,
+  type ScanMissingRequest,
+  type VectorRequest,
+} from "../search/protocol.js";
 import { loadSearchWorkerSettings } from "../search/settings.js";
 import { SearchEngine } from "./engine.js";
 import { Qdrant } from "./qdrant.js";
@@ -20,7 +28,8 @@ const engineUrl = env.III_ENGINE_URL || env.III_URL || `ws://localhost:${env.III
 const worker = registerWorker(engineUrl, { workerName: "am-search", invocationTimeoutMs: 60_000 });
 
 const handlers: Record<(typeof SEARCH_FN)[keyof typeof SEARCH_FN], (data: never) => Promise<unknown>> = {
-  [SEARCH_FN.apply]: async (data: Partial<ApplyRequest>) => engine.apply(Array.isArray(data?.ops) ? data.ops : []),
+  [SEARCH_FN.apply]: async (data: Partial<ApplyRequest>) => engine.apply(Array.isArray(data?.ops) ? data.ops : [], data?.version),
+  [SEARCH_FN.lookup]: async (data: Partial<LookupRequest>) => ({ items: await engine.lookup(data?.ids) }),
   [SEARCH_FN.keyword]: async (data: Partial<KeywordRequest>) => ({ hits: await engine.keyword(data?.query, data?.limit, data?.layer) }),
   [SEARCH_FN.vector]: async (data: Partial<VectorRequest>) =>
     ({ hits: await engine.vector(data?.f32b64, data?.limit, data?.layer, settings.oversampling) }),
@@ -28,10 +37,11 @@ const handlers: Record<(typeof SEARCH_FN)[keyof typeof SEARCH_FN], (data: never)
   [SEARCH_FN.sessionCounts]: async () => ({ counts: await engine.sessionCounts() }),
   [SEARCH_FN.scanMissingVectors]: async (data: Partial<ScanMissingRequest>) => engine.scanMissingVectors(data?.cursor, data?.limit),
   [SEARCH_FN.clear]: async (data: Partial<ClearRequest>) => {
-    await engine.clear(data?.scope === "vectors" ? "vectors" : "all");
+    await engine.clear(data?.scope);
     return { ok: true };
   },
   [SEARCH_FN.health]: async () => engine.health(),
+  [SEARCH_FN.maxVersion]: async () => ({ version: await engine.maxVersion() }),
 };
 
 for (const [id, handler] of Object.entries(handlers)) worker.registerFunction(id, handler as (data: unknown) => Promise<unknown>);

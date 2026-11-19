@@ -122,7 +122,7 @@ export async function describeGraphNode(
   const projects = [...new Set(sessions.map((session) => session.project).filter((project): project is string => !!project))].sort();
   const sourceSet = new Set(observationIds);
   const basename = node.name.split(/[\/\\]/).filter(Boolean).at(-1) ?? node.name;
-  for (const hit of index.search(`${node.name} ${basename.replace(/\.[^.]+$/, "")}`, MAX_MEMORIES, "memory")) {
+  for (const hit of await index.search(`${node.name} ${basename.replace(/\.[^.]+$/, "")}`, MAX_MEMORIES, "memory")) {
     if (memories.some((memory) => memory.id === hit.obsId)) continue;
     const memory = await reader.read<Memory>(KV.memories, hit.obsId);
     if (!memory || memory.isLatest === false) continue;

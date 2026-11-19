@@ -36,29 +36,19 @@ export type TermSource = Pick<CompressedObservation, "title" | "subtitle" | "nar
 };
 
 export function extractTerms(obs: TermSource): string[] {
+  const fields = termSourceOf(obs);
   const parts = [
-    obs.title,
-    obs.subtitle || "",
-    obs.narrative,
-    ...obs.facts,
-    ...obs.concepts,
-    ...obs.files,
-    obs.type,
+    fields.title,
+    fields.subtitle || "",
+    fields.narrative,
+    ...fields.facts,
+    ...fields.concepts,
+    ...fields.files,
+    fields.type,
+    fields.source?.userPrompt || "",
+    fields.source?.assistantResponse || "",
+    fields.source?.toolOutput || "",
   ];
-  if (obs.source?.userPrompt) {
-    parts.push(obs.source.userPrompt.slice(0, USER_PROMPT_TERM_CAP));
-  }
-  if (obs.source?.assistantResponse) {
-    parts.push(
-      obs.source.assistantResponse.slice(0, ASSISTANT_RESPONSE_TERM_CAP),
-    );
-  }
-  if (
-    obs.source?.toolName === "conversation" &&
-    typeof obs.source.toolOutput === "string"
-  ) {
-    parts.push(obs.source.toolOutput.slice(0, TOOL_OUTPUT_TERM_CAP));
-  }
   return tokenize(parts.join(" ").toLowerCase());
 }
 

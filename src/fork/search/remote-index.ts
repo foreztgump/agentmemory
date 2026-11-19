@@ -14,12 +14,21 @@ const STATS_REFRESH_MS = 15_000;
 
 const toScored = (hits: Hit[]): ScoredId[] => hits.map((h) => ({ obsId: h.id, sessionId: h.sessionId, score: h.score }));
 
+const LOOKUP_BATCH = 1000;
+
+const EMPTY_STATS: StatsResult = { docs: 0, vectors: 0, memories: 0, lessons: 0, missingVectors: 0 };
+
 /** Counts from the worker, polled and bumped optimistically between polls so size checks stay synchronous. */
 export class StatsCache {
-  value: StatsResult = { docs: 0, vectors: 0, memories: 0, lessons: 0, missingVectors: 0 };
+  value: StatsResult = EMPTY_STATS;
   degraded = false;
   lastError: string | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Running sum of every optimistic bump, so a poll can re-apply the ones made while it was in flight. */
+  private bumped = { docs: 0, vectors: 0 };
+  private resets = 0;
+  private polls = 0;
+  private landedPoll = 0;
 
   constructor(private readonly client: SearchWorkerClient, private readonly outbox: SearchOutbox) {}
 
@@ -34,10 +43,26 @@ export class StatsCache {
     this.timer = null;
   }
 
+  /**
+   * A snapshot can predate writes this process made while the poll was in
+   * flight, so those bumps are added back on top of it; a poll that lands
+   * after a newer one or after a clear is discarded.
+   */
   async refresh(): Promise<StatsResult> {
     try {
       await this.outbox.drainFor(READ_YOUR_WRITES_MS);
-      this.value = await this.client.stats();
+      const poll = ++this.polls;
+      const resets = this.resets;
+      const before = { ...this.bumped };
+      const snapshot = await this.client.stats();
+      if (resets === this.resets && poll > this.landedPoll) {
+        this.landedPoll = poll;
+        this.value = {
+          ...snapshot,
+          docs: Math.max(0, snapshot.docs + this.bumped.docs - before.docs),
+          vectors: Math.max(0, snapshot.vectors + this.bumped.vectors - before.vectors),
+        };
+      }
       this.degraded = false;
       this.lastError = null;
     } catch (err) {
@@ -54,7 +79,13 @@ export class StatsCache {
   }
 
   bump(field: "docs" | "vectors", delta: number): void {
+    this.bumped[field] += delta;
     this.value = { ...this.value, [field]: Math.max(0, this.value[field] + delta) };
+  }
+
+  reset(value: Partial<StatsResult>): void {
+    this.resets++;
+    this.value = { ...this.value, ...value };
   }
 }
 
@@ -87,7 +118,7 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
   clear(): void {
     this.outbox.clear("all");
     this.ledger.clear();
-    this.stats.value = { docs: 0, vectors: 0, memories: 0, lessons: 0, missingVectors: 0 };
+    this.stats.reset(EMPTY_STATS);
   }
 
   async search(query: string, limit = 20, layer: SearchLayer = "all"): Promise<ScoredId[]> {
@@ -124,6 +155,31 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
 
   has(id: string): boolean {
     return typeof this.ledger.get(id)?.rev === "string";
+  }
+
+  /**
+   * After a restart the ledger is empty while Qdrant holds the documents, so
+   * ids this process has not touched are read from the worker in batches;
+   * has, sessionOf and layerOf then answer for them.
+   */
+  async prefetch(ids: readonly string[]): Promise<void> {
+    const unknown = [...new Set(ids)].filter((id) => this.ledger.get(id)?.rev === undefined);
+    for (let i = 0; i < unknown.length; i += LOOKUP_BATCH) {
+      const epoch = this.ledger.epoch;
+      let items: Awaited<ReturnType<SearchWorkerClient["lookup"]>>;
+      try {
+        items = await this.client.lookup(unknown.slice(i, i + LOOKUP_BATCH));
+      } catch (err) {
+        this.stats.markDegraded(err);
+        return;
+      }
+      if (epoch !== this.ledger.epoch) return;
+      for (const item of items) {
+        // An add or remove made while the lookup ran is newer than the worker's answer.
+        if (this.ledger.get(item.id)?.rev !== undefined) continue;
+        this.ledger.replace(item.id, { rev: item.rev, sessionId: item.sessionId, layer: item.layer });
+      }
+    }
   }
 
   get size(): number {
@@ -201,6 +257,6 @@ export class RemoteVectorStore implements VectorStorePort {
   clear(): void {
     this.outbox.clear("vectors");
     for (const entry of this.ledger.values()) entry.vec = undefined;
-    this.stats.value = { ...this.stats.value, vectors: 0 };
+    this.stats.reset({ vectors: 0 });
   }
 }

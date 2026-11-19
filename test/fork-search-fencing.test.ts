@@ -13,6 +13,7 @@ import { contentRev, type Op } from "../src/fork/search/protocol.js";
 import { termSourceOf } from "../src/state/term-extraction.js";
 import { float32ToBase64 } from "../src/state/vector-index.js";
 import { SearchEngine } from "../src/fork/worker/engine.js";
+import { pointId } from "../src/fork/worker/qdrant.js";
 import { DEFAULT_AVGDL } from "../src/fork/search/settings.js";
 import { DIMS, engineClient, QDRANT_URL, qdrantFor } from "./helpers/search-engine.js";
 
@@ -104,6 +105,39 @@ describe.skipIf(!QDRANT_URL)("fencing against a live Qdrant", () => {
     runtime.stats.stop();
     await runtime.outbox.stop(10_000);
     await qdrant.drop();
+  });
+
+  it("leaves no vector on a tombstone when a document, its vector and its delete share an invocation", async () => {
+    const id = "obs_same_invocation_delete";
+    const fields = termSourceOf(obs(id, "deleted topic"));
+    const rev = contentRev(fields);
+    const result = await engine.apply([
+      { k: "doc", id, sessionId: "ses_1", layer: "observation", ts: 1, fields, rev },
+      { k: "vec", id, rev, f32b64: float32ToBase64(embedding(1)) },
+      { k: "del", id },
+    ]);
+    const [point] = await qdrant.call<Array<{ payload: Record<string, unknown>; vector: Record<string, unknown> }>>("POST", `${qdrant.path}/points`, {
+      ids: [pointId(id)], with_payload: true, with_vector: true,
+    });
+    expect(point!.payload).toMatchObject({ deleted: true, dense: false });
+    expect(point!.vector).toEqual({});
+    expect(result.fenced).toEqual([id]);
+  });
+
+  it("reports the highest version stored, a tombstone's included", async () => {
+    const own = qdrantFor(`maxversion_${process.pid}_${Math.floor(Math.random() * 1e9)}`);
+    try {
+      const fresh = new SearchEngine(own, DEFAULT_AVGDL);
+      expect(await fresh.maxVersion()).toBe(0);
+      const ahead = Date.now() * 1000 + 3_600_000_000;
+      const fields = termSourceOf(obs("obs_floor", "floor topic"));
+      await fresh.apply([{ k: "doc", id: "obs_floor", sessionId: "ses_1", layer: "observation", ts: 1, fields, rev: contentRev(fields) }], ahead);
+      await fresh.apply([{ k: "doc", id: "obs_floor_gone", sessionId: "ses_1", layer: "observation", ts: 1, fields, rev: contentRev(fields) }], ahead + 1);
+      await fresh.apply([{ k: "del", id: "obs_floor_gone" }], ahead + 7);
+      expect(await new SearchEngine(own, DEFAULT_AVGDL).maxVersion()).toBe(ahead + 7);
+    } finally {
+      await own.drop();
+    }
   });
 
   it("stores the vector when the record did not change (control)", async () => {
