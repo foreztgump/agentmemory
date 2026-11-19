@@ -2,7 +2,9 @@
 // Calls each feature TEE-1160 converted against a running agentmemory and prints one
 // normalized JSON line per call, so the output of an old and a new image on the same
 // restored store can be diffed. Run it inside the replica's client container:
-//   bench/fork/replica.sh client node scripts/fork/feature-diff.mjs > out.jsonl
+//   bench/fork/replica.sh client node scripts/fork/feature-diff.mjs [--mutate] > out.jsonl
+//   bench/fork/replica.sh client node scripts/fork/feature-diff.mjs --export-pages > export.jsonl
+// Without --mutate it makes no call that writes (reads still update access logs and cached profiles).
 // Values the server generates during the run (ISO times and generated ids at or after the
 // run start, latencies, uptimes) are replaced with placeholders; everything else is kept.
 
@@ -67,8 +69,9 @@ async function call(name, method, path, body) {
 }
 
 if (exportOnly) {
-  for (let offset = 0; offset < 3400; offset += 100) {
-    await call(`export?offset=${offset}`, "GET", `export?maxSessions=100&offset=${offset}`);
+  for (let offset = 0; offset < 100_000; offset += 100) {
+    const page = await call(`export?offset=${offset}`, "GET", `export?maxSessions=100&offset=${offset}`);
+    if (Array.isArray(page?.sessions) && page.sessions.length === 0) break;
   }
 } else {
 const sessions = await call("sessions", "GET", "sessions");
@@ -95,9 +98,9 @@ await call("lessons/search", "POST", "lessons/search", { query: "test" });
 await call("timeline", "POST", "timeline", { anchor: new Date(Date.UTC(2026, 10, 10)).toISOString() });
 await call("diagnostics", "POST", "diagnostics", {});
 await call("export", "GET", "export");
-await call("reflect", "POST", "reflect", {});
-await call("crystals/auto", "POST", "crystals/auto", {});
 if (mutate) {
+  await call("reflect", "POST", "reflect", {});
+  await call("crystals/auto", "POST", "crystals/auto", {});
   await call("diagnostics/heal", "POST", "diagnostics/heal", {});
   await call("consolidate", "POST", "consolidate", {});
   await call("auto-forget", "POST", "auto-forget", {});

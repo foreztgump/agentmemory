@@ -1760,8 +1760,7 @@ export function registerMcpEndpoints(
               };
             }
             const session = await kv.get<Session>(KV.sessions, sessionId);
-            const summaries = await collectAll<SessionSummary>(kv, KV.summaries);
-            const summary = summaries.find((s) => s.sessionId === sessionId);
+            const summary = await kv.get<SessionSummary>(KV.summaries, sessionId);
             return {
               status_code: 200,
               body: {

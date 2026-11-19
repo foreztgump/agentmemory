@@ -303,7 +303,7 @@ export function withScopeGuard(kv: StateKV, sdk: IIIClient, dataDir: string): St
   process.once("beforeExit", dump);
   logger.warn(
     mode === "throw"
-      ? "scope-guard: throw mode on, refusing whole reads of growing collections and recording them"
+      ? "scope-guard: throw mode on, refusing whole reads of growing collections (refused reads are not recorded)"
       : "scope-guard: warn mode on, recording whole-collection reads",
     { file },
   );
