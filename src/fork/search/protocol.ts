@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SearchLayer, SearchResultLayer } from "../../state/search-layer.js";
-import type { TermSource } from "../../state/term-extraction.js";
+import { termSourceOf, type TermSource } from "../../state/term-extraction.js";
+import type { CompressedObservation } from "../../types.js";
 
 export const SEARCH_FN = {
   apply: "search::apply",
@@ -41,6 +42,12 @@ export function contentRev(fields: TermSource): ContentRev {
 }
 
 export type DocOp = { k: "doc"; id: string; sessionId: string; layer: SearchResultLayer; ts: number; rev: ContentRev; fields: TermSource };
+/** The keyword document for a record; the app's write path and the disk migration both build it here. */
+export function docOp(obs: CompressedObservation, layer: SearchResultLayer): DocOp {
+  const fields = termSourceOf(obs);
+  const ts = Date.parse(obs.timestamp ?? "");
+  return { k: "doc", id: obs.id, sessionId: obs.sessionId, layer, ts: Number.isFinite(ts) ? ts : Date.now(), rev: contentRev(fields), fields };
+}
 export type DelOp = { k: "del"; id: string };
 export type VecOp = { k: "vec"; id: string; rev: ContentRev; f32b64: string };
 export type VecDelOp = { k: "vec-del"; id: string };
