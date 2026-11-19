@@ -175,3 +175,14 @@ describe("export file verification", () => {
     expect(log.join("\n")).toMatch(/stopped at part 0/);
   });
 });
+
+describe("stream backpressure", () => {
+  it("ends the export when the client stops reading", async () => {
+    const { Writable } = await import("node:stream");
+    const { writeLine } = await import("../src/fork/export-stream.js");
+    const stuck = new Writable({ highWaterMark: 4, write: () => {} });
+    await writeLine(stuck, "a").catch(() => {});
+    await expect(writeLine(stuck, "more than the buffer", 50)).rejects.toThrow(/read nothing/);
+    expect(stuck.destroyed).toBe(true);
+  });
+});

@@ -127,11 +127,22 @@ export async function streamExport(
   return { parts: seq, rows };
 }
 
-function writeLine(stream: Writable, line: string): Promise<void> {
+export const STALL_MS = 120_000;
+
+/**
+ * Waits for `drain` when the channel is full. The engine does not close the channel when the
+ * HTTP client goes away, so a reader that takes nothing for STALL_MS ends the export.
+ */
+export function writeLine(stream: Writable, line: string, stallMs = STALL_MS): Promise<void> {
   if (stream.destroyed) return Promise.reject(new Error("export client disconnected"));
   if (stream.write(`${line}\n`)) return Promise.resolve();
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      stream.destroy();
+      done(new Error(`export client read nothing for ${stallMs / 1000} s`));
+    }, stallMs);
     const done = (error?: Error) => {
+      clearTimeout(timer);
       stream.off("drain", onDrain);
       stream.off("close", onClose);
       if (error) reject(error);
