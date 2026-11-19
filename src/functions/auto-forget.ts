@@ -11,6 +11,7 @@ import { deleteAccessLog } from "./access-tracker.js";
 import { deleteFacetsForTargets } from "./facets.js";
 import { getSearchIndex, vectorIndexRemove, flushIndexSave } from "./search.js";
 import { logger } from "../logger.js";
+import { observationsToExamine } from "../fork/auto-forget-scan.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const CONTRADICTION_THRESHOLD = 0.9;
@@ -156,14 +157,13 @@ export function registerAutoForgetFunction(sdk: IIIClient, kv: StateKV): void {
         }
       }
 
-      const sessions = await kv.list<Session>(KV.sessions);
+      const sessions = await collectAll<Session>(kv, KV.sessions);
       const obsPerSession: CompressedObservation[][] = [];
       for (let batch = 0; batch < sessions.length; batch += 10) {
         const chunk = sessions.slice(batch, batch + 10);
         const results = await Promise.all(
           chunk.map((s) =>
-            kv
-              .list<CompressedObservation>(KV.observations(s.id))
+            observationsToExamine(kv, s.id, now)
               .catch(() => [] as CompressedObservation[]),
           ),
         );

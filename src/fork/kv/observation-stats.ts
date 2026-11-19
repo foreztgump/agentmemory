@@ -12,25 +12,51 @@ import {
 
 const OBS_PREFIX = KV.observations("");
 const READY_KEY = "\u0000ready";
+const READY_VERSION = 2;
 const STATS = Symbol.for("agentmemory.fork.observationStats");
 
 type UpdateOp = { type: string; path: string; value?: unknown };
+export type WriteListener = (scope: string, key: string, deleted: boolean) => void;
 
-function sessionOf(scope: string): string | null {
+export function sessionOf(scope: string): string | null {
   return scope.startsWith(OBS_PREFIX) && scope.length > OBS_PREFIX.length ? scope.slice(OBS_PREFIX.length) : null;
 }
 
-function contribution(row: unknown): SessionSourceTotals {
-  return row === null || row === undefined
-    ? EMPTY_SESSION_TOTALS
-    : observationSourceTotals([row as CompressedObservation]);
+type Tally = SessionSourceTotals & Pick<SessionObservationStats, "lowImportanceRows" | "lowImportanceOldestMs">;
+type Contribution = { totals: SessionSourceTotals; lowMs: number | null };
+
+const EMPTY_CONTRIBUTION: Contribution = { totals: EMPTY_SESSION_TOTALS, lowMs: null };
+const EMPTY_TALLY: Tally = { ...EMPTY_SESSION_TOTALS, lowImportanceRows: 0, lowImportanceOldestMs: null };
+
+/** The timestamp of a row auto-forget could remove for low importance, or null when it never could. */
+function lowImportanceMs(row: CompressedObservation): number | null {
+  if (!row.timestamp || !((row.importance ?? 5) <= 2)) return null;
+  const ms = new Date(row.timestamp).getTime();
+  return Number.isNaN(ms) ? null : ms;
 }
 
-function shift(base: SessionSourceTotals, removed: SessionSourceTotals, added: SessionSourceTotals): SessionSourceTotals {
+function contribution(row: unknown): Contribution {
+  if (row === null || row === undefined) return EMPTY_CONTRIBUTION;
+  const typed = row as CompressedObservation;
+  return { totals: observationSourceTotals([typed]), lowMs: lowImportanceMs(typed) };
+}
+
+function shift(base: Tally, removed: Contribution, added: Contribution): Tally {
+  const totals: SessionSourceTotals = {
+    rows: Math.max(0, base.rows - removed.totals.rows + added.totals.rows),
+    sourceBytes: Math.max(0, base.sourceBytes - removed.totals.sourceBytes + added.totals.sourceBytes),
+    summaryBytes: Math.max(0, base.summaryBytes - removed.totals.summaryBytes + added.totals.summaryBytes),
+  };
+  if (base.lowImportanceRows === undefined) return totals;
+  const lowImportanceRows = Math.max(
+    0,
+    base.lowImportanceRows - (removed.lowMs === null ? 0 : 1) + (added.lowMs === null ? 0 : 1),
+  );
+  const earlier = [base.lowImportanceOldestMs ?? null, added.lowMs].filter((ms): ms is number => ms !== null);
   return {
-    rows: Math.max(0, base.rows - removed.rows + added.rows),
-    sourceBytes: Math.max(0, base.sourceBytes - removed.sourceBytes + added.sourceBytes),
-    summaryBytes: Math.max(0, base.summaryBytes - removed.summaryBytes + added.summaryBytes),
+    ...totals,
+    lowImportanceRows,
+    lowImportanceOldestMs: lowImportanceRows === 0 || earlier.length === 0 ? null : Math.min(...earlier),
   };
 }
 
@@ -41,29 +67,73 @@ function shift(base: SessionSourceTotals, removed: SessionSourceTotals, added: S
  * in-process lock (the redis backend's kv.update already assumes one writer process).
  */
 export class ObservationStats {
+  private readonly listeners = new Set<WriteListener>();
+
   constructor(private readonly base: StateKV) {}
+
+  /** Calls `listener` after every successful set, update and delete on any scope. Returns the unsubscribe function. */
+  onWrite(listener: WriteListener): () => void {
+    this.listeners.add(listener);
+    return () => void this.listeners.delete(listener);
+  }
+
+  private notify(scope: string, key: string, deleted: boolean): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(scope, key, deleted);
+      } catch (error) {
+        logger.warn("observation stats write listener failed", { error: String(error) });
+      }
+    }
+  }
 
   private lock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     return withKeyedLock(`obs-stats:${sessionId}`, fn);
   }
 
-  async totals(sessionId: string): Promise<SessionSourceTotals> {
+  private async current(sessionId: string): Promise<Tally> {
     const stored = await this.base.get<SessionObservationStats>(KV.obsStats, sessionId);
     if (stored) return stored;
     return this.lock(sessionId, () => this.loadLocked(sessionId));
   }
 
+  async totals(sessionId: string): Promise<SessionSourceTotals> {
+    return this.current(sessionId);
+  }
+
   async totalsExcluding(sessionId: string, row: unknown): Promise<SessionSourceTotals> {
-    return shift(await this.totals(sessionId), contribution(row), EMPTY_SESSION_TOTALS);
+    return shift(await this.current(sessionId), contribution(row), EMPTY_CONTRIBUTION);
+  }
+
+  /**
+   * How many rows of the session auto-forget could remove for low importance, and a lower
+   * bound on the earliest of their timestamps. Undefined when the stored row predates the
+   * tracking, so the caller must scan the session.
+   */
+  async lowImportance(sessionId: string): Promise<{ rows: number; oldestMs: number | null } | undefined> {
+    const tally = await this.current(sessionId);
+    if (tally.rows === 0) return { rows: 0, oldestMs: null };
+    if (tally.lowImportanceRows === undefined) return undefined;
+    return { rows: tally.lowImportanceRows, oldestMs: tally.lowImportanceOldestMs ?? null };
   }
 
   async recount(sessionId: string): Promise<SessionSourceTotals> {
     return this.lock(sessionId, () => this.recountLocked(sessionId));
   }
 
-  async afterChange<T>(scope: string, key: string, write: () => Promise<T>, read: () => Promise<unknown>): Promise<T> {
+  async afterChange<T>(
+    scope: string,
+    key: string,
+    write: () => Promise<T>,
+    read: () => Promise<unknown>,
+    deleted = false,
+  ): Promise<T> {
     const sessionId = sessionOf(scope);
-    if (sessionId === null) return write();
+    if (sessionId === null) {
+      const result = await write();
+      this.notify(scope, key, deleted);
+      return result;
+    }
     return this.lock(sessionId, async () => {
       const before = await this.loadLocked(sessionId);
       const oldRow = await this.base.get(scope, key);
@@ -71,36 +141,37 @@ export class ObservationStats {
       const newRow = await read();
       const after = shift(before, contribution(oldRow), contribution(newRow));
       await this.storeLocked(sessionId, after, before.rows);
+      this.notify(scope, key, deleted);
       return result;
     });
   }
 
-  private async loadLocked(sessionId: string): Promise<SessionSourceTotals> {
+  private async loadLocked(sessionId: string): Promise<Tally> {
     const stored = await this.base.get<SessionObservationStats>(KV.obsStats, sessionId);
     if (stored) return stored;
     if (await this.base.get(KV.obsStats, READY_KEY)) {
       const session = await this.base.get<{ observationCount?: number }>(KV.sessions, sessionId);
-      if (!session?.observationCount) return EMPTY_SESSION_TOTALS;
+      if (!session?.observationCount) return EMPTY_TALLY;
     }
     return this.recountLocked(sessionId);
   }
 
-  private async recountLocked(sessionId: string): Promise<SessionSourceTotals> {
-    let totals = EMPTY_SESSION_TOTALS;
+  private async recountLocked(sessionId: string): Promise<Tally> {
+    let tally = EMPTY_TALLY;
     for await (const page of this.base.iterate<CompressedObservation>(KV.observations(sessionId))) {
-      totals = shift(totals, EMPTY_SESSION_TOTALS, observationSourceTotals(page));
+      for (const row of page) tally = shift(tally, EMPTY_CONTRIBUTION, contribution(row));
     }
-    await this.storeLocked(sessionId, totals, -1);
-    return totals;
+    await this.storeLocked(sessionId, tally, -1);
+    return tally;
   }
 
-  private async storeLocked(sessionId: string, totals: SessionSourceTotals, previousRows: number): Promise<void> {
-    if (totals.rows === 0) await this.base.delete(KV.obsStats, sessionId);
-    else await this.base.set<SessionObservationStats>(KV.obsStats, sessionId, { ...totals, updatedAt: new Date().toISOString() });
-    if (totals.rows === previousRows) return;
+  private async storeLocked(sessionId: string, tally: Tally, previousRows: number): Promise<void> {
+    if (tally.rows === 0) await this.base.delete(KV.obsStats, sessionId);
+    else await this.base.set<SessionObservationStats>(KV.obsStats, sessionId, { ...tally, updatedAt: new Date().toISOString() });
+    if (tally.rows === previousRows) return;
     const session = await this.base.get<{ observationCount?: number }>(KV.sessions, sessionId);
-    if (session && session.observationCount !== totals.rows) {
-      await this.base.update(KV.sessions, sessionId, [{ type: "set", path: "observationCount", value: totals.rows }]);
+    if (session && session.observationCount !== tally.rows) {
+      await this.base.update(KV.sessions, sessionId, [{ type: "set", path: "observationCount", value: tally.rows }]);
     }
   }
 
@@ -112,7 +183,7 @@ export class ObservationStats {
       observations += (await this.recount(sessionId)).rows;
       sessions++;
     }
-    await this.base.set(KV.obsStats, READY_KEY, { at: new Date().toISOString(), sessions, observations });
+    await this.base.set(KV.obsStats, READY_KEY, { v: READY_VERSION, at: new Date().toISOString(), sessions, observations });
     return { sessions, observations };
   }
 
@@ -128,8 +199,10 @@ export class ObservationStats {
     }
   }
 
+  /** True once a repair has filled every stats field this version keeps. An older marker still means a missing row is an empty session. */
   async isReady(): Promise<boolean> {
-    return Boolean(await this.base.get(KV.obsStats, READY_KEY));
+    const marker = await this.base.get<{ v?: number }>(KV.obsStats, READY_KEY);
+    return (marker?.v ?? 1) >= READY_VERSION;
   }
 }
 
@@ -163,7 +236,7 @@ export function withObservationStats<K extends StateKV>(kv: K): K {
   wrapped.update = <T>(scope: string, key: string, ops: UpdateOp[]) =>
     stats.afterChange(scope, key, () => update.call(wrapped, scope, key, ops) as Promise<T>, () => get.call(wrapped, scope, key));
   wrapped.delete = (scope: string, key: string) =>
-    stats.afterChange(scope, key, () => remove.call(wrapped, scope, key), async () => null);
+    stats.afterChange(scope, key, () => remove.call(wrapped, scope, key), async () => null, true);
   return wrapped;
 }
 

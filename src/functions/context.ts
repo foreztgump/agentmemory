@@ -9,7 +9,8 @@ import type {
   Lesson,
 } from "../types.js";
 import { KV } from "../state/schema.js";
-import { StateKV } from "../state/kv.js";
+import { StateKV, collectAll } from "../state/kv.js";
+import { collectWhere } from "../fork/kv/paged-scan.js";
 import {
   ensureProjectSessionIndex,
   getProjectSessionIndex,
@@ -23,6 +24,8 @@ import {
 } from "./slots.js";
 import { getAgentId, isAgentScopeIsolated } from "../config.js";
 import { escapeXml, escapeXmlText } from "../prompts/xml.js";
+
+const isImportantObservation = (o: CompressedObservation) => o.title && o.importance >= 5;
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3);
@@ -75,7 +78,7 @@ export function registerContextFunction(
         kv
           .get<ProjectProfile>(KV.profiles, data.project)
           .catch(() => null),
-        kv.list<Lesson>(KV.lessons).catch(() => [] as Lesson[]),
+        collectAll<Lesson>(kv, KV.lessons).catch(() => [] as Lesson[]),
       ]);
 
       const slotContent = renderPinnedContext(pinnedSlots);
@@ -168,7 +171,7 @@ export function registerContextFunction(
           (s): s is Session => s !== null,
         );
       } else {
-        const allSessions = await kv.list<Session>(KV.sessions);
+        const allSessions = await collectAll<Session>(kv, KV.sessions);
         const scanned = allSessions.filter((s) => s.project === data.project);
         const ensuredIndex = await ensureProjectSessionIndex(
           kv,
@@ -230,8 +233,7 @@ export function registerContextFunction(
 
       const obsResults = await Promise.all(
         sessionsNeedingObs.map((i) =>
-          kv
-            .list<CompressedObservation>(KV.observations(sessions[i].id))
+          collectWhere<CompressedObservation>(kv, KV.observations(sessions[i].id), isImportantObservation)
             .catch(() => []),
         ),
       );
@@ -239,9 +241,7 @@ export function registerContextFunction(
       for (let j = 0; j < sessionsNeedingObs.length; j++) {
         const i = sessionsNeedingObs[j];
         const observations = obsResults[j];
-        const important = observations.filter(
-          (o) => o.title && o.importance >= 5,
-        );
+        const important = observations.filter(isImportantObservation);
 
         if (important.length > 0) {
           const top = important
