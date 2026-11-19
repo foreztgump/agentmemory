@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { mulberry32 } from "../lib/stats.js";
+import { workerRss } from "./lib.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -70,19 +71,14 @@ function sample() {
   const sh = (cmd: string) => execFileSync("docker", ["exec", args.container!, "sh", "-c", cmd], { encoding: "utf8" });
   const procs = sh("for p in /proc/[0-9]*; do c=$(tr '\\0' ' ' < $p/cmdline 2>/dev/null); r=$(awk '/VmRSS/{print $2}' $p/status 2>/dev/null); [ -n \"$r\" ] && echo \"$r|$c\"; done")
     .trim().split("\n").map((l) => { const [kb, cmd] = [l.slice(0, l.indexOf("|")), l.slice(l.indexOf("|") + 1)]; return { mib: Number(kb) / 1024, cmd }; });
-  const pick = (re: RegExp, required = true) => {
-    const matched = procs.filter((p) => re.test(p.cmd));
-    if (required && matched.length === 0) throw new Error(`no process in ${args.container} matches ${re}`);
-    return +matched.reduce((n, p) => n + p.mib, 0).toFixed(1);
-  };
+  const rss = workerRss(procs, args.container!);
   const anon = Number(/^anon (\d+)$/m.exec(sh("cat /sys/fs/cgroup/memory.stat"))?.[1] ?? 0) / 2 ** 20;
   const pid = sh("for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q '^node [^ ]*dist/index.mjs' && basename $p; done; true").trim().split("\n")[0];
   if (!pid) throw new Error(`no agentmemory worker process (dist/index.mjs) in ${args.container}`);
   const heap = JSON.parse(execFileSync("docker", ["exec", "-i", args.container!, "node", "-", pid!], { input: readFileSync(new URL("../lib/heap-after-gc.mjs", import.meta.url)), encoding: "utf8" })) as { heapUsedBytes: number };
   return {
     agentmemoryHeapAfterGcMiB: +(heap.heapUsedBytes / 2 ** 20).toFixed(1),
-    agentmemoryWorkerRssMiB: pick(/^node \S*dist\/index\.mjs/),
-    amSearchRssMiB: pick(/fork\/worker\/main\.mjs/, false),
+    ...rss,
     containerAnonMiB: +anon.toFixed(1),
   };
 }

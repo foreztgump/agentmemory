@@ -6,6 +6,7 @@ import { isManagedImagePath } from "../utils/image-store.js";
 import { recordAudit } from "./audit.js";
 import { logger } from "../logger.js";
 import { getSearchRuntime } from "../state/search-ports.js";
+import { liveImageHits } from "../fork/search/images.js";
 
 interface StoredEmbedding {
   imageRef: string;
@@ -119,7 +120,7 @@ export function registerVisionSearchFunctions(
       const images = getSearchRuntime().images;
       if (images) {
         try {
-          return { success: true, ...(await images.search(queryVec, topK, data?.sessionId)) };
+          return { success: true, ...(await liveImageHits(kv, await images.search(queryVec, topK, data?.sessionId))) };
         } catch (err) {
           return { success: false, error: `image search unavailable: ${err instanceof Error ? err.message : String(err)}` };
         }

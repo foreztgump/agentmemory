@@ -7,6 +7,18 @@ export interface LessonCase {
   query: string;
 }
 
+export function workerRss(procs: Array<{ mib: number; cmd: string }>, container: string): { agentmemoryWorkerRssMiB: number; amSearchRssMiB: number } {
+  const pick = (re: RegExp) => {
+    const matched = procs.filter((p) => re.test(p.cmd));
+    if (matched.length === 0) throw new Error(`no process in ${container} matches ${re}`);
+    return +matched.reduce((n, p) => n + p.mib, 0).toFixed(1);
+  };
+  return {
+    agentmemoryWorkerRssMiB: pick(/^node \S*dist\/index\.mjs/),
+    amSearchRssMiB: pick(/fork\/worker\/main\.mjs/),
+  };
+}
+
 const TOKEN = /[\p{L}\p{N}]{3,}/gu;
 const terms = (l: Lesson) => [...new Set(`${l.content}\n${l.context ?? ""}`.toLowerCase().match(TOKEN) ?? [])].filter((t) => !/^\d+$/.test(t));
 const compare = (a: string, b: string) => Number(a > b) - Number(a < b);

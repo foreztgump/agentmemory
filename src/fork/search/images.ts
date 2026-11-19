@@ -1,8 +1,20 @@
 import type { ImageEmbedding, ImageIndexPort, ImageSearchResult } from "../../state/search-ports.js";
+import type { StateKV } from "../../state/kv.js";
+import { KV } from "../../state/schema.js";
 import { float32ToBase64 } from "../../state/vector-index.js";
 import type { SearchWorkerClient } from "./client.js";
 import type { SearchOutbox } from "./outbox.js";
 import { READ_YOUR_WRITES_MS } from "./remote-index.js";
+
+export async function liveImageHits(
+  kv: StateKV,
+  found: { results: ImageSearchResult[]; total: number },
+): Promise<{ results: ImageSearchResult[]; total: number }> {
+  if (found.results.length === 0) return found;
+  const rows = await kv.getMany(KV.imageEmbeddings, found.results.map((hit) => hit.imageRef));
+  const results = found.results.filter((_, i) => rows[i] != null);
+  return { results, total: found.total - (found.results.length - results.length) };
+}
 
 /** Image embeddings in the worker's images collection; the app keeps no copy. */
 export class RemoteImageIndex implements ImageIndexPort {

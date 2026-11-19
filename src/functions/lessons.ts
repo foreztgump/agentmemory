@@ -37,14 +37,18 @@ function clearLessonIndex(): void {
  * rebuild on the next recall. Disk mode has no lazy rebuild, so it converges
  * the lessons collection to KV for the ids the caller changed.
  */
-export async function resetLessonIndex(changedIds?: readonly string[]): Promise<void> {
+export async function resetLessonIndex(changedIds: readonly string[]): Promise<void> {
   const disk = getSearchRuntime().lessons;
   if (!disk) return clearLessonIndex();
-  if (!lessonKv || !changedIds) {
-    logger.warn(lessonKv ? "lesson index not converged: disk mode needs the changed lesson ids" : "lesson index not converged: lesson KV is not registered", { registered: !!lessonKv });
+  if (!lessonKv) {
+    logger.warn("lesson index not converged: lesson KV is not registered");
     return;
   }
-  await convergeLessons(disk, lessonKv, changedIds);
+  try {
+    await convergeLessons(disk, lessonKv, changedIds);
+  } catch (err) {
+    logger.warn("lesson index not converged", { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 function noteLessonMutation(): void {
