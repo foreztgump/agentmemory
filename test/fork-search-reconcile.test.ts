@@ -385,3 +385,108 @@ describe.skipIf(!QDRANT_URL)("degraded backend on live Qdrant", () => {
     expect(status.reason).toMatch(/Qdrant unreachable|fetch failed/);
   }, 30_000);
 });
+
+// ---------------------------------------------------------------- fix round 2026-11-19 (ocr triage)
+
+describe("fix round: status text and re-embed cooldown", () => {
+  const base = {
+    backend: "disk" as const, state: "healthy" as const, reason: null, since: "", documents: 1, vectors: 1, pendingWrites: 0, droppedWrites: 0,
+    missingDocuments: 3, missing: { observations: 3, memories: 0 }, missingVectors: 0,
+    reconcile: { state: "off" as const, startedAt: null, finishedAt: null, durationMs: null, checked: 0, added: 0, deleted: 0, error: null },
+    reembed: { state: "idle" as const, perMinute: 120, embedded: 0, failed: 0 },
+  };
+
+  it("does not promise a background reconcile for missing documents when reconcile is off (#7)", () => {
+    const problem = searchBackendProblems(base).find((p) => p.code === "search-documents-missing");
+    expect(problem?.fix).not.toMatch(/reconcile adds them/);
+    expect(problem?.fix).toMatch(/AM_SEARCH_RECONCILE_INTERVAL_MS/);
+  });
+
+  it("cools down a record whose vector did not land even when the rest of its batch succeeded (#9)", async () => {
+    const kv = mockKV();
+    await kv.set(KV.observations("s"), "obs_good", obs("obs_good", "good", "s"));
+    await kv.set(KV.observations("s"), "obs_bad", obs("obs_bad", "bad", "s"));
+    const landed = new Set<string>();
+    const client = {
+      scanMissingVectors: async () => ({
+        items: ["obs_good", "obs_bad"].filter((id) => !landed.has(id)).map((id) => ({ id, sessionId: "s", layer: "observation", rev: "r" })),
+        next: undefined,
+      }),
+    };
+    const keyword = { prefetch: async () => {}, has: () => true, revOf: (id: string) => docOfRecord("observation", obs(id, id.slice(4), "s"))!.rev, add: () => {} };
+    const vector = { has: (id: string) => landed.has(id) };
+    const batches: string[][] = [];
+    const loop = new ReembedLoop({ client, keyword, vector, health: new BackendHealth(), perMinute: 6000 } as never);
+    loop.start({
+      kv: kv as never,
+      embedBatch: async (jobs) => {
+        batches.push(jobs.map((j) => j.id));
+        for (const job of jobs) if (job.id !== "obs_bad") landed.add(job.id);
+        const ok = jobs.filter((j) => j.id !== "obs_bad").length;
+        return { ok, fail: jobs.length - ok, skipped: 0 };
+      },
+      embeddingEnabled: () => true,
+    });
+    loop.stop();
+    await loop.step();
+    await loop.step();
+    expect(batches).toEqual([["obs_good", "obs_bad"]]);
+  });
+});
+
+describe("fix round: smart-search degraded notice", () => {
+  it("attaches the degraded notice to the expanded shape as well as the compact one (#17)", async () => {
+    const { registerSmartSearchFunction } = await import("../src/functions/smart-search.js");
+    const notice = { backend: "disk" as const, legs: ["keyword" as const], reason: "Qdrant unreachable" };
+    registerSearchBackend("disk", () => ({
+      backend: "disk", keyword: {} as never, vector: null, openPersistence: () => { throw new Error("none"); },
+      service: { degradedNotice: () => notice } as never,
+    }));
+    createSearchRuntime({ kv: {} as never, embeddingProvider: null }, "disk");
+    const kv = mockKV();
+    await kv.set(KV.sessions, "ses_1", { id: "ses_1", project: "p", cwd: "/", startedAt: "", status: "active", observationCount: 1 });
+    await kv.set(KV.observations("ses_1"), "obs_1", obs("obs_1", "alpha", "ses_1"));
+    const handlers = new Map<string, (p: unknown) => Promise<unknown>>();
+    const sdk = { registerFunction: (id: string, fn: (p: unknown) => Promise<unknown>) => handlers.set(id, fn), registerTrigger: () => {}, trigger: async () => null };
+    registerSmartSearchFunction(sdk as never, kv as never, async () => []);
+    const compact = await handlers.get("mem::smart-search")!({ query: "alpha" });
+    const expanded = await handlers.get("mem::smart-search")!({ expandIds: ["obs_1"] });
+    expect(compact).toMatchObject({ mode: "compact", degraded: notice });
+    expect(expanded).toMatchObject({ mode: "expanded", degraded: notice });
+  });
+});
+
+describe.skipIf(!QDRANT_URL)("fix round on live Qdrant", () => {
+  it("does not bring back an observation deleted during the pass after the delete ledger forgot it (#15)", async () => {
+    const r = await rig("evicted");
+    await putSession(r, "ses_a", [obs("obs_keep", "keep", "ses_a"), obs("obs_del", "deleted mid pass", "ses_a")]);
+    r.runtime.service.start(hooks(r));
+    const list = r.kv.list.bind(r.kv);
+    let reads = 0;
+    r.kv.list = (async (scope: string) => {
+      const rows = await list(scope);
+      // The doc-by-doc compare reads the record; the delete lands right after, and its ledger entry is already evicted.
+      if (scope === KV.observations("ses_a") && ++reads === 2) await r.kv.delete(KV.observations("ses_a"), "obs_del");
+      return rows;
+    }) as typeof r.kv.list;
+    await r.runtime.reconciler.runPass();
+    await r.runtime.outbox.drainFor(5000);
+    expect(r.runtime.keyword.removedHere("obs_del")).toBe(false);
+    expect(await liveIds(r, "ses_a")).toEqual(["obs_keep"]);
+  }, 30_000);
+
+  it("keeps the status page's session count once reconcile has run in disk mode (#13)", async () => {
+    const { createStatusReporter } = await import("../src/triggers/api.js");
+    const r = await rig("sessions");
+    await putSession(r, "ses_a", [obs("obs_a1", "alpha", "ses_a")]);
+    await putSession(r, "ses_b", [obs("obs_b1", "beta", "ses_b")]);
+    registerSearchBackend("disk", () => r.runtime);
+    createSearchRuntime({ kv: r.kv as never, embeddingProvider: null }, "disk");
+    r.runtime.service.start(hooks(r));
+    await r.runtime.reconciler.runPass();
+    expect(r.runtime.service.reconciled).toBe(true);
+    const report = await createStatusReporter({ trigger: async () => null } as never, r.kv as never, {})({ health: null });
+    expect(report.index.sessions).toBe(2);
+    expect(report.index.missingObservations).toBe(0);
+  }, 30_000);
+});
