@@ -2,7 +2,7 @@
 
 This directory deploys agentmemory as a Coolify *Application* built from a
 Docker Compose stack. It runs agentmemory 0.9.33 under iii 0.25 Worker Compose,
-keeps state in a Valkey sidecar, embeds with Voyage `voyage-code-4`, and
+keeps state in a Kvrocks sidecar (RocksDB on disk), embeds with Voyage `voyage-code-4`, and
 writes summaries through an Anthropic-format LLM endpoint.
 
 In Coolify, set the base directory to `/` and the Compose path to the stack's
@@ -24,11 +24,13 @@ because Coolify reads the variables a stack uses from its own compose file.
 | Service | Purpose |
 |---|---|
 | `agentmemory` | REST API on `3111`, built from `deploy/Dockerfile`. `iii compose` runs the engine and supervises the `state`, `http` and `agentmemory` workers, restarting a worker that exits. Memory limit `AGENTMEMORY_MEM_LIMIT`. |
-| `valkey` | State and stream store (`AGENTMEMORY_STATE_BACKEND=redis`). Append-only file on, `noeviction`, memory limit `VALKEY_MEM_LIMIT`. |
+| `kvrocks` | State and stream store (`AGENTMEMORY_STATE_BACKEND=redis`, reached through iii's redis adapter). Records live on disk; RAM is a 384 MB block cache plus memtables. Password `KVROCKS_PASSWORD`, memory limit `KVROCKS_MEM_LIMIT` (default `1280m`). See `docs/fork/kvrocks.md`. |
+| `valkey` | The previous store. It starts only with the `valkey-source` profile, as the migration source and the rollback target. Append-only file on, `noeviction`, memory limit `VALKEY_MEM_LIMIT`. |
 
 Volumes:
 
-- `valkey-data` holds every memory, session, observation and index. Back up this one.
+- `kvrocks-data` holds every memory, session, observation and index. Back up this one.
+- `valkey-data` holds the store as it was before the move to Kvrocks. Keep it until the Kvrocks stack has run cleanly.
 - `agentmemory-data` holds `/data/secret`, the generated `worker-compose.runtime.yaml`, the capture spool and the registry workers that compose downloads on first boot. On a stack that was migrated from the file backend it also holds the old `state_store.db`, which is no longer read. The 0.9.31 entrypoint copies a 0.9.30 `/data/.hmac` to `/data/secret` when `AGENTMEMORY_SECRET` is unset.
 
 ## Changes from upstream
@@ -52,6 +54,7 @@ Coolify passes every application variable into the container, and the compose fi
 | Variable | Value |
 |---|---|
 | `VOYAGE_API_KEY` | Voyage key. `EMBEDDING_PROVIDER` defaults to `voyage` in the compose file, so adding an LLM key never switches the embedding backend. `VOYAGE_MODEL` defaults to `voyage-code-4` and `VOYAGE_OUTPUT_DIMENSION` to `1024`. |
+| `KVROCKS_PASSWORD` | Kvrocks password, also used in `AGENTMEMORY_REDIS_URL`. Use hex or URL-safe characters, for example `openssl rand -hex 32`. |
 | `AGENTMEMORY_SECRET` | 64-hex bearer secret. When unset, the entrypoint uses `/data/secret`. Clients send `Authorization: Bearer <secret>`. |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` | Key and base URL of an Anthropic-format endpoint, for example a CLIProxy gateway. `AGENTMEMORY_LLM_PROVIDER` defaults to `anthropic`; since 0.9.33 a key alone turns no LLM on. |
 | `ANTHROPIC_MODEL` | Summary model. Defaults to `claude-haiku-5-5` in the compose file; without it agentmemory uses a Sonnet-class model. |
@@ -123,6 +126,16 @@ It exports in session chunks (the engine caps a response at about 15 MiB), impor
 
 To migrate a file-backed stack: back up the volume, deploy the Valkey stack, copy the old `state_store.db` out of `agentmemory-data`, serve it from a temporary file-backed container (give it the same `EMBEDDING_PROVIDER` and Voyage key), and run the script against the live stack. Imports re-embed every document, so expect Voyage usage proportional to the store.
 
+## Moving the store to Kvrocks
+
+`scripts/fork/kvrocks-migrate.ts` copies every hash from Valkey to an empty Kvrocks, byte for byte, in pages, and verifies the copy (`docs/fork/kvrocks.md`). On buddy's 2026-11-16 snapshot (3,725 hashes, 1,166,246 records) the copy took 22 s and the verify 11 s on the workstation.
+
+1. Pause capture: clients spool while the stack is down.
+2. Stop the `agentmemory` service, so nothing writes to Valkey.
+3. Start `valkey` (`--profile valkey-source`) and the new, empty `kvrocks`.
+4. From a checkout of this branch, on a container attached to the stack network, run `copy`, then `verify`, with `MIGRATE_SOURCE_URL=redis://valkey:6379` and `MIGRATE_TARGET_URL=redis://:<KVROCKS_PASSWORD>@kvrocks:6666`. A killed `copy` resumes when run again. `verify` must print `VERIFY OK`.
+5. Deploy this compose file, which points agentmemory at Kvrocks, and stop `valkey`. Keep `valkey-data` for rollback: rolling back is the previous compose file, which starts Valkey again with its data.
+
 ## Resources
 
 Measured on the buddy store (28,037 documents, 508 memories): the file backend held 2.65 GB, almost all of it in the engine process. On Valkey the same data used 0.34 GB engine, 0.39 GB worker and 0.28 GB Valkey.
@@ -131,7 +144,7 @@ On 2026-10-27, after the 0.9.31 upgrade: main held 91k documents (86k observatio
 
 ## Backups
 
-Back up the `valkey-data` volume, for example:
+Back up the `kvrocks-data` volume. Copying the live RocksDB directory is not a consistent backup; checkpoint backups are not set up yet. Until they are, the previous Valkey instructions apply to `valkey-data`:
 
 ```bash
 docker run --rm -v <app-uuid>_valkey-data:/data:ro -v "$PWD":/b alpine \
