@@ -5,6 +5,7 @@
 //
 //   node --import tsx bench/fork/lessons/memory-growth.ts --url http://127.0.0.1:13167 --container tee1167-agentmemory-1 --base 600 [--factor 10]
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { mulberry32 } from "../lib/stats.js";
 
@@ -65,7 +66,10 @@ function sample() {
     .trim().split("\n").map((l) => { const [kb, cmd] = [l.slice(0, l.indexOf("|")), l.slice(l.indexOf("|") + 1)]; return { mib: Number(kb) / 1024, cmd }; });
   const pick = (re: RegExp) => +procs.filter((p) => re.test(p.cmd)).reduce((n, p) => n + p.mib, 0).toFixed(1);
   const anon = Number(/^anon (\d+)$/m.exec(sh("cat /sys/fs/cgroup/memory.stat"))?.[1] ?? 0) / 2 ** 20;
+  const pid = sh("for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q '^node [^ ]*dist/index.mjs' && basename $p; done; true").trim().split("\n")[0];
+  const heap = JSON.parse(execFileSync("docker", ["exec", "-i", args.container!, "node", "-", pid!], { input: readFileSync(new URL("../lib/heap-after-gc.mjs", import.meta.url)), encoding: "utf8" })) as { heapUsedBytes: number };
   return {
+    agentmemoryHeapAfterGcMiB: +(heap.heapUsedBytes / 2 ** 20).toFixed(1),
     agentmemoryWorkerRssMiB: pick(/dist\/index\.mjs/),
     amSearchRssMiB: pick(/fork\/worker\/main\.mjs/),
     containerAnonMiB: +anon.toFixed(1),
@@ -74,12 +78,23 @@ function sample() {
 
 const settle = () => new Promise((r) => setTimeout(r, Number(args.settle) * 1000));
 
+// Warm-up: one full round at the base size, so the first sample is not a cold worker.
 await saveUntil(base);
-const foundBefore = await recalls(Number(args.recalls));
-await settle();
-const before = { lessons: saved, recallHits: foundBefore, ...sample() };
-await saveUntil(base * factor);
-const foundAfter = await recalls(Number(args.recalls));
-await settle();
-const after = { lessons: saved, recallHits: foundAfter, ...sample() };
-console.log(JSON.stringify({ before, after, deltaWorkerMiB: +(after.agentmemoryWorkerRssMiB - before.agentmemoryWorkerRssMiB).toFixed(1), deltaAnonMiB: +(after.containerAnonMiB - before.containerAnonMiB).toFixed(1) }, null, 1));
+await recalls(Number(args.recalls));
+const steps = [1, 2.5, 5, factor].filter((m, i, xs) => m <= factor && xs.indexOf(m) === i);
+const series: Array<{ lessons: number; recallHits: number } & ReturnType<typeof sample>> = [];
+for (const m of steps) {
+  await saveUntil(Math.round(base * m));
+  const recallHits = await recalls(Number(args.recalls));
+  await settle();
+  series.push({ lessons: saved, recallHits, ...sample() });
+}
+const first = series[0]!;
+const last = series[series.length - 1]!;
+console.log(JSON.stringify({
+  series,
+  deltaHeapAfterGcMiB: +(last.agentmemoryHeapAfterGcMiB - first.agentmemoryHeapAfterGcMiB).toFixed(1),
+  deltaWorkerMiB: +(last.agentmemoryWorkerRssMiB - first.agentmemoryWorkerRssMiB).toFixed(1),
+  deltaAmSearchMiB: +(last.amSearchRssMiB - first.amSearchRssMiB).toFixed(1),
+  deltaAnonMiB: +(last.containerAnonMiB - first.containerAnonMiB).toFixed(1),
+}, null, 1));
