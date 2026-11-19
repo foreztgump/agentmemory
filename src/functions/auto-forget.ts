@@ -163,7 +163,7 @@ export function registerAutoForgetFunction(sdk: IIIClient, kv: StateKV): void {
         const chunk = sessions.slice(batch, batch + 10);
         const results = await Promise.all(
           chunk.map((s) =>
-            observationsToExamine(kv, s.id, now)
+            observationsToExamine(kv, s.id, now - 180 * MS_PER_DAY)
               .catch(() => [] as CompressedObservation[]),
           ),
         );

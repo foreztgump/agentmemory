@@ -13,6 +13,7 @@ const testHome = mkdtempSync(join(tmpdir(), "agentmemory-test-home-"));
 
 export default defineConfig({
   test: {
+    setupFiles: ["./test/helpers/scope-guard-setup.ts"],
     env: {
       HOME: testHome,
       USERPROFILE: testHome,

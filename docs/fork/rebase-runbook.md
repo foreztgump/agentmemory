@@ -51,6 +51,8 @@ For each conflict:
 
 If a fork commit is now in upstream, `git rebase --skip` drops it.
 
+The paged-list commit (`perf(fork): page every whole-scope list of a growing scope with collectAll`) touches about 140 one-line call sites in upstream files, and it is generated. When it conflicts, take upstream's side of every conflicted hunk, then run `npx tsx scripts/fork/page-list-sites.ts --write`. That reapplies the rewrite to the new upstream code, and a second run changes nothing. `test/fork-paged-list-sites.test.ts` then fails on any growing-scope `list` the script could not convert; fix those by hand. Count the whole commit as one conflict.
+
 If the rebase goes wrong, `git rebase --abort`, or reset `disk` to `disk-before-$NEW` and start again.
 
 ## 3. Verify

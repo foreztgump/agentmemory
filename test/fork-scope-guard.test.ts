@@ -7,10 +7,14 @@ import { KV } from "../src/state/schema.js";
 import {
   GuardedStateKV,
   ScopeReadInventory,
+  ScopeTooLargeError,
+  assertWholeReadAllowed,
   withScopeGuard,
   getScopeGuardMode,
   normalizeScope,
   readInventory,
+  scopeClassOf,
+  type WholeReadOp,
 } from "../src/fork/scope-guard.js";
 
 type Call = { function_id: string; payload: { scope: string; key?: string } };
@@ -153,7 +157,7 @@ describe("scope guard", () => {
     }
   });
 
-  it("is off by default, accepts warn, and rejects anything else", () => {
+  it("is off by default, accepts warn and throw, and rejects anything else", () => {
     delete process.env.AGENTMEMORY_SCOPE_GUARD;
     expect(getScopeGuardMode()).toBe("off");
     const sdk = fakeSdk(new Map()) as never;
@@ -164,7 +168,110 @@ describe("scope guard", () => {
     const guarded = withScopeGuard(plain, sdk, dir);
     expect(guarded).toBeInstanceOf(GuardedStateKV);
     expect(guarded.backend).toBe("redis");
-    process.env.AGENTMEMORY_SCOPE_GUARD = "throw";
-    expect(() => getScopeGuardMode()).toThrow(/off or warn/);
+    for (const value of ["throw", "refuse", " THROW "]) {
+      process.env.AGENTMEMORY_SCOPE_GUARD = value;
+      expect(getScopeGuardMode()).toBe("throw");
+    }
+    process.env.AGENTMEMORY_SCOPE_GUARD = "strict";
+    expect(() => getScopeGuardMode()).toThrow(/off, warn or throw/);
+  });
+});
+
+describe("scope guard refuse mode", () => {
+  const OPS: WholeReadOp[] = ["list", "listKeys", "iterate", "listPage"];
+  const refused = (scope: string, op: WholeReadOp) => {
+    try {
+      assertWholeReadAllowed(scope, op);
+      return false;
+    } catch (error) {
+      expect(error).toBeInstanceOf(ScopeTooLargeError);
+      return true;
+    }
+  };
+
+  it("maps a raw scope to its class through the KV templates", () => {
+    expect(scopeClassOf(KV.memories)).toBe("paged-only");
+    expect(scopeClassOf(KV.config)).toBe("bounded");
+    expect(scopeClassOf(KV.graphControl)).toBe("point-read-only");
+    expect(scopeClassOf(KV.observations("ses_abc"))).toBe("bounded");
+    expect(scopeClassOf(KV.auditMonth("2026-11"))).toBe("paged-only");
+    expect(scopeClassOf(KV.auditMonths)).toBe("bounded");
+    expect(scopeClassOf(KV.teamShared("t1"))).toBe("paged-only");
+    expect(scopeClassOf(KV.teamProfile("t1"))).toBe("bounded");
+    expect(scopeClassOf(KV.obsSessionIndex(3))).toBe("point-read-only");
+    expect(scopeClassOf(KV.captureEvents("a1"))).toBe("paged-only");
+    expect(scopeClassOf("mem:not-a-scope")).toBeUndefined();
+    expect(scopeClassOf("mem:index:bm25:vec:12")).toBeUndefined();
+  });
+
+  it.each([
+    ["bounded", KV.config, []],
+    ["bounded family", KV.observations("ses_abc"), []],
+    ["bounded static beside a family", KV.auditMonths, []],
+    ["paged-only", KV.memories, ["list"]],
+    ["paged-only family", KV.auditMonth("2026-11"), ["list"]],
+    ["point-read-only", KV.graphControl, ["list", "listKeys", "iterate", "listPage"]],
+    ["point-read-only family", KV.obsSessionIndex(3), ["list", "listKeys", "iterate", "listPage"]],
+    ["unknown", "mem:not-a-scope", []],
+  ] as Array<[string, string, WholeReadOp[]]>)("refuses exactly the ops its class forbids: %s", (_label, scope, forbidden) => {
+    expect(OPS.filter((op) => refused(scope, op))).toEqual(forbidden);
+  });
+
+  it("names the scope, the op and the paged alternative", () => {
+    expect(() => assertWholeReadAllowed(KV.auditMonth("2026-11"), "list")).toThrow(
+      /list of mem:audit:2026-11 \(paged-only\).*use iterate, collectAll, listPage or getMany/,
+    );
+    expect(() => assertWholeReadAllowed(KV.graphControl, "iterate")).toThrow(
+      /iterate of mem:graph:control \(point-read-only\).*by key with get or getMany/,
+    );
+    try {
+      assertWholeReadAllowed(KV.memories, "list");
+    } catch (error) {
+      expect(error).toMatchObject({ name: "ScopeTooLargeError", scope: KV.memories, op: "list", scopeClass: "paged-only" });
+    }
+  });
+
+  it("refuses before reading, and only in throw mode", async () => {
+    const reads: string[] = [];
+    const sdk = fakeSdk(seeded(KV.memories, 3));
+    const counting = { ...sdk, trigger: async (req: Call) => (reads.push(req.function_id), sdk.trigger(req)) };
+    const strict = new GuardedStateKV(counting as never, {}, new ScopeReadInventory(), undefined, true);
+    await expect(strict.list(KV.memories)).rejects.toBeInstanceOf(ScopeTooLargeError);
+    expect(reads).toEqual([]);
+    await expect(strict.listKeys(KV.memories)).resolves.toHaveLength(3);
+    await expect(strict.listPage(KV.memories, { limit: 2 })).resolves.toMatchObject({ total: 3 });
+    expect((await collectAll(strict, KV.memories)).length).toBe(3);
+    await expect(strict.list(KV.config)).resolves.toEqual([]);
+    await expect(strict.listKeys(KV.graphControl)).rejects.toBeInstanceOf(ScopeTooLargeError);
+    await expect(collectAll(strict, KV.graphControl)).rejects.toBeInstanceOf(ScopeTooLargeError);
+    await expect(strict.listPage(KV.graphControl, { limit: 1 })).rejects.toBeInstanceOf(ScopeTooLargeError);
+
+    const lenient = new GuardedStateKV(fakeSdk(seeded(KV.graphControl, 2)) as never, {}, new ScopeReadInventory());
+    for (const scope of [KV.graphControl, KV.memories]) {
+      await expect(lenient.list(scope)).resolves.toBeDefined();
+      await expect(lenient.listKeys(scope)).resolves.toBeDefined();
+      await expect(collectAll(lenient, scope)).resolves.toBeDefined();
+    }
+  });
+
+  it("keeps recording the reads it allows", async () => {
+    const inventory = new ScopeReadInventory();
+    const kv = new GuardedStateKV(fakeSdk(seeded(KV.memories, 3)) as never, {}, inventory, undefined, true);
+    await collectAll(kv, KV.memories);
+    await expect(kv.list(KV.memories)).rejects.toThrow();
+    expect(inventory.snapshot().reads.map((r) => r.op)).toEqual(["iterate"]);
+  });
+
+  it("wraps the store in throw mode and leaves warn mode alone", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scope-guard-"));
+    const sdk = fakeSdk(seeded(KV.memories, 2)) as never;
+    try {
+      process.env.AGENTMEMORY_SCOPE_GUARD = "throw";
+      await expect(withScopeGuard(new StateKV(sdk), sdk, dir).list(KV.memories)).rejects.toBeInstanceOf(ScopeTooLargeError);
+      process.env.AGENTMEMORY_SCOPE_GUARD = "warn";
+      await expect(withScopeGuard(new StateKV(sdk), sdk, dir).list(KV.memories)).resolves.toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
