@@ -67,7 +67,7 @@ try {
   const queryIds = new Set<string>();
   while (queryIds.size < Math.min(queryCount, ids.length)) queryIds.add(ids[Math.floor(rand() * ids.length)]!);
   const queryBytes = await readVectors(store, plan, [...queryIds], DIMS);
-  const queries = [];
+  const queries: Array<{ id: string; v: Float32Array; hits: string[]; hitScores: Map<string, number>; top: Array<{ id: string; score: number }> }> = [];
   for (const id of queryIds) {
     const bytes = queryBytes.get(id)!;
     const hits = (await engine.vector(bytes.toString("base64"), K + 1, "all", oversampling)).filter((h) => h.id !== id).slice(0, K).map((h) => h.id);
@@ -118,9 +118,11 @@ try {
     }
     if (q.hits[0] === q.top[0]!.id) exactTop1++;
   }
+  const scored = queries.length * K - outside;
+  if (scored <= 0) throw new Error(`no hit to score: all ${outside} fell outside the stored-vector corpus`);
   console.log(JSON.stringify({
     queries: queries.length, corpus, indexedDense: indexed.size, k: K, oversampling, hitsOutsideCorpus: outside,
-    recallAt10: Number((found / (queries.length * K - outside)).toFixed(4)), top1Agreement: Number((exactTop1 / queries.length).toFixed(4)),
+    recallAt10: Number((found / scored).toFixed(4)), top1Agreement: Number((exactTop1 / queries.length).toFixed(4)),
     seconds: Math.round((Date.now() - started) / 1000),
   }));
 } finally {
