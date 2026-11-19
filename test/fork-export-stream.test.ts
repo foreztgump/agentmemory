@@ -253,3 +253,95 @@ describe("export stream route", () => {
     });
   });
 });
+
+describe("review fixes", () => {
+  function importInto(target: Store) {
+    const sdk = mockSdk({ looseTrigger: true });
+    registerExportImportFunction(sdk as never, target as never);
+    return (async (_url: string, init: RequestInit) =>
+      Response.json(await sdk.trigger({ function_id: "mem::import", payload: JSON.parse(String(init.body)) }))) as unknown as typeof fetch;
+  }
+
+  it("splits parts at mem::import's row caps, so a store of many small rows round-trips", async () => {
+    const source = pagedKV(500);
+    const put = (scope: string, key: string, value: unknown) => {
+      if (!source.store.has(scope)) source.store.set(scope, new Map());
+      source.store.get(scope)!.set(key, value);
+    };
+    for (let s = 0; s < 10_050; s++) {
+      put(KV.sessions, `s${s}`, { id: `s${s}` });
+      put(KV.observations(`s${s}`), `o${s}`, { id: `o${s}` });
+      put(KV.summaries, `s${s}`, { sessionId: `s${s}` });
+    }
+    put(KV.sessions, "big", { id: "big" });
+    for (let o = 0; o < 5_050; o++) put(KV.observations("big"), `b${o}`, { id: `b${o}` });
+    for (let m = 0; m < 50_050; m++) {
+      put(KV.memories, `m${m}`, { id: `m${m}` });
+      put(KV.accessLog, `m${m}`, { memoryId: `m${m}`, count: 1 });
+    }
+
+    const lines = await exportLines(source);
+    for (const line of lines.filter((l) => l.startsWith('{"t":"part"'))) {
+      const { data } = JSON.parse(line) as { data: { memories?: Array<{ id: string }>; accessLogs?: Array<{ memoryId: string }> } };
+      const ids = new Set((data.memories ?? []).map((m) => m.id));
+      for (const log of data.accessLogs ?? []) expect(ids.has(log.memoryId)).toBe(true);
+    }
+    const file = join(dir, "small-rows.ndjson");
+    await writeFile(file, lines.map((line) => `${line}\n`).join(""));
+
+    const target = pagedKV();
+    const log: string[] = [];
+    expect(await runImportCommand({ base: "http://dst", args: [file], log: (l) => log.push(l), fetchImpl: importInto(target) }), log.join("\n")).toBe(0);
+    const want = counts(source);
+    const got = counts(target);
+    for (const family of [KV.sessions, KV.summaries, KV.memories, KV.accessLog, "mem:obs:*"]) {
+      expect([family, got[family]]).toEqual([family, want[family]]);
+    }
+  }, 120_000);
+
+  it("export gives up when the server sends no bytes for the idle limit", async () => {
+    const source = pagedKV();
+    seed(source, 2, 2);
+    const [header] = await exportLines(source, 1024);
+    const fetchImpl = (async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode(`${header}\n`)); },
+    }), { status: 200 })) as unknown as typeof fetch;
+    const file = join(dir, "stalled.ndjson");
+    const log: string[] = [];
+    const options = { base: "http://src", args: [file], log: (l: string) => log.push(l), fetchImpl, idleMs: 100 };
+    expect(await runExportCommand(options)).toBe(1);
+    expect(log.join("\n")).toMatch(/no data/i);
+    await expect(access(`${file}.part`)).rejects.toThrow();
+  }, 3_000);
+
+  it("export reports the server's error when the stream fails before its header", async () => {
+    const file = join(dir, "early-error.ndjson");
+    const log: string[] = [];
+    const fetchImpl = async () => streamResponse(['{"t":"error","message":"kv unavailable"}']);
+    expect(await runExportCommand({ base: "http://src", args: [file], log: (l) => log.push(l), fetchImpl })).toBe(1);
+    expect(log.join("\n")).toMatch(/kv unavailable/);
+  });
+
+  it("import fails, rather than reporting success, when a part goes missing after verify", async () => {
+    const source = pagedKV();
+    seed(source, 60, 10, 1000);
+    const lines = await exportLines(source, 10 * 1024);
+    const parts = lines.filter((l) => l.startsWith('{"t":"part"'));
+    expect(parts.length).toBeGreaterThan(40);
+    const file = join(dir, "changed.ndjson");
+    await writeFile(file, lines.map((line) => `${line}\n`).join(""));
+    const dropped = lines.indexOf(parts[parts.length - 3]!);
+    const changed = [...lines.slice(0, dropped), ...lines.slice(dropped + 1)];
+
+    const target = pagedKV();
+    const post = importInto(target);
+    let calls = 0;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      if (calls++ === 0) await writeFile(file, changed.map((line) => `${line}\n`).join(""));
+      return post(url, init);
+    }) as unknown as typeof fetch;
+    const log: string[] = [];
+    expect(await runImportCommand({ base: "http://dst", args: [file], log: (l) => log.push(l), fetchImpl })).toBe(1);
+    expect(log.join("\n")).toMatch(/part/);
+  });
+});
