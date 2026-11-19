@@ -3,7 +3,7 @@ import { rename, rm } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
-import { EXPORT_STREAM_FORMAT, type ExportStreamLine } from "./export-stream.js";
+import { EXPORT_STREAM_FORMAT, STALL_MS, type ExportStreamLine } from "./export-stream.js";
 
 interface CommandOptions {
   base: string;
@@ -11,6 +11,7 @@ interface CommandOptions {
   secret?: string;
   log?: (line: string) => void;
   fetchImpl?: typeof fetch;
+  idleMs?: number;
 }
 
 type Header = Extract<ExportStreamLine, { t: "header" }>;
@@ -96,12 +97,12 @@ export async function verifyExportFile(path: string): Promise<{ header: Header; 
   const rows: Record<string, number> = {};
   for await (const line of readLines(path)) {
     if (end) throw new Error("data after the end line");
+    if (line.t === "error") throw new Error(`the server failed during export: ${line.message}`);
     if (!header) {
       if (line.t !== "header" || line.format !== EXPORT_STREAM_FORMAT) throw new Error("not an agentmemory stream export (no header line)");
       header = line;
       continue;
     }
-    if (line.t === "error") throw new Error(`the server failed during export: ${line.message}`);
     if (line.t === "end") { end = line; continue; }
     if (line.t !== "part" || line.seq !== seq) throw new Error(`expected part ${seq}; the file is out of order or corrupt`);
     seq++;
@@ -132,16 +133,37 @@ export async function runExportCommand(options: CommandOptions): Promise<number>
     return 2;
   }
   const partial = `${file}.part`;
+  const controller = new AbortController();
+  const idleMs = options.idleMs ?? STALL_MS;
+  let input: Readable | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectIdle!: (error: Error) => void;
+  const idle = new Promise<never>((_, reject) => { rejectIdle = reject; });
+  const resetIdle = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const error = new Error(`export stalled: no data from the server for ${idleMs / 1000} s`);
+      rejectIdle(error);
+      controller.abort(error);
+      input?.destroy(error);
+    }, idleMs);
+  };
   try {
-    const response = await (options.fetchImpl ?? fetch)(`${options.base}/agentmemory/export/stream`, {
+    resetIdle();
+    const response = await Promise.race([(options.fetchImpl ?? fetch)(`${options.base}/agentmemory/export/stream`, {
       headers: headersFor(options.secret),
-    });
+      signal: controller.signal,
+    }), idle]);
     if (!response.ok || !response.body) {
-      const text = await response.text().catch(() => "");
+      const text = await Promise.race([response.text().catch(() => ""), idle]);
       const hint = response.status === 404 ? " (the server does not support streamed export; upgrade it)" : "";
       throw new Error(`export failed: HTTP ${response.status}${hint} ${text.slice(0, 300)}`);
     }
-    await pipeline(Readable.fromWeb(response.body as import("node:stream/web").ReadableStream), createWriteStream(partial, { mode: 0o600 }));
+    input = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream);
+    input.on("data", resetIdle);
+    input.once("end", () => clearTimeout(timer));
+    await pipeline(input, createWriteStream(partial, { mode: 0o600 }));
+    clearTimeout(timer);
     const { end } = await verifyExportFile(partial);
     await rename(partial, file);
     log(`Exported ${end.parts} parts to ${file}: ${formatRows(end.rows)}`);
@@ -150,6 +172,8 @@ export async function runExportCommand(options: CommandOptions): Promise<number>
     await rm(partial, { force: true });
     log(error instanceof Error ? error.message : String(error));
     return 1;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -172,8 +196,13 @@ export async function runImportCommand(options: CommandOptions): Promise<number>
   try {
     const { header, end } = await verifyExportFile(file);
     const stats: Record<string, number> = {};
+    const rows: Record<string, number> = {};
+    let posted = 0;
     for await (const line of readLines(file)) {
       if (line.t !== "part") continue;
+      if (line.seq !== posted || posted >= end.parts) {
+        throw new Error(`import stopped at part ${line.seq}: expected part ${posted} of ${end.parts}; the file changed since verify`);
+      }
       const exportData = { version: header.version, exportedAt: header.exportedAt, sessions: [], observations: {}, memories: [], summaries: [], ...line.data };
       const response = await (options.fetchImpl ?? fetch)(`${options.base}/agentmemory/import`, {
         method: "POST",
@@ -185,11 +214,14 @@ export async function runImportCommand(options: CommandOptions): Promise<number>
       if (!response.ok || result?.success !== true) {
         throw new Error(`import stopped at part ${line.seq} of ${end.parts}: HTTP ${response.status} ${JSON.stringify(result)?.slice(0, 300)}; parts before it are imported, and re-running with merge is safe`);
       }
+      posted++;
+      addRows(rows, rowsOf(line.data));
       for (const key of ["sessions", "observations", "memories", "summaries", "skipped"]) {
         if (typeof result[key] === "number") stats[key] = (stats[key] ?? 0) + (result[key] as number);
       }
     }
-    log(`Imported ${end.parts} parts from ${file} (${strategy}): ${formatRows(end.rows)}`);
+    if (posted !== end.parts) throw new Error(`import stopped at part ${posted} of ${end.parts}; the file changed since verify`);
+    log(`Imported ${posted} parts from ${file} (${strategy}): ${formatRows(rows)}`);
     log(`Server counts: ${formatRows(stats)}`);
     return 0;
   } catch (error) {

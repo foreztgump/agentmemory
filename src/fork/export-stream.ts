@@ -6,6 +6,7 @@ import { pinGraphState } from "../state/graph-generation.js";
 import { KV } from "../state/schema.js";
 import { VERSION } from "../version.js";
 import type { Memory, Session } from "../types.js";
+import { IMPORT_LIMITS } from "../functions/import-limits.js";
 
 export const EXPORT_STREAM_FORMAT = "agentmemory-export-stream";
 export const PART_BYTES = 4 * 1024 * 1024;
@@ -66,6 +67,8 @@ export async function streamExport(
   let seq = 0;
   let open = new Map<string, string[]>();
   let bytes = 0;
+  let partRows: Record<string, number> = {};
+  let observationBuckets = 0;
 
   const flush = async () => {
     if (open.size === 0) return;
@@ -79,17 +82,30 @@ export async function streamExport(
     if (observations.length) fields.push(`"observations":{${observations.join(",")}}`);
     open = new Map();
     bytes = 0;
+    partRows = {};
+    observationBuckets = 0;
     await write(`{"t":"part","seq":${seq++},"data":{${fields.join(",")}}}`);
   };
   const add = async (key: string, row: unknown) => {
     const field = key.startsWith(OBS) ? "observations" : key;
     const json = JSON.stringify(row);
     const size = Buffer.byteLength(json) + 1;
-    if (field !== "accessLogs" && bytes > 0 && bytes + size > partBytes) await flush();
+    const limit = IMPORT_LIMITS[field as keyof typeof IMPORT_LIMITS];
+    if (field !== "accessLogs" && (
+      (bytes > 0 && bytes + size > partBytes) ||
+      (limit !== undefined && (partRows[field] ?? 0) >= limit) ||
+      (field === "observations" && (
+        (open.get(key)?.length ?? 0) >= IMPORT_LIMITS.observationsPerSession ||
+        (!open.has(key) && observationBuckets >= IMPORT_LIMITS.observationBuckets)
+      )) ||
+      (field === "memories" && (partRows.accessLogs ?? 0) >= IMPORT_LIMITS.accessLogs)
+    )) await flush();
+    if (field === "observations" && !open.has(key)) observationBuckets++;
     const items = open.get(key) ?? [];
     items.push(json);
     open.set(key, items);
     bytes += size;
+    partRows[field] = (partRows[field] ?? 0) + 1;
     rows[field] = (rows[field] ?? 0) + 1;
   };
 

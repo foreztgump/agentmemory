@@ -1,6 +1,6 @@
 import { pinGraphState } from "../state/graph-generation.js";
 import { persistGraphRecords, validateGraphRecords } from "../state/graph-ingestion.js";
-import { MAX_IMPORT_OBS_PER_SESSION } from "../config.js";
+import { IMPORT_LIMITS } from "./import-limits.js";
 import type { IIIClient } from "iii-sdk";
 import { markCaptureEventDeleted } from "../capture/event-record.js";
 import type {
@@ -324,11 +324,15 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
         };
       }
 
-      const MAX_SESSIONS = 10_000;
-      const MAX_MEMORIES = 50_000;
-      const MAX_SUMMARIES = 10_000;
-      const MAX_TOTAL_OBSERVATIONS = 500_000;
-      const MAX_ACCESS_LOGS = 50_000;
+      const {
+        sessions: MAX_SESSIONS,
+        memories: MAX_MEMORIES,
+        summaries: MAX_SUMMARIES,
+        observations: MAX_TOTAL_OBSERVATIONS,
+        accessLogs: MAX_ACCESS_LOGS,
+        observationBuckets: MAX_OBS_BUCKETS,
+        observationsPerSession: MAX_IMPORT_OBS_PER_SESSION,
+      } = IMPORT_LIMITS;
 
       if (!Array.isArray(importData.sessions)) {
         return { success: false, error: "sessions must be an array" };
@@ -365,7 +369,6 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
           error: `Too many summaries (max ${MAX_SUMMARIES})`,
         };
       }
-      const MAX_OBS_BUCKETS = 10_000;
       const obsBuckets = Object.keys(importData.observations);
       if (obsBuckets.length > MAX_OBS_BUCKETS) {
         return {
