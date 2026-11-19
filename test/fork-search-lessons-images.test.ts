@@ -256,7 +256,8 @@ describe.skipIf(!QDRANT_URL)("image search through the images collection", () =>
 
   async function run(backend: "memory" | "disk") {
     const m = await loadModules();
-    const kv = mockKV();
+    const store = mockKV();
+    const kv = { ...store, getMany: async <T>(scope: string, keys: string[]) => Promise.all(keys.map((k) => store.get<T>(scope, k))) };
     const runtime = m.ports.createSearchRuntime(
       { kv: kv as never, embeddingProvider: null, ...(backend === "disk" ? { sdk: workerSdk(engines).sdk } : {}) },
       backend,
