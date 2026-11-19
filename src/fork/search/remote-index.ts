@@ -2,10 +2,11 @@ import type { CompressedObservation } from "../../types.js";
 import { logger } from "../../logger.js";
 import { getSearchResultLayer, type SearchLayer, type SearchResultLayer } from "../../state/search-layer.js";
 import type { KeywordIndexPort, RevisionToken, ScoredId, VectorStorePort, VectorToken } from "../../state/search-ports.js";
+import { termSourceOf } from "../../state/term-extraction.js";
 import { float32ToBase64 } from "../../state/vector-index.js";
 import type { SearchWorkerClient } from "./client.js";
 import type { DocLedger, SearchOutbox } from "./outbox.js";
-import { docOp, type Hit, type StatsResult } from "./protocol.js";
+import { contentRev, docOp, type Hit, type StatsResult } from "./protocol.js";
 
 /** Read-your-writes bound: a search waits at most this long for queued writes. */
 export const READ_YOUR_WRITES_MS = 1000;

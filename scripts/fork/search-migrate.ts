@@ -12,8 +12,8 @@
 //            and counted. Legacy snapshot layouts are refused.
 //         2. Writes one unit at a time (the memories, then each session): the
 //            keyword document of every indexable record, built by docOfRecord
-//            and docOp as the app builds it, and in the same apply the
-//            document's stored vector. Every write carries version 1, so a
+//            and docOp as the app builds it, with the document's stored vector
+//            in the same point (SearchEngine.load). Every write carries version 1, so a
 //            re-run rewrites its own points and any live write always wins.
 //         The resume state is the hash `fork:search-migrate` in the store
 //         (outside `state:*`, which the app reads): the version and one field
@@ -41,11 +41,13 @@ import {
   STATE_PREFIX,
   STORED_VECTOR_MODEL,
 } from "../../src/fork/search/persisted-vectors.js";
-import { docOp, type Op, type OpVersion } from "../../src/fork/search/protocol.js";
+import { docOp, type OpVersion } from "../../src/fork/search/protocol.js";
 import { DEFAULT_AVGDL } from "../../src/fork/search/settings.js";
 import { SearchEngine } from "../../src/fork/worker/engine.js";
 import { pointId, Qdrant } from "../../src/fork/worker/qdrant.js";
+import { vectorBucketScope } from "../../src/state/index-persistence.js";
 import { KV } from "../../src/state/schema.js";
+import { extractTerms } from "../../src/state/term-extraction.js";
 import { connectRedis, redactUrl, type Redis, type Reply } from "./lib/resp.js";
 
 export const MARKER_KEY = "fork:search-migrate";
@@ -117,6 +119,29 @@ async function scanKeys(store: Redis, pattern: string, page: number): Promise<st
 
 // ---------------------------------------------------------------- the vector plan
 
+/**
+ * Buddy's store holds 6,634 documents with two bucket rows of the same text
+ * embedded twice (cosine 0.9938 to 1, median 0.99998); embeddings of different
+ * text sit far below this.
+ */
+export const NEAR_DUPLICATE_COSINE = 0.99;
+
+function cosine(a: Buffer, b: Buffer): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    const x = a.readFloatLE(i);
+    const y = b.readFloatLE(i);
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  return dot / Math.sqrt(na * nb);
+}
+
+export const bucketKey = (bucket: number) => STATE_PREFIX + vectorBucketScope(bucket);
+
 /** Where a document's winning vector row lives: a bucket number, or the pending log. */
 type Source = number | "pending";
 const digestOf = (bytes: Buffer) => createHash("sha1").update(bytes).digest("base64").slice(0, 16);
@@ -129,7 +154,14 @@ export interface PlanReport {
   malformed: number;
   /** Rows of a document seen in an earlier bucket with the same bytes. */
   duplicateRows: number;
-  /** Documents whose bucket rows disagree; none of their rows is loaded. */
+  /**
+   * Documents with two bucket rows that are the same text embedded twice
+   * (cosine at least NEAR_DUPLICATE_COSINE); the row in the higher bucket,
+   * the later write, is loaded.
+   */
+  nearDuplicates: number;
+  nearDuplicateMinCosine: number | null;
+  /** Documents whose bucket rows disagree beyond that; none of their rows is loaded. */
   conflicting: number;
   /** Pending-log entries that replaced or removed a bucket row, and clears. */
   pendingVectors: number;
@@ -148,9 +180,10 @@ export interface VectorPlan {
  * Every persisted vector row, collapsed to one per document the way the
  * memory-mode boot would see them: the buckets, then the pending log in order
  * of its sequence (a vector replaces, a delete removes, a clear drops all
- * before it). Two bucket rows of one document with different bytes are a
- * conflict nothing can settle without re-embedding, so that document gets no
- * vector and is counted. Holds ids and a short digest only.
+ * before it). Two bucket rows of one document with different bytes are
+ * compared: a re-embedding of the same text loads the later row; anything
+ * further apart is a conflict nothing can settle without re-embedding, so that
+ * document gets no vector and is counted. Holds ids and a short digest only.
  */
 export async function planVectors(store: Redis, dimensions: number, page: number): Promise<VectorPlan> {
   const legacy = await store.pipeline(LEGACY_VECTOR_KEYS.keys.map((key) => ["HEXISTS", STATE_PREFIX + LEGACY_VECTOR_KEYS.scope, key]));
@@ -159,7 +192,7 @@ export async function planVectors(store: Redis, dimensions: number, page: number
     throw new MigrateError("the store holds a legacy vector snapshot; start this release once in memory mode to convert it to buckets, then migrate", 3);
   }
   const report: PlanReport = {
-    bucketScopes: 0, bucketRows: 0, pendingRows: 0, malformed: 0, duplicateRows: 0, conflicting: 0,
+    bucketScopes: 0, bucketRows: 0, pendingRows: 0, malformed: 0, duplicateRows: 0, nearDuplicates: 0, nearDuplicateMinCosine: null, conflicting: 0,
     pendingVectors: 0, pendingDeletes: 0, pendingClears: 0, docs: 0,
   };
   const winners = new Map<string, { source: Source; digest: string }>();
@@ -182,7 +215,16 @@ export async function planVectors(store: Redis, dimensions: number, page: number
         const seen = winners.get(row.id);
         if (!seen) winners.set(row.id, { source: bucket, digest });
         else if (seen.digest === digest) report.duplicateRows++;
-        else conflicted.add(row.id);
+        else if (!conflicted.has(row.id)) {
+          const earlier = await store.call("HGET", bucketKey(seen.source as number), row.id);
+          const earlierRow = Buffer.isBuffer(earlier) ? parseBucketRow(row.id, earlier, dimensions) : null;
+          const similarity = earlierRow?.ok ? cosine(earlierRow.bytes, row.bytes) : -1;
+          if (similarity >= NEAR_DUPLICATE_COSINE) {
+            winners.set(row.id, { source: bucket, digest });
+            report.nearDuplicates++;
+            report.nearDuplicateMinCosine = Math.min(report.nearDuplicateMinCosine ?? 1, Number(similarity.toFixed(6)));
+          } else conflicted.add(row.id);
+        }
       }
     }
   }
@@ -234,7 +276,7 @@ export async function readVectors(store: Redis, plan: VectorPlan, ids: string[],
   const sources = [...bySource];
   const replies = await store.pipeline(sources.map(([source, fieldIds]) => [
     "HMGET",
-    STATE_PREFIX + (source === "pending" ? PENDING_SCOPE : `${BUCKET_SCOPE_PREFIX}${String(source).padStart(4, "0")}`),
+    source === "pending" ? STATE_PREFIX + PENDING_SCOPE : bucketKey(source),
     ...fieldIds,
   ]));
   const out = new Map<string, Buffer>();
@@ -283,6 +325,7 @@ async function* unitDocs(store: Redis, unit: Unit, page: number): AsyncGenerator
   }
 }
 
+/** fenced: documents left alone because a live write or delete is newer than the migration. */
 export interface UnitResult { docs: number; vectors: number; fenced: number }
 
 // ---------------------------------------------------------------- fill
@@ -302,12 +345,16 @@ export interface FillResult {
   written: UnitResult;
 }
 
-async function readMeta(store: Redis): Promise<{ version: OpVersion; startedAt: string } | null> {
+interface Meta { version: OpVersion; startedAt: string; avgdl: number | null }
+
+async function readMeta(store: Redis): Promise<Meta | null> {
   const raw = await store.call("HGET", MARKER_KEY, META_FIELD);
   if (raw === null) return null;
   try {
-    const meta = JSON.parse(str(raw)) as { version?: unknown; startedAt?: unknown };
-    if (typeof meta.version === "number" && Number.isSafeInteger(meta.version) && meta.version > 0) return meta as { version: OpVersion; startedAt: string };
+    const meta = JSON.parse(str(raw)) as { version?: unknown; startedAt?: unknown; avgdl?: unknown };
+    if (typeof meta.version === "number" && Number.isSafeInteger(meta.version) && meta.version > 0 && (meta.avgdl === null || typeof meta.avgdl === "number")) {
+      return meta as Meta;
+    }
   } catch {
     // reported below
   }
@@ -326,7 +373,8 @@ export async function fill(store: Redis, engine: SearchEngine, qdrant: Qdrant, o
     if (live > 0 && !options.allowNonempty) {
       throw new MigrateError(`the collection already holds ${live} documents and no migration started here; pass --allow-nonempty to migrate into it`, 3);
     }
-    meta = { version: MIGRATION_VERSION, startedAt: new Date().toISOString() };
+    meta = { version: MIGRATION_VERSION, startedAt: new Date().toISOString(), avgdl: await corpusMeanLength(store, options.page) };
+    options.log(`mean document length ${meta.avgdl}`);
     await store.call("HSET", MARKER_KEY, META_FIELD, JSON.stringify({ ...meta, model: STORED_VECTOR_MODEL, collection: qdrant.config.collection }));
   }
   const plan = await planVectors(store, options.dimensions, options.page);
@@ -345,16 +393,12 @@ export async function fill(store: Redis, engine: SearchEngine, qdrant: Qdrant, o
     const result: UnitResult = { docs: 0, vectors: 0, fenced: 0 };
     for await (const docs of unitDocs(store, unit, options.page)) {
       const vectors = await readVectors(store, plan, docs.map((d) => d.id), options.dimensions);
-      const ops: Op[] = [...docs];
-      for (const d of docs) {
-        const bytes = vectors.get(d.id);
-        if (bytes) ops.push({ k: "vec", id: d.id, rev: d.rev, f32b64: bytes.toString("base64") });
-      }
-      const applied = await engine.apply(ops, meta.version);
-      if (applied.failed.length > 0) throw new MigrateError(`apply failed for ${applied.failed.length} ops, first ${JSON.stringify(applied.failed[0])}`, 3);
+      const loaded = await engine.load(docs.map((doc) => ({ doc, f32b64: vectors.get(doc.id)?.toString("base64") })), meta.version, meta.avgdl ?? undefined);
+      if (loaded.failed.length > 0) throw new MigrateError(`load failed for ${loaded.failed.length} documents, first ${JSON.stringify(loaded.failed[0])}`, 3);
+      const kept = new Set(loaded.fenced);
       result.docs += docs.length;
-      result.vectors += vectors.size - applied.fenced.length;
-      result.fenced += applied.fenced.length;
+      result.vectors += [...vectors.keys()].filter((id) => !kept.has(id)).length;
+      result.fenced += kept.size;
     }
     await store.call("HSET", MARKER_KEY, UNIT_PREFIX + unit.name, JSON.stringify(result));
     written.docs += result.docs;
@@ -363,6 +407,26 @@ export async function fill(store: Redis, engine: SearchEngine, qdrant: Qdrant, o
     if (++finished % 50 === 0) options.log(`${finished} units this run, ${written.docs} docs, ${written.vectors} vectors`);
   }
   return { version: meta.version, plan: plan.report, units: units.length, skipped: done.size, written };
+}
+
+/**
+ * The mean term count of every document the fill will write, so each is
+ * weighted with the corpus's own BM25 mean from the first write, and the
+ * worker finds nothing to reweight. Taken once and kept in the marker, so a
+ * resumed run weights with the same mean.
+ */
+async function corpusMeanLength(store: Redis, page: number): Promise<number | null> {
+  let docs = 0;
+  let terms = 0;
+  for (const unit of await listUnits(store, page)) {
+    for await (const batch of unitDocs(store, unit, page)) {
+      for (const doc of batch) {
+        docs++;
+        terms += extractTerms(doc.fields).length;
+      }
+    }
+  }
+  return docs > 0 && terms > 0 ? terms / docs : null;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -470,7 +534,8 @@ export async function verify(store: Redis, engine: SearchEngine, qdrant: Qdrant,
     for (const s of part) {
       const point = byId.get(s.id);
       if (point?.payload?.rev !== s.rev) revMismatches++;
-      const stored = point?.vector?.dense;
+      // Qdrant returns its float16 values as short decimals; snap them back to the grid.
+      const stored = point?.vector?.dense?.map(f16round);
       if (!s.bytes) {
         if (stored) vectorMismatches++;
         continue;
@@ -573,7 +638,7 @@ async function main(): Promise<number> {
     if (command === "fill") {
       try {
         const r = await fill(store, engine, qdrant, { page, dimensions, allowNonempty: args["allow-nonempty"], log });
-        log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} vectors kept from newer live writes; ${((Date.now() - started) / 1000).toFixed(1)} s`);
+        log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them; ${((Date.now() - started) / 1000).toFixed(1)} s`);
         const settling = Date.now();
         await engine.settled();
         log(`keyword weights settled in ${((Date.now() - settling) / 1000).toFixed(1)} s`);

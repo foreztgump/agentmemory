@@ -7,9 +7,9 @@
 //   MIGRATE_STORE_URL=redis://... AM_QDRANT_URL=http://qdrant:6333 AM_QDRANT_API_KEY=... \
 //     node --import tsx bench/fork/qdrant/recall-migrated.ts [--queries 200] [--oversampling 6]
 import { parseArgs } from "node:util";
-import { hashPages, planVectors, readVectors } from "../../../scripts/fork/search-migrate.js";
+import { bucketKey, hashPages, planVectors, readVectors } from "../../../scripts/fork/search-migrate.js";
 import { connectRedis } from "../../../scripts/fork/lib/resp.js";
-import { BUCKET_SCOPE_PREFIX, bucketOfScope, parseBucketRow, parsePendingRow, PENDING_SCOPE, STATE_PREFIX, STORED_VECTOR_MODEL } from "../../../src/fork/search/persisted-vectors.js";
+import { parseBucketRow, parsePendingRow, PENDING_SCOPE, STATE_PREFIX, STORED_VECTOR_MODEL } from "../../../src/fork/search/persisted-vectors.js";
 import { DEFAULT_AVGDL } from "../../../src/fork/search/settings.js";
 import { SearchEngine } from "../../../src/fork/worker/engine.js";
 import { Qdrant } from "../../../src/fork/worker/qdrant.js";
@@ -78,8 +78,7 @@ let corpus = 0;
 const buckets = new Map<string, number>();
 for (const [id, w] of plan.winners) if (indexed.has(id)) buckets.set(String(w.source), (buckets.get(String(w.source)) ?? 0) + 1);
 for (const source of buckets.keys()) {
-  const key = STATE_PREFIX + (source === "pending" ? PENDING_SCOPE : `${BUCKET_SCOPE_PREFIX}${source.padStart(4, "0")}`);
-  if (source !== "pending" && bucketOfScope(key.slice(STATE_PREFIX.length)) === null) throw new Error(`bad bucket ${key}`);
+  const key = source === "pending" ? STATE_PREFIX + PENDING_SCOPE : bucketKey(Number(source));
   for await (const pairs of hashPages(store, key, 500)) {
     for (const [field, value] of pairs) {
       if (!indexed.has(field) || String(plan.winners.get(field)?.source) !== source) continue;

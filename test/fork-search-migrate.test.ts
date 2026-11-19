@@ -34,7 +34,7 @@ function obs(id: string, sessionId: string, narrative: string | undefined): Comp
 }
 
 /**
- * obs_1 one vector; obs_2 the same vector in two buckets; obs_3 two different vectors (conflict);
+ * obs_1 the same text embedded twice (the later bucket wins); obs_2 the same vector in two buckets; obs_3 two different vectors (conflict);
  * obs_4 has no narrative (not indexed); obs_5 a vector of the wrong length; obs_6 a vector the
  * pending log deletes; obs_7 no vector; obs_8 a vector only in the pending log; obs_x a vector
  * with no record; mem_1 latest with a vector; mem_2 superseded with a vector.
@@ -53,6 +53,7 @@ function fixture(): Store {
     })],
     [bucket(0), hash({ obs_1: row("obs_1", "ses_1", 1), obs_2: row("obs_2", "ses_1", 2), obs_3: row("obs_3", "ses_2", 3), obs_6: row("obs_6", "ses_2", 6), mem_1: row("mem_1", "ses_1", 11), mem_2: row("mem_2", "ses_1", 12) })],
     [bucket(1), hash({
+      obs_1: { id: "obs_1", s: "ses_1", e: float32ToBase64(vec(1).map((x, i) => x + (i === 0 ? 1e-3 : 0))) },
       obs_2: row("obs_2", "ses_1", 2), obs_3: row("obs_3", "ses_2", 33), obs_4: row("obs_4", "ses_2", 4),
       obs_5: { id: "obs_5", s: "ses_2", e: float32ToBase64(new Float32Array(DIMS + 1)) }, obs_x: row("obs_x", "ses_9", 9),
     })],
@@ -62,14 +63,16 @@ function fixture(): Store {
 }
 
 const EXPECTED_PLAN = {
-  bucketScopes: 2, bucketRows: 11, pendingRows: 2, malformed: 1, duplicateRows: 1, conflicting: 1,
+  bucketScopes: 2, bucketRows: 12, pendingRows: 2, malformed: 1, duplicateRows: 1, nearDuplicates: 1, conflicting: 1,
   pendingVectors: 1, pendingDeletes: 1, pendingClears: 0, docs: 7,
 };
 
 describe("planVectors", () => {
   it("collapses duplicates, refuses conflicts and malformed rows, replays the pending log, and ignores the stale meta", async () => {
     const plan = await planVectors(new FakeRedis(fixture()), DIMS, 2);
-    expect(plan.report).toEqual(EXPECTED_PLAN);
+    expect(plan.report).toMatchObject(EXPECTED_PLAN);
+    expect(plan.report.nearDuplicateMinCosine).toBeGreaterThan(0.99);
+    expect(plan.winners.get("obs_1")!.source).toBe(1);
     expect([...plan.winners.keys()].sort()).toEqual(["mem_1", "mem_2", "obs_1", "obs_2", "obs_4", "obs_8", "obs_x"]);
     expect(plan.winners.get("obs_2")!.source).toBe(0);
   });
@@ -163,6 +166,11 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     expect(await engine.stats()).toMatchObject({ docs: 8, vectors: 4, memories: 1, missingVectors: 4 });
     const [point] = await qdrant.call<Array<{ payload: { v: number } }>>("POST", `${qdrant.path}/points`, { ids: [pointId("obs_1")], with_payload: ["v"] });
     expect(point!.payload.v).toBe(MIGRATION_VERSION);
+    // Weighted once with the corpus's own mean, so the worker has nothing to reweight.
+    const { avgdl } = JSON.parse(store.data.get(MARKER_KEY)!.get("meta")!.toString()) as { avgdl: number };
+    const { points } = await qdrant.call<{ points: Array<{ payload: { ad: number; dl: number } }> }>("POST", `${qdrant.path}/points/scroll`, { limit: 100, with_payload: ["ad", "dl"] });
+    expect(new Set(points.map((p) => p.payload.ad))).toEqual(new Set([avgdl]));
+    expect(points.reduce((n, p) => n + p.payload.dl, 0) / points.length).toBeCloseTo(avgdl, 10);
     const hits = await engine.vector(float32ToBase64(vec(8)), 1, "all", 6);
     expect(hits[0]!.id).toBe("obs_8");
   });
@@ -172,7 +180,7 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     const store = new FakeRedis(fixture());
     let calls = 0;
     const dying = Object.create(engine) as SearchEngine;
-    dying.apply = (ops, version) => (++calls === 3 ? Promise.reject(new Error("killed")) : engine.apply(ops, version));
+    dying.load = (items, version) => (++calls === 3 ? Promise.reject(new Error("killed")) : engine.load(items, version));
     await expect(fill(store, dying, qdrant, options)).rejects.toThrow("killed");
     store.writesBeforeKill = 2;
     await expect(fill(store, engine, qdrant, options)).rejects.toThrow("killed");
