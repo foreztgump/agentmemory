@@ -96,8 +96,8 @@ export async function verifyExportFile(path: string): Promise<{ header: Header; 
   let seq = 0;
   const rows: Record<string, number> = {};
   for await (const line of readLines(path)) {
-    if (end) throw new Error("data after the end line");
     if (line.t === "error") throw new Error(`the server failed during export: ${line.message}`);
+    if (end) throw new Error("data after the end line");
     if (!header) {
       if (line.t !== "header" || line.format !== EXPORT_STREAM_FORMAT) throw new Error("not an agentmemory stream export (no header line)");
       header = line;
