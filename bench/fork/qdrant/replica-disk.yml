@@ -1,0 +1,33 @@
+# Disk-mode overlay for bench/fork/replica.sh: adds Qdrant on the replica's internal
+# network and switches agentmemory to AM_SEARCH_BACKEND=disk. Keyword-only unless
+# REPLICA_EMBEDDING_PROVIDER is set (the network is internal, so embeds fail anyway).
+#
+#   REPLICA_COMPOSE_EXTRA=bench/fork/qdrant/replica-disk.yml AM_IMAGE=<image> bench/fork/replica.sh up <backup>
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.20.2
+    mem_limit: "${QDRANT_MEM_LIMIT:-1536m}"
+    memswap_limit: "${QDRANT_MEM_LIMIT:-1536m}"
+    networks: [replica]
+    environment:
+      QDRANT__SERVICE__API_KEY: replica-dummy-qdrant-key
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200 '"]
+      interval: 2s
+      retries: 60
+
+  agentmemory:
+    environment:
+      AM_SEARCH_BACKEND: disk
+      AM_QDRANT_URL: http://qdrant:6333
+      AM_QDRANT_API_KEY: replica-dummy-qdrant-key
+      AM_SEARCH_DIMENSIONS: "${REPLICA_SEARCH_DIMENSIONS:-1024}"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+volumes:
+  qdrant-data:
