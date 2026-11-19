@@ -23,6 +23,8 @@ const { values: args } = parseArgs({
 if (!args.url || !args.container || !args.base) throw new Error("--url, --container and --base are required");
 const base = Number(args.base);
 const factor = Number(args.factor);
+if (!Number.isInteger(base) || base < 1) throw new Error(`--base=${args.base} must be a positive integer`);
+if (!Number.isFinite(factor) || factor <= 1) throw new Error(`--factor=${args.factor} must be greater than 1`);
 
 const rand = mulberry32(1167);
 const SYL = ["ka", "vo", "mi", "ru", "te", "so", "la", "pe", "zu", "ni", "do", "fa", "gi", "bo", "ye", "wu"];

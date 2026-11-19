@@ -124,7 +124,7 @@ for (const c of cases) {
     const same = got.length === base.length && got.every((id, i) => id === base[i]);
     if (same) { t.sameTop10++; k[name]++; }
     if (got[0] === base[0]) t.sameTop1++;
-    t.overlap10 += base.length === 0 ? 1 : got.filter((id) => base.includes(id)).length / base.length;
+    t.overlap10 += base.length === 0 ? Number(got.length === 0) : got.filter((id) => base.includes(id)).length / base.length;
   }
 }
 const n = cases.length;

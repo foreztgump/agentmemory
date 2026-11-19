@@ -16,6 +16,7 @@ import { ImageEngine } from "../../../src/fork/worker/image-engine.js";
 import { Qdrant } from "../../../src/fork/worker/qdrant.js";
 import { incrementImageRef } from "../../../src/functions/image-refs.js";
 import { registerVisionSearchFunctions } from "../../../src/functions/vision-search.js";
+import type { DiskSearchRuntime } from "../../../src/fork/search/runtime.js";
 import "../../../src/fork/search/runtime.js";
 import { createSearchRuntime } from "../../../src/state/search-ports.js";
 import type { EmbeddingProvider } from "../../../src/types.js";
@@ -82,7 +83,7 @@ async function run(backend: "memory" | "disk") {
     const r = (await sdk.trigger({ function_id: "mem::vision-embed", payload: { imageRef: ref, sessionId: sessionOf(i), observationId: `obs_${i}` } })) as { success: boolean; error?: string };
     if (!r.success) throw new Error(`vision-embed ${ref}: ${r.error}`);
   }
-  await Promise.all((runtime as unknown as { outboxes?: Array<{ drainFor(ms: number): Promise<void> }> }).outboxes?.map((o) => o.drainFor(120_000)) ?? []);
+  if (backend === "disk") await Promise.all((runtime as DiskSearchRuntime).outboxes.map((o) => o.drainFor(120_000)));
   const results: Result[] = [];
   const ms: number[] = [];
   for (const q of queries) {
@@ -90,7 +91,7 @@ async function run(backend: "memory" | "disk") {
     results.push((await sdk.trigger({ function_id: "mem::vision-search", payload: { queryText: q.text, topK: 10, sessionId: q.sessionId } })) as Result);
     ms.push(performance.now() - started);
   }
-  (runtime as unknown as { stats?: { stop(): void } }).stats?.stop();
+  if (backend === "disk") (runtime as DiskSearchRuntime).stats.stop();
   const reads = inventory.snapshot().reads.filter((r) => r.collection === "mem:image-embeddings");
   return { results, ms, reads };
 }
@@ -102,11 +103,13 @@ try {
   let totals = 0;
   let maxScoreDelta = 0;
   for (const [i, want] of memory.results.entries()) {
+    if (!want.success) throw new Error(`memory query ${i}: ${want.error}`);
     const got = disk.results[i]!;
     if (!got.success) throw new Error(`disk query ${i}: ${got.error}`);
-    if (got.results.map((r) => `${r.imageRef}|${r.sessionId}|${r.observationId}`).join() === want.results.map((r) => `${r.imageRef}|${r.sessionId}|${r.observationId}`).join()) identical++;
+    const same = got.results.map((r) => `${r.imageRef}|${r.sessionId}|${r.observationId}`).join() === want.results.map((r) => `${r.imageRef}|${r.sessionId}|${r.observationId}`).join();
+    if (same) identical++;
     if (got.total === want.total) totals++;
-    got.results.forEach((r, j) => (maxScoreDelta = Math.max(maxScoreDelta, Math.abs(r.score - (want.results[j]?.score ?? 0)))));
+    if (same) got.results.forEach((r, j) => (maxScoreDelta = Math.max(maxScoreDelta, Math.abs(r.score - want.results[j]!.score))));
   }
   const p50 = (xs: number[]) => +[...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!.toFixed(1);
   const guard = (reads: typeof memory.reads) => ({ wholeReads: reads.reduce((n, r) => n + r.calls, 0), itemsRead: reads.reduce((n, r) => n + r.items, 0), ops: [...new Set(reads.map((r) => r.op))] });
@@ -116,7 +119,7 @@ try {
     sessionFilteredQueries: queries.filter((q) => q.sessionId).length,
     identicalTop10: `${identical}/${queryCount}`,
     totalsEqual: `${totals}/${queryCount}`,
-    maxScoreDelta: +maxScoreDelta.toExponential(2),
+    maxScoreDeltaOnSameIds: +maxScoreDelta.toExponential(2),
     p50ms: { memory: p50(memory.ms), disk: p50(disk.ms) },
     scopeGuard: { "mem:image-embeddings": { memory: guard(memory.reads), disk: guard(disk.reads) } },
   }, null, 1));
