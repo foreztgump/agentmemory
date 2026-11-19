@@ -15,6 +15,17 @@ import { KV } from "../src/state/schema.js";
 import type { StateKV } from "../src/state/kv.js";
 import { mockKV, mockSdk } from "./helpers/mocks.js";
 
+// The real StateKV pages every scope with iterate; a double without it would make the export fall back to one whole list.
+function pagedKV(pageSize = 50) {
+  const kv = mockKV();
+  return Object.assign(kv, {
+    async *iterate<T>(scope: string): AsyncGenerator<T[]> {
+      const rows = [...(kv.store.get(scope)?.values() ?? [])] as T[];
+      for (let i = 0; i < rows.length; i += pageSize) yield rows.slice(i, i + pageSize);
+    },
+  });
+}
+
 type Store = ReturnType<typeof mockKV>;
 
 function seed(kv: Store, sessions: number, obsPerSession: number, obsBytes = 200): void {
@@ -72,7 +83,7 @@ describe("streamed export", () => {
   });
 
   it("round-trips every collection through the CLI into an empty store with equal counts", async () => {
-    const source = mockKV();
+    const source = pagedKV();
     seed(source, 25, 40);
     const lines = await exportLines(source, 8 * 1024);
     const parts = lines.filter((line) => line.startsWith('{"t":"part"'));
@@ -82,7 +93,7 @@ describe("streamed export", () => {
     const log: string[] = [];
     expect(await runExportCommand({ base: "http://src", args: [file], log: (l) => log.push(l), fetchImpl: async () => streamResponse(lines) })).toBe(0);
 
-    const target = mockKV();
+    const target = pagedKV();
     const sdk = mockSdk({ looseTrigger: true });
     registerExportImportFunction(sdk as never, target as never);
     const bodies: number[] = [];
@@ -100,7 +111,7 @@ describe("streamed export", () => {
   });
 
   it("streams a store larger than the 60 MiB reply limit in parts that each stay under the part cap", async () => {
-    const source = mockKV();
+    const source = pagedKV();
     seed(source, 80, 16, 50 * 1024);
     let bytes = 0;
     let largest = 0;
@@ -120,7 +131,7 @@ describe("streamed export", () => {
   });
 
   it("keeps each access log in the same part as its memory", async () => {
-    const source = mockKV();
+    const source = pagedKV();
     seed(source, 1, 1);
     const lines = await exportLines(source, 600);
     for (const line of lines.filter((l) => l.startsWith('{"t":"part"'))) {
@@ -139,7 +150,7 @@ describe("export file verification", () => {
   }
 
   it("rejects a truncated file, a missing part, an error line and a non-export file", async () => {
-    const source = mockKV();
+    const source = pagedKV();
     seed(source, 5, 10);
     const lines = await exportLines(source, 2 * 1024);
     await expect(verifyExportFile(await fileOf(lines))).resolves.toBeTruthy();
@@ -152,14 +163,14 @@ describe("export file verification", () => {
   });
 
   it("reads rows holding U+2028, U+2029 and multi-byte text across read chunks back unchanged", async () => {
-    const source = mockKV();
+    const source = pagedKV();
     seed(source, 2, 2);
     const content = `a\u2028b\u2029c\r${"é".repeat(100_000)}🙂`;
     source.store.get(KV.memories)!.set("mem_0", { ...(source.store.get(KV.memories)!.get("mem_0") as object), content });
     const file = await fileOf(await exportLines(source, 1024));
     await expect(verifyExportFile(file)).resolves.toBeTruthy();
 
-    const target = mockKV();
+    const target = pagedKV();
     const sdk = mockSdk({ looseTrigger: true });
     registerExportImportFunction(sdk as never, target as never);
     const fetchImpl = (async (_url: string, init: RequestInit) =>
@@ -169,7 +180,7 @@ describe("export file verification", () => {
   });
 
   it("export leaves no file when the stream ends early", async () => {
-    const source = mockKV();
+    const source = pagedKV();
     seed(source, 3, 3);
     const lines = await exportLines(source, 1024);
     const file = join(dir, "short.ndjson");
@@ -180,7 +191,7 @@ describe("export file verification", () => {
   });
 
   it("import refuses replace and stops at the first failed part", async () => {
-    const source = mockKV();
+    const source = pagedKV();
     seed(source, 3, 3);
     const file = await fileOf(await exportLines(source, 1024));
     expect(await runImportCommand({ base: "http://dst", args: [file, "--strategy", "replace"], log: () => {} })).toBe(2);
@@ -208,7 +219,7 @@ describe("export stream handler", () => {
   it("survives a client that resets the connection mid-export", async () => {
     const { Writable } = await import("node:stream");
     const { exportStreamHandler } = await import("../src/fork/export-stream.js");
-    const source = mockKV();
+    const source = pagedKV();
     seed(source, 20, 20, 2000);
     let written = 0;
     let calls = 0;
