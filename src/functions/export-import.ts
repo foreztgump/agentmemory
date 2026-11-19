@@ -546,7 +546,7 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
           await runChunked(lessons, (l) =>
             kv.delete(KV.lessons, l.id),
           );
-          resetLessonIndex();
+          await resetLessonIndex(lessons.map((l) => l.id));
           await runChunked(insights, (i) =>
             kv.delete(KV.insights, i.id),
           );
@@ -766,7 +766,7 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
           }
           await kv.set(KV.lessons, lesson.id, lesson);
         });
-        resetLessonIndex();
+        await resetLessonIndex(importData.lessons.map((l) => l.id));
       }
       if (importData.insights) {
         await runChunked(importData.insights, async (insight) => {

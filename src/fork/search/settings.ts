@@ -1,8 +1,14 @@
+import { COLLECTION_IDS, collectionName, type CollectionId } from "./protocol.js";
+
 export interface SearchWorkerSettings {
   qdrantUrl: string;
   qdrantApiKey?: string;
   collection: string;
+  /** Qdrant collection name per collection id, derived from `collection`. */
+  collections: Record<CollectionId, string>;
   dimensions: number;
+  /** Size of the image vector (CLIP), separate from the text embedding size. */
+  imageDimensions: number;
   oversampling: number;
   /** Mean document length in terms, used only until the collection holds a document. */
   avgdl: number;
@@ -12,6 +18,8 @@ export interface SearchWorkerSettings {
 // (bench/fork/profiles/buddy-2026-11-16.json). The worker replaces it with the
 // collection's own mean as soon as it holds a document.
 export const DEFAULT_AVGDL = 70;
+
+export const DEFAULT_IMAGE_DIMENSIONS = 512;
 
 function positive(env: Record<string, string | undefined>, name: string, fallback: number): number {
   const raw = env[name]?.trim();
@@ -37,11 +45,15 @@ export function loadSearchWorkerSettings(env: Record<string, string | undefined>
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(collection)) throw new Error(`AM_QDRANT_COLLECTION=${collection} may only use letters, digits, _ and -`);
   const dimensions = positive(env, "AM_SEARCH_DIMENSIONS", 1024);
   if (!Number.isInteger(dimensions)) throw new Error(`AM_SEARCH_DIMENSIONS=${dimensions} must be a positive whole number`);
+  const imageDimensions = positive(env, "AM_SEARCH_IMAGE_DIMENSIONS", DEFAULT_IMAGE_DIMENSIONS);
+  if (!Number.isInteger(imageDimensions)) throw new Error(`AM_SEARCH_IMAGE_DIMENSIONS=${imageDimensions} must be a positive whole number`);
   return {
     qdrantUrl: qdrantUrl.replace(/\/+$/, ""),
     qdrantApiKey: env.AM_QDRANT_API_KEY?.trim() || undefined,
     collection,
+    collections: Object.fromEntries(COLLECTION_IDS.map((id) => [id, collectionName(collection, id)])) as Record<CollectionId, string>,
     dimensions,
+    imageDimensions,
     oversampling: atLeastOne(env, "AM_SEARCH_OVERSAMPLING", 6),
     avgdl: positive(env, "AM_SEARCH_AVGDL", DEFAULT_AVGDL),
   };
