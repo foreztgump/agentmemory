@@ -15,8 +15,12 @@ export interface VocabularyLimits {
 // About 61 B per term measured in TEE-1167, so the bound is about 60 MiB.
 export const DEFAULT_VOCABULARY_LIMITS: VocabularyLimits = { maxTerms: 1_000_000, expansionsPerTerm: 64 };
 
-/** Terms learned since the last fold are scanned linearly; past this many they merge into the sorted array. */
-const FOLD_AFTER = 1024;
+/**
+ * Terms learned since the last fold are scanned linearly; past this many they
+ * merge into the sorted array. Growing with the array keeps a fold's copy
+ * amortized at about 64 moves per learned term.
+ */
+const foldAfter = (sorted: number) => Math.max(1024, sorted >>> 6);
 /** Prefix matches examined per query term, so a two-letter term cannot walk the whole vocabulary. */
 const MAX_SCAN = 8192;
 const FILL_PAGE = 1000;
@@ -60,7 +64,7 @@ export class PrefixVocabulary {
   /** The terms of one written document. */
   observe(terms: readonly string[]): void {
     for (const term of new Set(terms)) this.learn(term, 1);
-    if (this.fresh.length > FOLD_AFTER) this.fold();
+    if (this.fresh.length > foldAfter(this.sorted.length)) this.fold();
   }
 
   /** The prefix terms of each query term at half its weight; none until the first fill lands. */
