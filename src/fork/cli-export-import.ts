@@ -1,8 +1,8 @@
 import { createReadStream, createWriteStream } from "node:fs";
 import { rename, rm } from "node:fs/promises";
-import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { StringDecoder } from "node:string_decoder";
 import { EXPORT_STREAM_FORMAT, type ExportStreamLine } from "./export-stream.js";
 
 interface CommandOptions {
@@ -61,18 +61,31 @@ function sameRows(a: Record<string, number>, b: Record<string, number>): boolean
   return [...fields].every((field) => (a[field] ?? 0) === (b[field] ?? 0));
 }
 
-async function* readLines(path: string): AsyncGenerator<ExportStreamLine> {
-  const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
-  let n = 0;
-  for await (const raw of lines) {
-    n++;
-    if (raw.length === 0) continue;
-    try {
-      yield JSON.parse(raw) as ExportStreamLine;
-    } catch {
-      throw new Error(`line ${n} is not valid JSON; the file is truncated or corrupt`);
-    }
+function parseLine(raw: string, n: number): ExportStreamLine {
+  try {
+    return JSON.parse(raw) as ExportStreamLine;
+  } catch {
+    throw new Error(`line ${n} is not valid JSON; the file is truncated or corrupt`);
   }
+}
+
+// Splits on "\n" only: JSON.stringify leaves U+2028/U+2029 raw, and node:readline would break lines there.
+async function* readLines(path: string): AsyncGenerator<ExportStreamLine> {
+  const decoder = new StringDecoder("utf8");
+  let pending: string[] = [];
+  let n = 0;
+  for await (const chunk of createReadStream(path)) {
+    const pieces = decoder.write(chunk as Buffer).split("\n");
+    for (let i = 0; i < pieces.length - 1; i++) {
+      const raw = pending.join("") + pieces[i];
+      pending = [];
+      n++;
+      if (raw.length > 0) yield parseLine(raw, n);
+    }
+    pending.push(pieces[pieces.length - 1]!);
+  }
+  const last = pending.join("") + decoder.end();
+  if (last.length > 0) yield parseLine(last, n + 1);
 }
 
 /** Reads the whole file once, one line at a time, and checks it is a complete stream export. */

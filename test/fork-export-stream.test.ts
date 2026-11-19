@@ -151,6 +151,23 @@ describe("export file verification", () => {
     await expect(verifyExportFile(await fileOf([cut]))).rejects.toThrow();
   });
 
+  it("reads rows holding U+2028, U+2029 and multi-byte text across read chunks back unchanged", async () => {
+    const source = mockKV();
+    seed(source, 2, 2);
+    const content = `a\u2028b\u2029c\r${"é".repeat(100_000)}🙂`;
+    source.store.get(KV.memories)!.set("mem_0", { ...(source.store.get(KV.memories)!.get("mem_0") as object), content });
+    const file = await fileOf(await exportLines(source, 1024));
+    await expect(verifyExportFile(file)).resolves.toBeTruthy();
+
+    const target = mockKV();
+    const sdk = mockSdk({ looseTrigger: true });
+    registerExportImportFunction(sdk as never, target as never);
+    const fetchImpl = (async (_url: string, init: RequestInit) =>
+      Response.json(await sdk.trigger({ function_id: "mem::import", payload: JSON.parse(String(init.body)) }))) as unknown as typeof fetch;
+    expect(await runImportCommand({ base: "http://dst", args: [file], log: () => {}, fetchImpl })).toBe(0);
+    expect((target.store.get(KV.memories)!.get("mem_0") as { content: string }).content).toBe(content);
+  });
+
   it("export leaves no file when the stream ends early", async () => {
     const source = mockKV();
     seed(source, 3, 3);
