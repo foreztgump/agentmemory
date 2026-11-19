@@ -9,14 +9,18 @@ import {
   MigrateError,
   MIGRATION_VERSION,
   planVectors,
+  type Targets,
   verify,
 } from "../scripts/fork/search-migrate.js";
 import { docOp, nextOpVersion } from "../src/fork/search/protocol.js";
+import { DEFAULT_IMAGE_DIMENSIONS } from "../src/fork/search/settings.js";
 import { SearchEngine } from "../src/fork/worker/engine.js";
+import { ImageEngine } from "../src/fork/worker/image-engine.js";
+import { lessonToObservation } from "../src/state/memory-utils.js";
 import { pointId, type Qdrant } from "../src/fork/worker/qdrant.js";
 import { vectorBucketScope } from "../src/state/index-persistence.js";
 import { float32ToBase64 } from "../src/state/vector-index.js";
-import type { CompressedObservation } from "../src/types.js";
+import type { CompressedObservation, Lesson } from "../src/types.js";
 import { FakeRedis, type Store } from "./helpers/fake-redis.js";
 import { DIMS, QDRANT_URL, qdrantFor } from "./helpers/search-engine.js";
 
@@ -33,7 +37,24 @@ function obs(id: string, sessionId: string, narrative: string | undefined): Comp
   } as CompressedObservation;
 }
 
+const IMG = DEFAULT_IMAGE_DIMENSIONS;
+const imageVec = (seed: number, length = IMG) => Array.from({ length }, (_, i) => Math.sin(seed * 1.7 + i) + 0.02 * seed);
+const image = (ref: string, seed: number, extra: { sessionId?: string; observationId?: string; length?: number } = {}) => ({
+  imageRef: ref, vector: imageVec(seed, extra.length), modelName: "clip", dimensions: IMG, updatedAt: `2026-11-0${seed}T00:00:00.000Z`,
+  ...(extra.sessionId ? { sessionId: extra.sessionId } : {}), ...(extra.observationId ? { observationId: extra.observationId } : {}),
+});
+
+function lesson(id: string, content: string, deleted = false): Lesson {
+  return {
+    id, content, context: `context of ${id}`, confidence: 0.7, reinforcements: 0, source: "manual", sourceIds: [], tags: ["kvrocks"],
+    createdAt: "2026-11-03T00:00:00.000Z", updatedAt: "2026-11-03T00:00:00.000Z", decayRate: 0.05, ...(deleted ? { deleted } : {}),
+  };
+}
+
 /**
+ * lsn_1 and lsn_3 live, lsn_2 deleted (not indexed). img_a with a session and an observation, img_b with neither,
+ * img_c a vector of 511 floats (refused).
+ *
  * obs_1 the same text embedded twice (the later bucket wins); obs_2 the same vector in two buckets; obs_3 two different vectors (conflict);
  * obs_4 has no narrative (not indexed); obs_5 a vector of the wrong length; obs_6 a vector the
  * pending log deletes; obs_7 no vector; obs_8 a vector only in the pending log; obs_x a vector
@@ -59,6 +80,13 @@ function fixture(): Store {
     })],
     ["state:mem:index:vec-pending", hash({ obs_6: { q: 10, id: "obs_6", t: 1 }, obs_8: { q: 11, id: "obs_8", s: "ses_2", k: "observation", e: float32ToBase64(vec(8)) } })],
     ["state:mem:index:bm25", hash({ "vectors:meta": { v: 3, bucketCount: 1, count: 1, savedAt: "2026-11-01T00:00:00.000Z" } })],
+    ["state:mem:lessons", hash({
+      lsn_1: lesson("lsn_1", "prefer kvrocks hashes for paged scans"), lsn_2: lesson("lsn_2", "a deleted lesson", true), lsn_3: lesson("lsn_3", "qdrant upserts converge"),
+    })],
+    ["state:mem:image-embeddings", hash({
+      "img/a.png": image("img/a.png", 1, { sessionId: "ses_1", observationId: "obs_1" }), "img/b.png": image("img/b.png", 2),
+      "img/c.png": image("img/c.png", 3, { length: IMG - 1 }),
+    })],
   ]);
 }
 
@@ -146,22 +174,32 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     for (const q of collections.splice(0)) await q.drop();
   });
   const setup = async (name: string) => {
-    const qdrant = qdrantFor(`tee1168_${name}_${Date.now()}`);
-    collections.push(qdrant);
-    return { qdrant, engine: new SearchEngine(qdrant, 70) };
+    const base = `tee1168_${name}_${Date.now()}`;
+    const qdrant = qdrantFor(base);
+    const lessons = qdrantFor(`${base}_lessons`, DIMS, "lessons");
+    const images = qdrantFor(`${base}_images`, IMG, "image");
+    collections.push(qdrant, lessons, images);
+    const targets: Targets = {
+      docs: { qdrant, engine: new SearchEngine(qdrant, 70) },
+      lessons: { qdrant: lessons, engine: new SearchEngine(lessons, 70) },
+      images: { qdrant: images, engine: new ImageEngine(images) },
+    };
+    return { qdrant, engine: targets.docs.engine, targets };
   };
   const options = { page: 2, dimensions: DIMS, allowNonempty: false, log: () => {} };
-  const verifyAll = (store: FakeRedis, engine: SearchEngine, qdrant: Qdrant, guard = new FetchGuard("http://unused")) =>
-    verify(store, engine, qdrant, { page: 2, dimensions: DIMS, rate: 1, guard });
+  const verifyAll = (store: FakeRedis, targets: Targets, guard = new FetchGuard("http://unused")) =>
+    verify(store, targets, { page: 2, dimensions: DIMS, rate: 1, guard });
+  const line = (lines: string[], name: string) => lines.find((l) => l.slice(5).startsWith(`${name}:`));
 
   it("loads documents and stored vectors and verifies them", async () => {
-    const { qdrant, engine } = await setup("fill");
+    const { qdrant, engine, targets } = await setup("fill");
     const data = fixture();
     data.get("state:mem:obs:ses_1")!.set("obs_bad", Buffer.from("{not json"));
     const store = new FakeRedis(data);
-    const result = await fill(store, engine, qdrant, options);
-    expect(result.written).toEqual({ docs: 8, vectors: 4, fenced: 0, unparsable: 1 });
-    const checked = await verifyAll(store, engine, qdrant);
+    const result = await fill(store, targets, options);
+    // 8 documents + 2 live lessons; 4 stored vectors + 2 images; img/c.png refused.
+    expect(result.written).toEqual({ docs: 10, vectors: 6, fenced: 0, unparsable: 1, refused: 1 });
+    const checked = await verifyAll(store, targets);
     expect(checked.lines.join("\n")).toContain("OK   vectors: stored-and-indexable 4 index 4; 3 stored vectors have no indexable record, 4 documents have no stored vector");
     expect(checked.ok, checked.lines.join("\n")).toBe(true);
     expect(checked.lines.find((l) => l.includes("sampled vectors"))).toMatch(/4 sampled, 0 differ, 0 within one float16 step; checksum store (\w+) index \1$/);
@@ -177,36 +215,100 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     expect(hits[0]!.id).toBe("obs_8");
   });
 
+  it("fills the lessons and images collections, skipping deleted lessons and refusing image vectors that are not 512 floats", async () => {
+    const { targets } = await setup("lessons_images");
+    const store = new FakeRedis(fixture());
+    await fill(store, targets, options);
+    const checked = await verifyAll(store, targets);
+    expect(checked.ok, checked.lines.join("\n")).toBe(true);
+    expect(line(checked.lines, "lessons")).toBe("OK   lessons: store 2 index 2; 0 records unreadable");
+    expect(line(checked.lines, "lesson revs")).toMatch(/^OK   lesson revs: 2 checked, 0 differ; checksum store (\w+) index \1$/);
+    expect(line(checked.lines, "images")).toBe("OK   images: store 2 index 2; 1 refused (not 512 floats), 0 unreadable");
+    expect(line(checked.lines, "image vectors")).toMatch(/^OK   image vectors: 2 checked, 0 differ; checksum store (\w+) index \1$/);
+
+    const lessonHits = await targets.lessons.engine.keyword("kvrocks hashes", 5, "all");
+    expect(lessonHits[0]).toMatchObject({ id: "lsn_1", sessionId: "lesson" });
+    expect(lessonHits.map((h) => h.id)).not.toContain("lsn_2");
+    const [point] = await targets.lessons.qdrant.call<Array<{ payload: { v: number; lexical_order: number[]; rev: string } }>>(
+      "POST", `${targets.lessons.qdrant.path}/points`, { ids: [pointId("lsn_1")], with_payload: ["v", "lexical_order", "rev"] },
+    );
+    expect(point!.payload.v).toBe(MIGRATION_VERSION);
+    expect(point!.payload.lexical_order[0]).toBe(MIGRATION_VERSION);
+    expect(point!.payload.rev).toBe(docOp(lessonToObservation(lesson("lsn_1", "prefer kvrocks hashes for paged scans")), "lesson").rev);
+
+    const found = await targets.images.engine.query(float32ToBase64(Float32Array.from(imageVec(1))), 5, undefined);
+    expect(found.total).toBe(2);
+    expect(found.hits[0]).toMatchObject({ id: "img/a.png", sessionId: "ses_1", observationId: "obs_1", updatedAt: "2026-11-01T00:00:00.000Z" });
+    expect((await targets.images.engine.query(float32ToBase64(Float32Array.from(imageVec(2))), 5, "ses_1")).hits.map((h) => h.id)).toEqual(["img/a.png"]);
+  });
+
   it("converges with no duplicates after being killed during a write and after a unit", async () => {
-    const { qdrant, engine } = await setup("resume");
+    const { qdrant, engine, targets } = await setup("resume");
     const store = new FakeRedis(fixture());
     let calls = 0;
     const dying = Object.create(engine) as SearchEngine;
     dying.load = (items, version) => (++calls === 3 ? Promise.reject(new Error("killed")) : engine.load(items, version));
-    await expect(fill(store, dying, qdrant, options)).rejects.toThrow("killed");
+    await expect(fill(store, { ...targets, docs: { qdrant, engine: dying } }, options)).rejects.toThrow("killed");
     store.writesBeforeKill = 2;
-    await expect(fill(store, engine, qdrant, options)).rejects.toThrow("killed");
+    await expect(fill(store, targets, options)).rejects.toThrow("killed");
     store.writesBeforeKill = Infinity;
-    const last = await fill(store, engine, qdrant, options);
+    const last = await fill(store, targets, options);
     expect(last.skipped).toBeGreaterThan(0);
-    const again = await fill(store, engine, qdrant, options);
-    expect(again.written).toEqual({ docs: 0, vectors: 0, fenced: 0, unparsable: 0 });
+    const again = await fill(store, targets, options);
+    expect(again.written).toEqual({ docs: 0, vectors: 0, fenced: 0, unparsable: 0, refused: 0 });
     expect(await qdrant.count()).toBe(8);
-    const checked = await verifyAll(store, engine, qdrant);
+    const checked = await verifyAll(store, targets);
+    expect(checked.ok, checked.lines.join("\n")).toBe(true);
+  });
+
+  it("converges after being killed in the lessons unit and in the images unit", async () => {
+    const { targets } = await setup("resume_li");
+    const store = new FakeRedis(fixture());
+    const lessons = Object.create(targets.lessons.engine) as SearchEngine;
+    let lessonCalls = 0;
+    // Page 2 holds lsn_3 alone: the first page has landed when the kill comes.
+    lessons.apply = (ops, version) => (++lessonCalls === 2 ? Promise.reject(new Error("killed")) : targets.lessons.engine.apply(ops, version));
+    await expect(fill(store, { ...targets, lessons: { ...targets.lessons, engine: lessons } }, options)).rejects.toThrow("killed");
+    expect(await targets.lessons.qdrant.count()).toBe(1);
+    expect(store.data.get(MARKER_KEY)!.has("unit:lessons")).toBe(false);
+
+    const images = Object.create(targets.images.engine) as ImageEngine;
+    let imageCalls = 0;
+    // Killed after the first page landed and before the unit's marker.
+    images.apply = async (ops, version) => {
+      const applied = await targets.images.engine.apply(ops, version);
+      if (++imageCalls === 1) throw new Error("killed");
+      return applied;
+    };
+    await expect(fill(store, { ...targets, images: { ...targets.images, engine: images } }, options)).rejects.toThrow("killed");
+    expect(store.data.get(MARKER_KEY)!.has("unit:lessons")).toBe(true);
+    expect(store.data.get(MARKER_KEY)!.has("unit:images")).toBe(false);
+    expect(await targets.images.qdrant.count()).toBe(2);
+
+    const last = await fill(store, targets, options);
+    expect(last.written).toMatchObject({ docs: 0, vectors: 2, refused: 1 });
+    const again = await fill(store, targets, options);
+    expect(again.written).toEqual({ docs: 0, vectors: 0, fenced: 0, unparsable: 0, refused: 0 });
+    expect(await targets.lessons.qdrant.count()).toBe(2);
+    expect(await targets.images.qdrant.count()).toBe(2);
+    const checked = await verifyAll(store, targets);
     expect(checked.ok, checked.lines.join("\n")).toBe(true);
   });
 
   it("never overwrites or resurrects what a live write changed after it", async () => {
-    const { qdrant, engine } = await setup("live");
+    const { qdrant, engine, targets } = await setup("live");
     const store = new FakeRedis(fixture());
-    await fill(store, engine, qdrant, options);
+    await fill(store, targets, options);
     const edited = docOp(obs("obs_1", "ses_1", "edited live after the migration"), "observation");
     const live = await engine.apply([edited, { k: "vec", id: "obs_1", rev: edited.rev, f32b64: float32ToBase64(vec(100)) }, { k: "del", id: "obs_2" }], nextOpVersion());
     expect(live.fenced).toEqual([]);
+    const liveLesson = docOp(lessonToObservation(lesson("lsn_1", "rewritten live")), "lesson");
+    await targets.lessons.engine.apply([liveLesson, { k: "del", id: "lsn_3" }], nextOpVersion());
+    await targets.images.engine.apply([{ k: "img", id: "img/a.png", sessionId: "ses_live", f32b64: float32ToBase64(Float32Array.from(imageVec(9))), updatedAt: "live" }, { k: "del", id: "img/b.png" }], nextOpVersion());
     // A second full run, as after losing the marker's progress.
     store.data.set(MARKER_KEY, new Map([...store.data.get(MARKER_KEY)!].filter(([field]) => !field.startsWith("unit:"))));
-    const rerun = await fill(store, engine, qdrant, options);
-    expect(rerun.written.fenced).toBe(2);
+    const rerun = await fill(store, targets, options);
+    expect(rerun.written.fenced).toBe(6);
     const points = await qdrant.call<Array<{ payload: { doc_id: string; rev?: string; deleted?: boolean } }>>("POST", `${qdrant.path}/points`, {
       ids: [pointId("obs_1"), pointId("obs_2")], with_payload: ["doc_id", "rev", "deleted"],
     });
@@ -214,30 +316,63 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     expect(byId.get("obs_1")!.rev).toBe(edited.rev);
     expect(byId.get("obs_2")!.deleted).toBe(true);
     expect((await engine.vector(float32ToBase64(vec(100)), 1, "all", 6))[0]!.id).toBe("obs_1");
+    expect((await targets.lessons.engine.keyword("rewritten", 5, "all")).map((h) => h.id)).toEqual(["lsn_1"]);
+    expect(await targets.lessons.qdrant.count({ must_not: [{ key: "deleted", match: { value: true } }] })).toBe(1);
+    const imageHits = await targets.images.engine.query(float32ToBase64(Float32Array.from(imageVec(9))), 5, undefined);
+    expect(imageHits).toMatchObject({ total: 1, hits: [{ id: "img/a.png", sessionId: "ses_live", updatedAt: "live" }] });
   });
 
   it("fails verify on a changed vector, a missing document or an embedding call", async () => {
-    const { qdrant, engine } = await setup("tamper");
+    const { qdrant, targets } = await setup("tamper");
     const store = new FakeRedis(fixture());
-    await fill(store, engine, qdrant, options);
+    await fill(store, targets, options);
     await qdrant.call("PUT", `${qdrant.path}/points/vectors?wait=true`, { points: [{ id: pointId("obs_1"), vector: { dense: Array.from(vec(77)) } }] });
-    let checked = await verifyAll(store, engine, qdrant);
+    let checked = await verifyAll(store, targets);
     expect(checked.ok).toBe(false);
     expect(checked.lines.find((l) => l.includes("sampled vectors"))).toMatch(/^FAIL .* 1 differ/);
 
     await qdrant.call("POST", `${qdrant.path}/points/delete?wait=true`, { points: [pointId("obs_7")] });
-    checked = await verifyAll(store, engine, qdrant);
+    checked = await verifyAll(store, targets);
     expect(checked.lines.find((l) => l.includes("observations"))).toMatch(/^FAIL observations: store 7 index 6/);
 
     const guard = new FetchGuard("http://unused");
     guard.refused = 1;
-    checked = await verifyAll(store, engine, qdrant, guard);
+    checked = await verifyAll(store, targets, guard);
     expect(checked.lines).toContain("FAIL embedding calls: 1");
   });
 
+  it("fails verify on a tampered lesson or image, or a missing one", async () => {
+    const { targets } = await setup("tamper_li");
+    const store = new FakeRedis(fixture());
+    await fill(store, targets, options);
+    expect((await verifyAll(store, targets)).ok).toBe(true);
+
+    const lessons = targets.lessons.qdrant;
+    await lessons.call("POST", `${lessons.path}/points/payload?wait=true`, { payload: { rev: "0000000000000000" }, points: [pointId("lsn_3")] });
+    let checked = await verifyAll(store, targets);
+    expect(checked.ok).toBe(false);
+    expect(line(checked.lines, "lesson revs")).toMatch(/^FAIL lesson revs: 2 checked, 1 differ; checksum store (\w+) index (?!\1)\w+$/);
+
+    const images = targets.images.qdrant;
+    const nudged = imageVec(2).map((x, i) => (i === 7 ? x + 0.5 : x));
+    await images.call("PUT", `${images.path}/points/vectors?wait=true`, { points: [{ id: pointId("img/b.png"), vector: { image: nudged } }] });
+    checked = await verifyAll(store, targets);
+    expect(line(checked.lines, "image vectors")).toMatch(/^FAIL image vectors: 2 checked, 1 differ/);
+
+    await images.call("POST", `${images.path}/points/payload?wait=true`, { payload: { session_id: "ses_other" }, points: [pointId("img/a.png")] });
+    checked = await verifyAll(store, targets);
+    expect(line(checked.lines, "image vectors")).toMatch(/^FAIL image vectors: 2 checked, 2 differ/);
+
+    await images.call("POST", `${images.path}/points/delete?wait=true`, { points: [pointId("img/a.png")] });
+    await lessons.call("POST", `${lessons.path}/points/delete?wait=true`, { points: [pointId("lsn_1")] });
+    checked = await verifyAll(store, targets);
+    expect(line(checked.lines, "images")).toMatch(/^FAIL images: store 2 index 1/);
+    expect(line(checked.lines, "lessons")).toMatch(/^FAIL lessons: store 2 index 1/);
+  });
+
   it("refuses a collection that already holds documents it did not write", async () => {
-    const { qdrant, engine } = await setup("nonempty");
+    const { engine, targets } = await setup("nonempty");
     await engine.apply([docOp(obs("obs_9", "ses_1", "written by the app"), "observation")], nextOpVersion());
-    await expect(fill(new FakeRedis(fixture()), engine, qdrant, options)).rejects.toThrow(/allow-nonempty/);
+    await expect(fill(new FakeRedis(fixture()), targets, options)).rejects.toThrow(/allow-nonempty/);
   });
 });

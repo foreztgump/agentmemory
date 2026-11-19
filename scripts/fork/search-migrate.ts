@@ -15,13 +15,21 @@
 //            and docOp as the app builds it, with the document's stored vector
 //            in the same point (SearchEngine.load). Every write carries version 1, so a
 //            re-run rewrites its own points and any live write always wins.
+//         3. The lessons unit: every lesson in `mem:lessons` that is not deleted,
+//            as the keyword document the app writes (lessonToObservation, docOp),
+//            through the lessons collection's apply at version 1.
+//         4. The images unit: every row of `mem:image-embeddings` as an `img` op
+//            through the images collection's apply at version 1. A vector that is
+//            not AM_SEARCH_IMAGE_DIMENSIONS (512) finite numbers is refused and counted.
 //         The resume state is the hash `fork:search-migrate` in the store
 //         (outside `state:*`, which the app reads): the version and one field
 //         per finished unit. A killed run re-does only its unfinished unit.
 // verify  Recomputes the plan and the expected documents from the store and
 //         compares: documents per layer and per session, vectors, a sample of
 //         vectors (normalised and rounded to float16, as Qdrant stores them)
-//         and of keyword revs, and the embedding calls made (must be 0).
+//         and of keyword revs, and the embedding calls made (must be 0). Lessons
+//         and images: counts, and every row's rev or vector and metadata, with a
+//         checksum of each side.
 // status  The marker: version, units done, embedding calls.
 //
 // No embedding provider is constructed: nothing here imports one, a test pins
@@ -41,13 +49,17 @@ import {
   STATE_PREFIX,
   STORED_VECTOR_MODEL,
 } from "../../src/fork/search/persisted-vectors.js";
-import { docOp, type OpVersion } from "../../src/fork/search/protocol.js";
-import { DEFAULT_AVGDL } from "../../src/fork/search/settings.js";
+import { collectionName, docOp, type DocOp, type ImgOp, type OpVersion } from "../../src/fork/search/protocol.js";
+import { DEFAULT_AVGDL, DEFAULT_IMAGE_DIMENSIONS } from "../../src/fork/search/settings.js";
 import { SearchEngine } from "../../src/fork/worker/engine.js";
+import { ImageEngine } from "../../src/fork/worker/image-engine.js";
 import { pointId, Qdrant } from "../../src/fork/worker/qdrant.js";
 import { vectorBucketScope } from "../../src/state/index-persistence.js";
+import { lessonToObservation } from "../../src/state/memory-utils.js";
 import { KV } from "../../src/state/schema.js";
 import { extractTerms } from "../../src/state/term-extraction.js";
+import { base64ToFloat32, float32ToBase64 } from "../../src/state/vector-index.js";
+import type { Lesson } from "../../src/types.js";
 import { connectRedis, redactUrl, type Redis, type Reply } from "./lib/resp.js";
 
 export const MARKER_KEY = "fork:search-migrate";
@@ -55,6 +67,8 @@ const META_FIELD = "meta";
 const CALLS_FIELD = "embedding-calls";
 const UNIT_PREFIX = "unit:";
 const MEMORIES_UNIT = "memories";
+const LESSONS_UNIT = "lessons";
+const IMAGES_UNIT = "images";
 const PENDING_CLEAR_FIELD = "~clear";
 /**
  * Every migrated write carries this version, the lowest there is: a re-run
@@ -68,6 +82,13 @@ export class MigrateError extends Error {
   constructor(message: string, readonly exitCode: number) {
     super(message);
   }
+}
+
+/** The three collections the migration writes, each through its own engine. */
+export interface Targets {
+  docs: { engine: SearchEngine; qdrant: Qdrant };
+  lessons: { engine: SearchEngine; qdrant: Qdrant };
+  images: { engine: ImageEngine; qdrant: Qdrant };
 }
 
 const str = (reply: Reply): string => (Buffer.isBuffer(reply) ? reply.toString("utf8") : String(reply));
@@ -329,8 +350,99 @@ async function* unitDocs(store: Redis, unit: Unit, page: number, counts?: { unpa
   }
 }
 
-/** fenced: documents left alone because a live write or delete is newer than the migration; unparsable: records that are not JSON. */
-export interface UnitResult { docs: number; vectors: number; fenced: number; unparsable: number }
+/**
+ * fenced: documents left alone because a live write or delete is newer than
+ * the migration; unparsable: records that are not JSON or lack the fields the
+ * document needs; refused: image rows whose vector is not the image size.
+ */
+export interface UnitResult { docs: number; vectors: number; fenced: number; unparsable: number; refused: number }
+
+const emptyResult = (): UnitResult => ({ docs: 0, vectors: 0, fenced: 0, unparsable: 0, refused: 0 });
+
+function parseJson(value: Buffer): unknown {
+  try {
+    return JSON.parse(value.toString("utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The live lessons, page by page, as the keyword documents the app writes for them; deleted lessons are skipped. */
+async function* lessonDocs(store: Redis, page: number, counts: Pick<UnitResult, "unparsable">): AsyncGenerator<DocOp[]> {
+  for await (const pairs of hashPages(store, STATE_PREFIX + KV.lessons, page)) {
+    const docs: DocOp[] = [];
+    for (const [, value] of pairs) {
+      const lesson = parseJson(value) as Partial<Lesson> | undefined;
+      if (typeof lesson?.id !== "string" || typeof lesson.content !== "string") {
+        counts.unparsable++;
+        continue;
+      }
+      if (!lesson.deleted) docs.push(docOp(lessonToObservation(lesson as Lesson), "lesson"));
+    }
+    if (docs.length > 0) yield docs;
+  }
+}
+
+/** The stored image embeddings, page by page, as the `img` ops the app writes; a vector that is not `dimensions` finite numbers is refused and counted. */
+async function* imageOps(store: Redis, page: number, dimensions: number, counts: Pick<UnitResult, "unparsable" | "refused">): AsyncGenerator<ImgOp[]> {
+  for await (const pairs of hashPages(store, STATE_PREFIX + KV.imageEmbeddings, page)) {
+    const ops: ImgOp[] = [];
+    for (const [imageRef, value] of pairs) {
+      const row = parseJson(value) as { vector?: unknown; sessionId?: unknown; observationId?: unknown; updatedAt?: unknown } | undefined;
+      if (!row || typeof row.updatedAt !== "string" || (row.sessionId !== undefined && typeof row.sessionId !== "string") ||
+          (row.observationId !== undefined && typeof row.observationId !== "string")) {
+        counts.unparsable++;
+        continue;
+      }
+      const vector = row.vector;
+      if (!Array.isArray(vector) || vector.length !== dimensions || !vector.every((x) => typeof x === "number" && Number.isFinite(x))) {
+        counts.refused++;
+        continue;
+      }
+      ops.push({
+        k: "img",
+        id: imageRef,
+        sessionId: row.sessionId ?? "",
+        f32b64: float32ToBase64(Float32Array.from(vector as number[])),
+        ...(row.observationId !== undefined ? { observationId: row.observationId } : {}),
+        updatedAt: row.updatedAt,
+      });
+    }
+    if (ops.length > 0) yield ops;
+  }
+}
+
+/** Ids whose point does not carry `version`: a newer live write or delete kept it. */
+async function notAt(qdrant: Qdrant, ids: string[], version: OpVersion): Promise<string[]> {
+  const points = await qdrant.call<Array<{ payload?: { doc_id?: string; v?: unknown } }>>("POST", `${qdrant.path}/points`, {
+    ids: ids.map(pointId), with_payload: ["doc_id", "v"], with_vector: false,
+  });
+  const held = new Set(points.flatMap(({ payload }) => (payload?.doc_id && payload.v === version ? [payload.doc_id] : [])));
+  return ids.filter((id) => !held.has(id));
+}
+
+async function fillLessons(store: Redis, target: Targets["lessons"], version: OpVersion, page: number): Promise<UnitResult> {
+  const result = emptyResult();
+  for await (const docs of lessonDocs(store, page, result)) {
+    const applied = await target.engine.apply(docs, version);
+    if (applied.failed.length > 0) throw new MigrateError(`lessons apply failed for ${applied.failed.length} lessons, first ${JSON.stringify(applied.failed[0])}`, 3);
+    const fenced = await notAt(target.qdrant, docs.map((d) => d.id), version);
+    result.docs += docs.length;
+    result.fenced += fenced.length;
+  }
+  return result;
+}
+
+async function fillImages(store: Redis, target: Targets["images"], version: OpVersion, page: number): Promise<UnitResult> {
+  const result = emptyResult();
+  for await (const ops of imageOps(store, page, target.qdrant.config.dimensions, result)) {
+    const applied = await target.engine.apply(ops, version);
+    if (applied.failed.length > 0) throw new MigrateError(`images apply failed for ${applied.failed.length} images, first ${JSON.stringify(applied.failed[0])}`, 3);
+    result.vectors += applied.applied;
+    result.fenced += applied.fenced.length;
+  }
+  return result;
+}
 
 // ---------------------------------------------------------------- fill
 
@@ -370,7 +482,8 @@ async function addEmbeddingCalls(store: Redis, calls: number): Promise<void> {
   await store.call("HSET", MARKER_KEY, CALLS_FIELD, String(previous + calls));
 }
 
-export async function fill(store: Redis, engine: SearchEngine, qdrant: Qdrant, options: FillOptions): Promise<FillResult> {
+export async function fill(store: Redis, targets: Targets, options: FillOptions): Promise<FillResult> {
+  const { engine, qdrant } = targets.docs;
   let meta = await readMeta(store);
   if (!meta) {
     const live = (await engine.stats()).docs;
@@ -390,11 +503,14 @@ export async function fill(store: Redis, engine: SearchEngine, qdrant: Qdrant, o
   const states = await Promise.all(chunk(units, 256).map((part) => store.pipeline([["HMGET", MARKER_KEY, ...part.map((u) => UNIT_PREFIX + u.name)]])));
   states.forEach(([values], c) => (values as Array<Buffer | null>).forEach((v, i) => v !== null && done.add(units[c * 256 + i]!.name)));
 
-  const written: UnitResult = { docs: 0, vectors: 0, fenced: 0, unparsable: 0 };
+  const written = emptyResult();
+  const add = (result: UnitResult) => {
+    for (const key of Object.keys(written) as Array<keyof UnitResult>) written[key] += result[key];
+  };
   let finished = 0;
   for (const unit of units) {
     if (done.has(unit.name)) continue;
-    const result: UnitResult = { docs: 0, vectors: 0, fenced: 0, unparsable: 0 };
+    const result = emptyResult();
     for await (const docs of unitDocs(store, unit, options.page, result)) {
       const vectors = await readVectors(store, plan, docs.map((d) => d.id), options.dimensions);
       const loaded = await engine.load(docs.map((doc) => ({ doc, f32b64: vectors.get(doc.id)?.toString("base64") })), meta.version, meta.avgdl ?? undefined);
@@ -405,13 +521,24 @@ export async function fill(store: Redis, engine: SearchEngine, qdrant: Qdrant, o
       result.fenced += kept.size;
     }
     await store.call("HSET", MARKER_KEY, UNIT_PREFIX + unit.name, JSON.stringify(result));
-    written.docs += result.docs;
-    written.vectors += result.vectors;
-    written.fenced += result.fenced;
-    written.unparsable += result.unparsable;
+    add(result);
     if (++finished % 50 === 0) options.log(`${finished} units this run, ${written.docs} docs, ${written.vectors} vectors`);
   }
-  return { version: meta.version, plan: plan.report, units: units.length, skipped: done.size, written };
+  let skipped = done.size;
+  for (const [name, run] of [
+    [LESSONS_UNIT, () => fillLessons(store, targets.lessons, meta.version, options.page)],
+    [IMAGES_UNIT, () => fillImages(store, targets.images, meta.version, options.page)],
+  ] as const) {
+    if ((await store.call("HEXISTS", MARKER_KEY, UNIT_PREFIX + name)) === 1) {
+      skipped++;
+      continue;
+    }
+    const result = await run();
+    await store.call("HSET", MARKER_KEY, UNIT_PREFIX + name, JSON.stringify(result));
+    options.log(`${name} ${JSON.stringify(result)}`);
+    add(result);
+  }
+  return { version: meta.version, plan: plan.report, units: units.length + 2, skipped, written };
 }
 
 /**
@@ -480,7 +607,8 @@ export interface VerifyResult {
   lines: string[];
 }
 
-export async function verify(store: Redis, engine: SearchEngine, qdrant: Qdrant, options: { page: number; dimensions: number; rate: number; guard: FetchGuard }): Promise<VerifyResult> {
+export async function verify(store: Redis, targets: Targets, options: { page: number; dimensions: number; rate: number; guard: FetchGuard }): Promise<VerifyResult> {
+  const { engine, qdrant } = targets.docs;
   const lines: string[] = [];
   const problems: string[] = [];
   const meta = await readMeta(store);
@@ -493,8 +621,10 @@ export async function verify(store: Redis, engine: SearchEngine, qdrant: Qdrant,
   const sample: Array<{ id: string; rev: string; bytes?: Buffer }> = [];
   const matched = new Set<string>();
   let unfinished = 0;
+  for (const name of [...units.map((u) => u.name), LESSONS_UNIT, IMAGES_UNIT]) {
+    if ((await store.call("HEXISTS", MARKER_KEY, UNIT_PREFIX + name)) !== 1) unfinished++;
+  }
   for (const unit of units) {
-    if ((await store.call("HEXISTS", MARKER_KEY, UNIT_PREFIX + unit.name)) !== 1) unfinished++;
     for await (const docs of unitDocs(store, unit, options.page)) {
       const sampled = docs.filter((d) => isSampled(d.id, options.rate));
       const bytes = sampled.length > 0 ? await readVectors(store, plan, sampled.map((d) => d.id), options.dimensions) : new Map();
@@ -558,6 +688,8 @@ export async function verify(store: Redis, engine: SearchEngine, qdrant: Qdrant,
       else if (worst === 1) offByOneHalfStep++;
     }
   }
+  const lessons = await verifyLessons(store, targets.lessons, options.page);
+  const images = await verifyImages(store, targets.images, options.page);
   const calls = Number(str((await store.call("HGET", MARKER_KEY, CALLS_FIELD)) ?? Buffer.from("0"))) + options.guard.refused;
   const vectorSample = sample.filter((s) => s.bytes).length;
   const sourceDigest = source.digest("hex").slice(0, 16);
@@ -569,7 +701,7 @@ export async function verify(store: Redis, engine: SearchEngine, qdrant: Qdrant,
   };
   lines.push(`plan ${JSON.stringify(plan.report)}`);
   lines.push(`model ${JSON.stringify(STORED_VECTOR_MODEL)}; version ${meta.version} (started ${meta.startedAt})`);
-  check("units", unfinished === 0, `${units.length - unfinished}/${units.length} finished`);
+  check("units", unfinished === 0, `${units.length + 2 - unfinished}/${units.length + 2} finished`);
   check("observations", observations === expected.observation, `store ${expected.observation} index ${observations}`);
   check("memories", memories === expected.memory, `store ${expected.memory} index ${memories}`);
   check("sessions", sessionMismatches === 0, `${perSession.size} sessions with documents, ${sessionMismatches} with a different count`);
@@ -577,8 +709,114 @@ export async function verify(store: Redis, engine: SearchEngine, qdrant: Qdrant,
   check("sampled keyword revs", revMismatches === 0, `${sample.length} sampled, ${revMismatches} differ`);
   check("sampled vectors", vectorMismatches === 0,
     `${vectorSample} sampled, ${vectorMismatches} differ, ${offByOneHalfStep} within one float16 step; checksum store ${sourceDigest} index ${targetDigest}`);
+  check("lessons", lessons.store === lessons.index, `store ${lessons.store} index ${lessons.index}; ${lessons.unparsable} records unreadable`);
+  check("lesson revs", lessons.differ === 0,
+    `${lessons.checked} checked, ${lessons.differ} differ; checksum store ${lessons.storeDigest} index ${lessons.indexDigest}`);
+  check("images", images.store === images.index, `store ${images.store} index ${images.index}; ${images.refused} refused (not ${targets.images.qdrant.config.dimensions} floats), ${images.unparsable} unreadable`);
+  check("image vectors", images.differ === 0,
+    `${images.checked} checked, ${images.differ} differ; checksum store ${images.storeDigest} index ${images.indexDigest}`);
   check("embedding calls", calls === 0, `${calls}`);
   return { ok: problems.length === 0, lines };
+}
+
+interface CollectionCheck {
+  store: number;
+  index: number;
+  checked: number;
+  differ: number;
+  unparsable: number;
+  refused: number;
+  storeDigest: string;
+  indexDigest: string;
+}
+
+const LIVE = { must_not: [{ key: "deleted", match: { value: true } }] };
+
+async function liveCount(qdrant: Qdrant): Promise<number> {
+  return (await qdrant.exists()) ? qdrant.count(LIVE) : 0;
+}
+
+type StoredPoint = { payload?: Record<string, unknown>; vector?: Record<string, number[]> };
+
+/** The points of ids by doc id; absent ids and tombstones are missing. */
+async function livePoints(qdrant: Qdrant, ids: string[], payload: string[], vector: string[] | false): Promise<Map<string, StoredPoint>> {
+  if (ids.length === 0 || !(await qdrant.exists())) return new Map();
+  const points = await qdrant.call<StoredPoint[]>("POST", `${qdrant.path}/points`, {
+    ids: ids.map(pointId), with_payload: ["doc_id", "deleted", ...payload], with_vector: vector,
+  });
+  return new Map(points.filter((p) => p.payload?.deleted !== true).map((p) => [String(p.payload?.doc_id ?? ""), p]));
+}
+
+const digest = (hash: ReturnType<typeof createHash>) => hash.digest("hex").slice(0, 16);
+
+/**
+ * Every live lesson against its point: the count, and each lesson's rev,
+ * page by page. Lessons number in the hundreds, so all are checked.
+ */
+async function verifyLessons(store: Redis, target: Targets["lessons"], page: number): Promise<CollectionCheck> {
+  const result: CollectionCheck = { store: 0, index: 0, checked: 0, differ: 0, unparsable: 0, refused: 0, storeDigest: "", indexDigest: "" };
+  const source = createHash("sha256");
+  const indexed = createHash("sha256");
+  for await (const docs of lessonDocs(store, page, result)) {
+    const points = await livePoints(target.qdrant, docs.map((d) => d.id), ["rev", "layer"], false);
+    for (const doc of docs) {
+      const point = points.get(doc.id)?.payload;
+      source.update(`${doc.id}\0${doc.rev}\0`);
+      indexed.update(`${doc.id}\0${String(point?.rev)}\0`);
+      if (point?.rev !== doc.rev || point?.layer !== "lesson") result.differ++;
+    }
+    result.store += docs.length;
+    result.checked += docs.length;
+  }
+  result.index = await liveCount(target.qdrant);
+  result.storeDigest = digest(source);
+  result.indexDigest = digest(indexed);
+  return result;
+}
+
+/** A float32 vector as Qdrant keeps it under Cosine distance: scaled to unit length. */
+function unitVector(f32b64: string): Float32Array {
+  const v = base64ToFloat32(f32b64);
+  let norm = 0;
+  for (const x of v) norm += x * x;
+  norm = Math.sqrt(norm);
+  return norm === 0 ? Float32Array.from(v) : Float32Array.from(v, (x) => x / norm);
+}
+
+/** Two float32 values one rounding apart: Qdrant normalises in float32, this side in double. */
+const IMAGE_TOLERANCE = 1e-6;
+
+/**
+ * Every stored image against its point: the count, and each image's unit
+ * vector (within IMAGE_TOLERANCE per component) and metadata. Checked page by
+ * page, so no more than a page of vectors is held.
+ */
+async function verifyImages(store: Redis, target: Targets["images"], page: number): Promise<CollectionCheck> {
+  const result: CollectionCheck = { store: 0, index: 0, checked: 0, differ: 0, unparsable: 0, refused: 0, storeDigest: "", indexDigest: "" };
+  const source = createHash("sha256");
+  const indexed = createHash("sha256");
+  for await (const ops of imageOps(store, page, target.qdrant.config.dimensions, result)) {
+    const points = await livePoints(target.qdrant, ops.map((o) => o.id), ["session_id", "observation_id", "updated_at"], ["image"]);
+    for (const op of ops) {
+      const point = points.get(op.id);
+      const want = unitVector(op.f32b64);
+      // Qdrant's float32 normalisation is not reproducible bit for bit, so a stored component within one rounding counts as the store's value.
+      const stored = point?.vector?.image;
+      const snapped = stored && stored.length === want.length ? Float32Array.from(stored, (x, i) => (Math.abs(x - want[i]!) <= IMAGE_TOLERANCE ? want[i]! : x)) : null;
+      const fields = (sessionId: unknown, observationId: unknown, updatedAt: unknown) => `${op.id}\0${String(sessionId ?? "")}\0${String(observationId ?? "")}\0${String(updatedAt)}\0`;
+      source.update(fields(op.sessionId, op.observationId, op.updatedAt)).update(Buffer.from(want.buffer));
+      if (snapped) indexed.update(fields(point!.payload?.session_id, point!.payload?.observation_id, point!.payload?.updated_at)).update(Buffer.from(snapped.buffer));
+      const same = snapped !== null && snapped.every((x, i) => x === want[i]) &&
+        point!.payload?.session_id === op.sessionId && point!.payload?.observation_id === op.observationId && point!.payload?.updated_at === op.updatedAt;
+      if (!same) result.differ++;
+    }
+    result.store += ops.length;
+    result.checked += ops.length;
+  }
+  result.index = await liveCount(target.qdrant);
+  result.storeDigest = digest(source);
+  result.indexDigest = digest(indexed);
+  return result;
 }
 
 // ---------------------------------------------------------------- CLI
@@ -587,10 +825,10 @@ async function status(store: Redis, page: number): Promise<string[]> {
   const meta = await store.call("HGET", MARKER_KEY, META_FIELD);
   const plan = await store.call("HGET", MARKER_KEY, "plan");
   const calls = await store.call("HGET", MARKER_KEY, CALLS_FIELD);
-  const units = await listUnits(store, page);
+  const units = [...(await listUnits(store, page)).map((u) => u.name), LESSONS_UNIT, IMAGES_UNIT];
   let done = 0;
   for (const part of chunk(units, 256)) {
-    const values = (await store.call("HMGET", MARKER_KEY, ...part.map((u) => UNIT_PREFIX + u.name))) as Array<Buffer | null>;
+    const values = (await store.call("HMGET", MARKER_KEY, ...part.map((name) => UNIT_PREFIX + name))) as Array<Buffer | null>;
     done += values.filter((v) => v !== null).length;
   }
   return [
@@ -614,25 +852,36 @@ async function main(): Promise<number> {
   const storeUrl = process.env.MIGRATE_STORE_URL;
   const qdrantUrl = process.env.AM_QDRANT_URL?.trim().replace(/\/+$/, "");
   const dimensions = Number(process.env.AM_SEARCH_DIMENSIONS?.trim() || STORED_VECTOR_MODEL.dimensions);
+  const imageDimensions = Number(process.env.AM_SEARCH_IMAGE_DIMENSIONS?.trim() || DEFAULT_IMAGE_DIMENSIONS);
   const page = Number(args.page);
   const rate = Number(args.rate);
   if (!["fill", "verify", "status"].includes(command ?? "") || !storeUrl || !qdrantUrl ||
-      !Number.isInteger(page) || page < 1 || !Number.isInteger(rate) || rate < 1 || !Number.isInteger(dimensions) || dimensions < 1) {
+      !Number.isInteger(page) || page < 1 || !Number.isInteger(rate) || rate < 1 || !Number.isInteger(dimensions) || dimensions < 1 ||
+      !Number.isInteger(imageDimensions) || imageDimensions < 1) {
     console.error("usage: MIGRATE_STORE_URL=redis://... AM_QDRANT_URL=http://... [AM_QDRANT_API_KEY=...] search-migrate.ts fill|verify|status [--page 200] [--rate 64] [--allow-nonempty]");
     return 2;
   }
   const log = (line: string) => console.error(`search-migrate: ${line}`);
   const guard = new FetchGuard(new URL(qdrantUrl).origin).install();
-  const qdrant = new Qdrant({
+  const base = process.env.AM_QDRANT_COLLECTION?.trim() || "agentmemory";
+  const qdrantOf = (id: "docs" | "lessons" | "images", size: number, layout?: "lessons" | "image") => new Qdrant({
     url: qdrantUrl,
     apiKey: process.env.AM_QDRANT_API_KEY?.trim() || undefined,
-    collection: process.env.AM_QDRANT_COLLECTION?.trim() || "agentmemory",
-    dimensions,
+    collection: collectionName(base, id),
+    dimensions: size,
     oversampling: 6,
     timeoutMs: 120_000,
+    layout,
   });
-  const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
-  log(`${command} ${redactUrl(storeUrl)} -> ${qdrantUrl}/collections/${qdrant.config.collection}`);
+  const docs = qdrantOf("docs", dimensions);
+  const lessons = qdrantOf("lessons", dimensions, "lessons");
+  const images = qdrantOf("images", imageDimensions, "image");
+  const targets: Targets = {
+    docs: { qdrant: docs, engine: new SearchEngine(docs, DEFAULT_AVGDL) },
+    lessons: { qdrant: lessons, engine: new SearchEngine(lessons, DEFAULT_AVGDL) },
+    images: { qdrant: images, engine: new ImageEngine(images) },
+  };
+  log(`${command} ${redactUrl(storeUrl)} -> ${qdrantUrl}/collections/${base}{,_lessons,_images}`);
   const store = await connectRedis(storeUrl);
   const started = Date.now();
   try {
@@ -641,14 +890,14 @@ async function main(): Promise<number> {
       return 0;
     }
     if (command === "fill") {
-      const r = await fill(store, engine, qdrant, { page, dimensions, allowNonempty: args["allow-nonempty"], log });
-      log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them, ${r.written.unparsable} records not JSON; ${((Date.now() - started) / 1000).toFixed(1)} s`);
+      const r = await fill(store, targets, { page, dimensions, allowNonempty: args["allow-nonempty"], log });
+      log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them, ${r.written.unparsable} records unreadable, ${r.written.refused} image vectors refused; ${((Date.now() - started) / 1000).toFixed(1)} s`);
       const settling = Date.now();
-      await engine.settled();
+      await targets.docs.engine.settled();
       log(`keyword weights settled in ${((Date.now() - settling) / 1000).toFixed(1)} s`);
       return 0;
     }
-    const result = await verify(store, engine, qdrant, { page, dimensions, rate, guard });
+    const result = await verify(store, targets, { page, dimensions, rate, guard });
     console.log(`VERIFY ${result.ok ? "OK" : "FAIL"}`);
     for (const line of result.lines) console.log(line);
     log(`verify took ${((Date.now() - started) / 1000).toFixed(1)} s`);

@@ -87,14 +87,21 @@ The replica ran on Kvrocks with Qdrant 1.20.2 (1.5 GB limit) on the workstation.
 
 **Keyword ranking gap.** On the private tier, disk mode loses 3 points of recall and 8 of MRR on keyword queries. 15 cases rank lower, 2 rank higher, and 3 drop out of the top 10. The expected documents of those 3 are live in the index with the right rev, so the migration is not the cause. Their query terms match the document only through prefixes: for example, 0 of 4 terms match exactly and 2 match as prefixes. SearchIndex expands a query term to every index term it prefixes, at half weight. The disk engine adds only bare forms of words ending in punctuation (TEE-1164). The synthetic tier uses exact terms, so it did not show this.
 
-## Lessons and images (after TEE-1167)
+## Lessons and images
 
-TEE-1167 adds two collections to the am-search worker, `<collection>_lessons` and `<collection>_images`, and a `collection` field on every request. Once it merges into `disk`, the migration adds two units:
+The am-search worker keeps lessons and images in their own collections, `<collection>_lessons` and `<collection>_images` (TEE-1167). The migration fills both after the documents, as two more units with their own resume markers, `unit:lessons` and `unit:images`:
 
-- **`lessons`.** HSCAN `mem:lessons`. It skips deleted lessons and builds each document with `lessonToObservation` and `docOp(…, "lesson")`, as `convergeLessons` does. It writes through the lessons engine's `apply` at version 1, because that engine stores `lexical_order` for ties. Lessons are few: 88 on buddy.
-- **`images`.** HSCAN `mem:image-embeddings` and write each row as an `img` op through the image engine's `apply` at version 1. That engine already writes in one upsert. A vector whose length is not `AM_SEARCH_IMAGE_DIMENSIONS` (512) is refused and counted. Buddy has none.
+- **`lessons`.** HSCAN `mem:lessons`. It skips deleted lessons and builds each document with `lessonToObservation` and `docOp(…, "lesson")`, as `convergeLessons` does. It writes through the lessons engine's `apply` at version 1, which stores `lexical_order` for ties. A record that is not JSON or lacks `id` and `content` is counted as unreadable. Lessons are few: 88 on buddy.
+- **`images`.** HSCAN `mem:image-embeddings` and write each row as an `img` op through the image engine's `apply` at version 1. A vector that is not `AM_SEARCH_IMAGE_DIMENSIONS` (512) finite numbers is refused and counted. Buddy has none, so the tests cover this unit with a synthetic fixture.
 
-Verify adds the lesson and image counts, and sampled checks of lesson revs and image vectors.
+A killed run re-does the unfinished unit whole; its writes carry version 1, so the re-run converges, and a live write or delete made since is kept.
+
+Verify checks every lesson and every image, not a sample, because both are small:
+
+- `lessons`: the live count in the store against the live points.
+- `lesson revs`: each lesson's rev, with a checksum of each side.
+- `images`: the count of valid rows against the live points, with the refused and unreadable counts.
+- `image vectors`: each image's unit vector, within 1e-6 per component, and its session, observation and time. The index checksum counts a component within that tolerance as the store's value, because Qdrant's float32 normalisation cannot be reproduced bit for bit. The two checksums are equal exactly when every component and field matches.
 
 ## Cutover order (for TEE-1172)
 
