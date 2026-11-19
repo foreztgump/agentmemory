@@ -135,6 +135,7 @@ export class ImageEngine {
         using: "image",
         limit: clampLimit(limit),
         filter,
+        // ponytail: exact scan keeps today's exact cosine ranking, linear in live images inside Qdrant; drop it for HNSW if image counts reach the tens of thousands.
         params: { exact: true },
         with_payload: HIT_PAYLOAD,
       }),
