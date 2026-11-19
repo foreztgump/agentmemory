@@ -101,6 +101,7 @@ import { runCaptureCommand } from "./cli/capture.js";
 import { runCompressionCommand } from "./cli/compression.js";
 import { runGraphIndexCommand } from "./cli/graph-index.js";
 import { bearerHeaders, resolveClientSecret } from "./secret-store.js";
+import { runExportCommand, runImportCommand } from "./fork/cli-export-import.js";
 import { assertComposePortsFree, composeCall, composeRegistryFailureMessage, composeStateRegistryFailure, composeWorkerFailureSummary, ownedComposeProject, readComposeLogFromOffset, startComposeDaemon, writeComposeState, type ComposeStatus } from "./cli/compose-control.js";
 import { COMPOSE_WORKER_VERSIONS, composeDownTimeoutMs, composeNamespace } from "./cli/compose-project.js";
 import { legacyDockerStateMessage, type LegacyDockerEngineState } from "./cli/legacy-docker-state.js";
@@ -239,6 +240,10 @@ Commands:
   graph-index       Inspect bounded graph index status. --json for machine output.
                      migrate --allow-legacy-scan explicitly scans legacy graph data.
                      resume continues a sealed migration without another full scan.
+  export <file>      Stream every collection to <file> (NDJSON), at any store size.
+                     The file is written as <file>.part and renamed once it is complete.
+  import <file>      Import a file written by export, one part per request.
+                     --strategy merge|skip (default merge).
   import-jsonl [p]   Import Claude Code JSONL transcripts (default: ~/.claude/projects)
                      --max-files <N> | --max-files=<N>: override scan cap (default 200, max 1000;
                      out-of-range is rejected; for trees >1000 files, batch by subdirectory)
@@ -296,7 +301,7 @@ if (toolsIdx !== -1 && args[toolsIdx + 1]) {
   process.env["AGENTMEMORY_TOOLS"] = toolsMode;
 }
 
-const URL_CLIENT_COMMANDS = new Set(["status", "doctor", "mcp", "capture", "compression", "graph-index"]);
+const URL_CLIENT_COMMANDS = new Set(["status", "doctor", "mcp", "capture", "compression", "graph-index", "export", "import"]);
 let hasExplicitLocalPortOverride = false;
 let selectedInstance = 0;
 
@@ -3707,6 +3712,16 @@ async function runCompression(): Promise<void> {
   process.exit(code);
 }
 
+async function runExport(): Promise<void> {
+  const base = getBaseUrl();
+  process.exit(await runExportCommand({ base, args: args.slice(1), secret: resolveClientSecret(base) }));
+}
+
+async function runImport(): Promise<void> {
+  const base = getBaseUrl();
+  process.exit(await runImportCommand({ base, args: args.slice(1), secret: resolveClientSecret(base) }));
+}
+
 async function runGraphIndex(): Promise<void> {
   const base = getBaseUrl();
   process.exit(await runGraphIndexCommand({ base, args: args.slice(1), secret: resolveClientSecret(base) }));
@@ -3727,6 +3742,8 @@ const commands: Record<string, () => Promise<void>> = {
   capture: runCapture,
   compression: runCompression,
   "graph-index": runGraphIndex,
+  export: runExport,
+  import: runImport,
 };
 
 const first = args[0] ?? "";

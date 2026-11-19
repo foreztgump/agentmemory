@@ -73,7 +73,7 @@ async function runChunked<T>(
 const EXPORT_OVERSIZE_HINT =
   "narrow the range with ?maxSessions / ?offset, page the rest with ?collectionLimit / ?collectionOffset, or ask for a subset with ?collections=";
 
-const EXPORT_COLLECTIONS: ReadonlyArray<readonly [keyof ExportData, string]> = [
+export const EXPORT_COLLECTIONS: ReadonlyArray<readonly [keyof ExportData, string]> = [
   ["graphNodes", KV.graphNodes],
   ["graphEdges", KV.graphEdges],
   ["semanticMemories", KV.semantic],
