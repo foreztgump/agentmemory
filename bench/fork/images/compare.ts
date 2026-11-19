@@ -62,7 +62,7 @@ const provider = {
 
 const base = `tee1167_bench_${process.pid}`;
 const qdrantOf = (id: "docs" | "lessons" | "images") =>
-  new Qdrant({ url: args.qdrant!, apiKey: args["qdrant-key"], collection: collectionName(base, id), dimensions: id === "images" ? DIMS : 16, oversampling: 6, timeoutMs: 60_000, ...(id === "images" ? { layout: "image" as const } : {}) });
+  new Qdrant({ url: args.qdrant!, apiKey: args["qdrant-key"], collection: collectionName(base, id), dimensions: id === "images" ? DIMS : 16, oversampling: 6, timeoutMs: 60_000, ...(id === "images" ? { layout: "image" as const } : id === "lessons" ? { layout: "lessons" as const } : {}) });
 const qdrants = { docs: qdrantOf("docs"), lessons: qdrantOf("lessons"), images: qdrantOf("images") };
 
 type Result = { success: boolean; error?: string; results: Array<{ imageRef: string; score: number; sessionId?: string; observationId?: string }>; total: number };
@@ -81,7 +81,7 @@ async function run(backend: "memory" | "disk") {
     const r = (await sdk.trigger({ function_id: "mem::vision-embed", payload: { imageRef: ref, sessionId: sessionOf(i), observationId: `obs_${i}` } })) as { success: boolean; error?: string };
     if (!r.success) throw new Error(`vision-embed ${ref}: ${r.error}`);
   }
-  await runtime.openPersistence?.().save?.().catch(() => {});
+  await Promise.all((runtime as unknown as { outboxes?: Array<{ drainFor(ms: number): Promise<void> }> }).outboxes?.map((o) => o.drainFor(120_000)) ?? []);
   const results: Result[] = [];
   const ms: number[] = [];
   for (const q of queries) {

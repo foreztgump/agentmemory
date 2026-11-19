@@ -60,7 +60,7 @@ const memory = await runAll();
 
 const base = `tee1167_recall_${process.pid}`;
 const qdrantOf = (id: "docs" | "lessons" | "images") =>
-  new Qdrant({ url: args.qdrant!, apiKey: args["qdrant-key"], collection: collectionName(base, id), dimensions: id === "images" ? 512 : 16, oversampling: 6, timeoutMs: 60_000, ...(id === "images" ? { layout: "image" as const } : {}) });
+  new Qdrant({ url: args.qdrant!, apiKey: args["qdrant-key"], collection: collectionName(base, id), dimensions: id === "images" ? 512 : 16, oversampling: 6, timeoutMs: 60_000, ...(id === "images" ? { layout: "image" as const } : id === "lessons" ? { layout: "lessons" as const } : {}) });
 const qdrants = { docs: qdrantOf("docs"), lessons: qdrantOf("lessons"), images: qdrantOf("images") };
 try {
   const lessonsEngine = new SearchEngine(qdrants.lessons, DEFAULT_AVGDL);
@@ -69,7 +69,8 @@ try {
     "disk",
   );
   await resetLessonIndex(lessons.map((l) => l.id));
-  await runtime.openPersistence().save();
+  // The first apply also creates the collection and its indexes, which can outlast the shutdown drain bound.
+  await Promise.all((runtime as unknown as { outboxes: Array<{ drainFor(ms: number): Promise<void> }> }).outboxes.map((o) => o.drainFor(120_000)));
   await lessonsEngine.settled();
   const disk = await runAll();
   (runtime as unknown as { stats?: { stop(): void } }).stats?.stop();
