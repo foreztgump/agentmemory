@@ -19,12 +19,18 @@
 #
 # Settings (environment): AM_IMAGE (required for up, app, kvrocks, migrate and client), REPLICA_PROJECT (default amreplica),
 # REPLICA_STORE (valkey or kvrocks, default valkey), KVROCKS_MEM_LIMIT, AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, AGENTMEMORY_SCOPE_GUARD, READY_TIMEOUT_S,
-# REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container).
+# REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container), REPLICA_COMPOSE_EXTRA (an overlay compose file).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPLICA_PROJECT="${REPLICA_PROJECT:-amreplica}"
-COMPOSE=(docker compose -f "$HERE/replica-compose.yml" -p "$REPLICA_PROJECT")
+COMPOSE=(docker compose -f "$HERE/replica-compose.yml")
+# An overlay such as qdrant/replica-disk.yml (disk-mode search) is added after the base file.
+if [[ -n "${REPLICA_COMPOSE_EXTRA:-}" ]]; then
+  [[ -f "$REPLICA_COMPOSE_EXTRA" ]] || { echo "replica: no overlay at $REPLICA_COMPOSE_EXTRA" >&2; exit 1; }
+  COMPOSE+=(-f "$(cd "$(dirname "$REPLICA_COMPOSE_EXTRA")" && pwd)/$(basename "$REPLICA_COMPOSE_EXTRA")")
+fi
+COMPOSE+=(-p "$REPLICA_PROJECT")
 SECRET="replica-dummy-secret"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-900}"
 
