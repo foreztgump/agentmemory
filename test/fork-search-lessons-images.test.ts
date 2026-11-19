@@ -364,6 +364,13 @@ describe.skipIf(!QDRANT_URL)("image engine versions and routing", () => {
     expect((await search(0, 1, 0, 0)).hits.map((h) => h.id)).toContain("again");
   });
 
+  it("reports a write a newer version fenced, and counts only the writes that held", async () => {
+    await client.apply([imgOp("fenced", vec(0, 0, 1, 0))], 700);
+    const res = await client.apply([imgOp("fenced", vec(0, 0, 1, 0)), imgOp("fresh", vec(0, 0, 0, 1))], 650);
+    expect(res.fenced).toEqual(["fenced"]);
+    expect(res.applied).toBe(1);
+  });
+
   it("a newer img replaces the vector and metadata, and an older one does not", async () => {
     await client.apply([imgOp("moved", vec(0, 0, 1, 0), { sessionId: "ses_a", observationId: "obs_1" })], 600);
     await client.apply([imgOp("moved", vec(0, 0, 0, 1), { sessionId: "ses_b" })], 700);

@@ -21,6 +21,7 @@ export function stateSdk() {
       if (s) return s(req.payload as never);
       const fn = functions.get(req.function_id);
       if (fn) return fn(req.payload ?? {});
+      if (req.function_id.startsWith("state::")) throw new Error(`state stub does not implement ${req.function_id}`);
       return undefined;
     },
   };

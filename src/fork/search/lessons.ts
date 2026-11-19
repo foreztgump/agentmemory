@@ -1,7 +1,7 @@
 import type { StateKV } from "../../state/kv.js";
 import { lessonToObservation } from "../../state/memory-utils.js";
 import { KV } from "../../state/schema.js";
-import type { KeywordIndexPort, ScoredId } from "../../state/search-ports.js";
+import type { KeywordIndexPort, LessonIndexPort, ScoredId } from "../../state/search-ports.js";
 import type { Lesson } from "../../types.js";
 
 export interface LessonCandidates {
@@ -21,6 +21,7 @@ export async function diskLessonCandidates(
   fetchLimit: number,
 ): Promise<LessonCandidates> {
   const hits = await index.search(query, fetchLimit, "all");
+  if (hits.length === 0) return { hits, lessonOf: () => undefined };
   const rows = await kv.getMany<Lesson>(KV.lessons, hits.map((h) => h.obsId));
   const records = new Map<string, Lesson>();
   rows.forEach((lesson) => {
@@ -30,12 +31,13 @@ export async function diskLessonCandidates(
 }
 
 /** Makes the lessons collection agree with KV for these ids; replay and import write KV directly. Idempotent. */
-export async function convergeLessons(index: KeywordIndexPort, kv: StateKV, ids: readonly string[]): Promise<void> {
+export async function convergeLessons(index: LessonIndexPort, kv: StateKV, ids: readonly string[]): Promise<void> {
   const unique = [...new Set(ids)];
+  if (unique.length === 0) return;
   const rows = await kv.getMany<Lesson>(KV.lessons, unique);
   unique.forEach((id, i) => {
     const lesson = rows[i];
-    if (lesson && !lesson.deleted) index.add(lessonToObservation(lesson), "lesson");
+    if (lesson && !lesson.deleted) index.addIfChanged(lessonToObservation(lesson), "lesson");
     else index.remove(id);
   });
 }

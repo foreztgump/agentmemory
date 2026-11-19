@@ -11,9 +11,8 @@ const SHUTDOWN_DRAIN_MS = SHUTDOWN_FLUSH_TIMEOUT_MS - 100;
 
 /**
  * Disk mode has no index file to load, replay or save: Qdrant is the index
- * and boot does no rebuild. save() is the shutdown hook, so it drains the
- * outboxes instead: the docs outbox, then those of the lessons and images
- * collections.
+ * and boot does no rebuild. save() is the shutdown hook, so it drains every
+ * outbox (docs, lessons, images) at once instead.
  */
 export class DiskIndexPersistence implements IndexPersistencePort {
   constructor(private readonly outbox: SearchOutbox, private readonly otherOutboxes: readonly SearchOutbox[] = []) {}

@@ -72,6 +72,8 @@ export class Qdrant {
     if (this.config.layout === "image") {
       await this.call("PUT", this.path, {
         vectors: { image: { size: this.config.dimensions, distance: "Cosine", datatype: "float32" } },
+        // Every image query is an exact scan, so no HNSW graph is built.
+        hnsw_config: { m: 0 },
         on_disk_payload: true,
       });
       await this.createPayloadIndexes();

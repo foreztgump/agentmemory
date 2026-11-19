@@ -7,6 +7,7 @@ import { lessonToObservation } from "../state/memory-utils.js";
 import { recordAudit } from "./audit.js";
 import { deleteFacetsForTargets } from "./facets.js";
 import { collectAll } from "../state/kv.js";
+import { logger } from "../logger.js";
 import { getSearchRuntime } from "../state/search-ports.js";
 import { convergeLessons, diskLessonCandidates, type LessonCandidates } from "../fork/search/lessons.js";
 
@@ -39,7 +40,11 @@ function clearLessonIndex(): void {
 export async function resetLessonIndex(changedIds?: readonly string[]): Promise<void> {
   const disk = getSearchRuntime().lessons;
   if (!disk) return clearLessonIndex();
-  if (lessonKv && changedIds) await convergeLessons(disk, lessonKv, changedIds);
+  if (!lessonKv || !changedIds) {
+    logger.warn("lesson index not converged: disk mode needs the changed lesson ids", { registered: !!lessonKv });
+    return;
+  }
+  await convergeLessons(disk, lessonKv, changedIds);
 }
 
 function noteLessonMutation(): void {

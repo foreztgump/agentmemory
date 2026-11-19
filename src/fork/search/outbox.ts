@@ -39,7 +39,9 @@ function merge(slot: Slot, op: Op): void {
 }
 
 function slotBytes(slot: Slot): number {
-  const doc = slot.doc?.k === "doc" ? JSON.stringify(slot.doc.fields).length : slot.doc?.k === "img" ? slot.doc.f32b64.length : 0;
+  let doc = 0;
+  if (slot.doc?.k === "doc") doc = JSON.stringify(slot.doc.fields).length;
+  else if (slot.doc?.k === "img") doc = slot.doc.f32b64.length + slot.doc.updatedAt.length + slot.doc.sessionId.length + (slot.doc.observationId?.length ?? 0);
   const vec = slot.vec?.k === "vec" ? slot.vec.f32b64.length : 0;
   return 128 + doc + vec;
 }

@@ -114,7 +114,16 @@ export class ImageEngine {
       await this.ready();
       await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, { operations });
     }
-    return { applied: writes.size, fenced: [], failed };
+    if (writes.size === 0) return { applied: 0, fenced: [], failed };
+    // A write applied only if the point now carries this invocation's version; a newer one fenced it.
+    const stored = await this.qdrant.call<Array<{ payload?: { doc_id?: string; v?: unknown } }>>("POST", `${this.qdrant.path}/points`, {
+      ids: [...writes.keys()].map(pointId),
+      with_payload: ["doc_id", "v"],
+      with_vector: false,
+    });
+    const held = new Set(stored.flatMap(({ payload }) => (payload?.doc_id && payload.v === version ? [payload.doc_id] : [])));
+    const fenced = [...writes.keys()].filter((id) => !held.has(id));
+    return { applied: writes.size - fenced.length, fenced, failed };
   }
 
   /** Exact cosine top-K over live images, with the count of live images under the same filter. */

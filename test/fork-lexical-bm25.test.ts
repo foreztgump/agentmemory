@@ -67,4 +67,12 @@ describe("lexical BM25 parity with SearchIndex", () => {
     for (const obs of corpus.values()) memory.add(obs, "lesson");
     compare(corpus, memory, ["redis", "red", "redisproxy", "redis rediscache"]);
   });
+
+  it("scores a candidate whose term the vocabulary lacks, as a document written after the vocabulary was read", () => {
+    const doc: LexicalDocument = { id: "late", sessionId: "lesson", terms: ["fresh"], dl: 1 };
+    const hits = lexicalBm25([doc], [{ term: "fresh", weight: 1, prefixes: [] }], new Map(), 3, 1, 10);
+    expect(hits).toHaveLength(1);
+    expect(Number.isFinite(hits[0]!.score)).toBe(true);
+    expect(hits[0]!.score).toBeGreaterThan(0);
+  });
 });

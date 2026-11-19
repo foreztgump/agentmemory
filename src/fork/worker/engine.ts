@@ -443,6 +443,7 @@ export class SearchEngine {
       ],
       must_not: [TOMBSTONE],
     };
+    // ponytail: scores every live lesson that holds a query term or one of its prefix expansions, as SearchIndex does, so per-query work grows with matching lessons; cap candidates by top sparse hits if lesson counts reach the tens of thousands.
     const documents: Array<LexicalDocument & { order: [number, number] }> = [];
     let offset: string | undefined;
     do {

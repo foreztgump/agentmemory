@@ -3,6 +3,7 @@
 // its V8 heap use in bytes, so a memory comparison sees retained objects, not
 // garbage or allocator high water.
 const pid = Number(process.argv[2]);
+if (!Number.isInteger(pid) || pid <= 0) throw new Error(`pid must be a positive integer, got "${process.argv[2]}"`);
 process.kill(pid, "SIGUSR1");
 let targets = [];
 for (let i = 0; i < 50 && targets.length === 0; i++) {
@@ -22,5 +23,6 @@ const send = (method, params = {}) => new Promise((resolve) => { pending.set(++i
 await send("HeapProfiler.collectGarbage");
 await send("HeapProfiler.collectGarbage");
 const usage = await send("Runtime.getHeapUsage");
+if (usage.error || typeof usage.result?.usedSize !== "number") throw new Error(`Runtime.getHeapUsage failed: ${JSON.stringify(usage.error ?? usage)}`);
 console.log(JSON.stringify({ heapUsedBytes: usage.result.usedSize }));
 ws.close();

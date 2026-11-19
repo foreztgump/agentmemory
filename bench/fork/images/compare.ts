@@ -61,8 +61,9 @@ const provider = {
 } as unknown as EmbeddingProvider;
 
 const base = `tee1167_bench_${process.pid}`;
+const LAYOUT = { docs: "text", lessons: "lessons", images: "image" } as const;
 const qdrantOf = (id: "docs" | "lessons" | "images") =>
-  new Qdrant({ url: args.qdrant!, apiKey: args["qdrant-key"], collection: collectionName(base, id), dimensions: id === "images" ? DIMS : 16, oversampling: 6, timeoutMs: 60_000, ...(id === "images" ? { layout: "image" as const } : id === "lessons" ? { layout: "lessons" as const } : {}) });
+  new Qdrant({ url: args.qdrant!, apiKey: args["qdrant-key"], collection: collectionName(base, id), dimensions: id === "images" ? DIMS : 16, oversampling: 6, timeoutMs: 60_000, layout: LAYOUT[id] });
 const qdrants = { docs: qdrantOf("docs"), lessons: qdrantOf("lessons"), images: qdrantOf("images") };
 
 type Result = { success: boolean; error?: string; results: Array<{ imageRef: string; score: number; sessionId?: string; observationId?: string }>; total: number };

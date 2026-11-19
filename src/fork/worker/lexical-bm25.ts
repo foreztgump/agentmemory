@@ -15,8 +15,17 @@ export interface LexicalTerm extends WeightedTerm {
   prefixes: string[];
 }
 
+const sortedVocabularies = new WeakMap<ReadonlyMap<string, number>, string[]>();
+
+/** The vocabulary in sort order, computed once per cached frequency map rather than per query. */
+function sortedVocabulary(frequencies: ReadonlyMap<string, number>): string[] {
+  let sorted = sortedVocabularies.get(frequencies);
+  if (!sorted) sortedVocabularies.set(frequencies, (sorted = [...frequencies.keys()].sort()));
+  return sorted;
+}
+
 export function expandLexicalTerms(query: readonly WeightedTerm[], frequencies: ReadonlyMap<string, number>): LexicalTerm[] {
-  const vocabulary = [...frequencies.keys()].sort();
+  const vocabulary = sortedVocabulary(frequencies);
   return query.map(({ term, weight }) => {
     let lo = 0;
     let hi = vocabulary.length;
@@ -52,7 +61,8 @@ export function lexicalBm25(
   }
   const scores = new Map<LexicalDocument, number>();
   const score = (term: string, tf: number, dl: number, weight: number, prefix: boolean): number => {
-    const df = frequencies.get(term)!;
+    // A document written after the vocabulary was read can carry a term it lacks; count it from the candidates.
+    const df = frequencies.get(term) ?? postings.get(term)?.size ?? 1;
     const idf = Math.log((documentCount - df + 0.5) / (df + 0.5) + 1) * (prefix ? 0.5 : 1);
     const numerator = tf * (K1 + 1);
     const denominator = tf + K1 * (1 - B + B * (dl / averageLength));
