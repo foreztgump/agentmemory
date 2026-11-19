@@ -153,7 +153,7 @@ services:
       # service through the am-search worker. Switch only after the index migration.
       AM_SEARCH_BACKEND: "${AM_SEARCH_BACKEND:-memory}"
       AM_QDRANT_URL: "http://qdrant:6333"
-      AM_QDRANT_API_KEY: "${QDRANT_API_KEY:-}"
+      AM_QDRANT_API_KEY: "${QDRANT_API_KEY:?}"
       AM_QDRANT_COLLECTION: "${AM_QDRANT_COLLECTION:-}"
       AM_SEARCH_DIMENSIONS: "${VOYAGE_OUTPUT_DIMENSION:-1024}"
       AM_SEARCH_OVERSAMPLING: "${AM_SEARCH_OVERSAMPLING:-}"
@@ -230,7 +230,7 @@ services:
     restart: unless-stopped
     mem_limit: "${QDRANT_MEM_LIMIT:-1g}"
     environment:
-      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:-}"
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?}"
       QDRANT__TELEMETRY_DISABLED: "true"
     volumes:
       - qdrant-data:/qdrant/storage

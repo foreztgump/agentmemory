@@ -114,6 +114,7 @@ const searchBackend = (process.env.AM_SEARCH_BACKEND ?? "").trim() || "memory";
 if (searchBackend !== "memory" && searchBackend !== "disk") throw new Error(`AM_SEARCH_BACKEND=${searchBackend} must be memory or disk`);
 if (searchBackend === "disk") {
   if (!process.env.AM_QDRANT_URL?.trim()) throw new Error("AM_SEARCH_BACKEND=disk requires AM_QDRANT_URL");
+  if (!process.env.AM_QDRANT_API_KEY?.trim()) throw new Error("AM_SEARCH_BACKEND=disk requires AM_QDRANT_API_KEY");
   // parseDocument keeps each scalar's quoting, so the rest of the file reaches iii unchanged.
   const compose = parseDocument(input);
   compose.setIn(["containers", "am-search"], parseDocument(fs.readFileSync("/opt/agentmemory/am-search.worker-compose.yaml", "utf8")).contents);

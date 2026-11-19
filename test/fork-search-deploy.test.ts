@@ -41,7 +41,7 @@ describe("am-search worker in the Docker runtime", () => {
   });
 
   it("starts beside agentmemory in disk mode with the Qdrant settings", () => {
-    const result = runEntrypoint({ AM_SEARCH_BACKEND: "disk", AM_QDRANT_URL: "http://qdrant:6333", AGENTMEMORY_STATE_BACKEND: "redis", AGENTMEMORY_REDIS_URL: "redis://valkey:6379" });
+    const result = runEntrypoint({ AM_SEARCH_BACKEND: "disk", AM_QDRANT_URL: "http://qdrant:6333", AM_QDRANT_API_KEY: "test-qdrant-key", AGENTMEMORY_STATE_BACKEND: "redis", AGENTMEMORY_REDIS_URL: "redis://valkey:6379" });
     expect(result.status).toBe("ok");
     if (result.status !== "ok") return;
     const worker = result.compose.containers["am-search"];
@@ -58,6 +58,12 @@ describe("am-search worker in the Docker runtime", () => {
     if (result.status === "failed") expect(result.stderr).toContain("AM_QDRANT_URL");
   });
 
+  it.each([undefined, "", "  ", "\t\n"])("refuses disk mode with Qdrant API key %j", (key) => {
+    const result = runEntrypoint({ AM_SEARCH_BACKEND: " disk ", AM_QDRANT_URL: "http://qdrant:6333", ...(key === undefined ? {} : { AM_QDRANT_API_KEY: key }) });
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") expect(result.stderr).toContain("AM_QDRANT_API_KEY");
+  });
+
   it.each(["qdrant", " disks "])("refuses unknown backend %j", (backend) => {
     const result = runEntrypoint({ AM_SEARCH_BACKEND: backend });
     expect(result.status).toBe("failed");
@@ -65,6 +71,14 @@ describe("am-search worker in the Docker runtime", () => {
       expect(result.stderr).toContain("must be memory or disk");
       expect(result.stderr).not.toContain("AM_QDRANT_URL");
     }
+  });
+});
+
+describe("Qdrant authentication in Coolify compose", () => {
+  it.each(["deploy/coolify/docker-compose.yml", "deploy/coolify/docker-compose.buddy.yml"])("requires the same API key for the worker and Qdrant in %s", (path) => {
+    const compose = parse(readFileSync(path, "utf8"));
+    expect(compose.services.agentmemory.environment.AM_QDRANT_API_KEY).toBe("${QDRANT_API_KEY:?}");
+    expect(compose.services.qdrant.environment.QDRANT__SERVICE__API_KEY).toBe(compose.services.agentmemory.environment.AM_QDRANT_API_KEY);
   });
 });
 

@@ -11,6 +11,7 @@ import { Qdrant } from "../src/fork/worker/qdrant.js";
 import { renderWorkerCompose } from "../src/cli/compose-project.js";
 import { SHUTDOWN_FLUSH_TIMEOUT_MS } from "../src/shutdown.js";
 import { float32ToBase64 } from "../src/state/vector-index.js";
+import { extractTerms } from "../src/state/term-extraction.js";
 
 const DIMS = 16;
 const fields = (title: string) => ({ title, narrative: title, facts: [], concepts: [], files: [], type: "discovery" as const });
@@ -101,6 +102,24 @@ function stubQdrant(collectionExists: boolean) {
 
 describe("am-search worker boundary", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    { title: "missing arrays" },
+    { ...fields("bad facts"), facts: {} },
+    { ...fields("bad concepts"), concepts: null },
+    { ...fields("bad files"), files: 42 },
+    { ...fields("bad source"), source: { userPrompt: 42 } },
+  ])("isolates malformed doc fields %j from valid writes in the same batch", async (badFields) => {
+    const { qdrant, requests } = stubQdrant(true);
+    const engine = new SearchEngine(qdrant, 70);
+    const result = await engine.apply([{ ...doc("bad"), fields: badFields }, doc("ok")]);
+    expect(result).toEqual({ applied: 1, fenced: [], failed: [{ id: "bad", error: expect.stringContaining("invalid doc fields") }] });
+    const batch = requests.find((r) => r.path.endsWith("/points/batch"))!.body as { operations: Array<{ upsert?: { points: Array<{ payload: { doc_id: string; terms: string[] } }> } }> };
+    const points = batch.operations.flatMap((op) => op.upsert?.points ?? []);
+    expect(points.map((p) => p.payload.doc_id)).toEqual(["ok"]);
+    expect(points[0]!.payload.terms).toEqual(extractTerms(fields("ok")));
+    await engine.settled();
+  });
 
   it("refuses a clear with an unknown scope instead of dropping the collection", async () => {
     const { qdrant, requests } = stubQdrant(true);

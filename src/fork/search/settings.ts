@@ -35,11 +35,13 @@ export function loadSearchWorkerSettings(env: Record<string, string | undefined>
   if (!/^https?:\/\/[^\s]+$/.test(qdrantUrl)) throw new Error(`AM_QDRANT_URL=${qdrantUrl} is not an http(s) URL`);
   const collection = env.AM_QDRANT_COLLECTION?.trim() || "agentmemory";
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(collection)) throw new Error(`AM_QDRANT_COLLECTION=${collection} may only use letters, digits, _ and -`);
+  const dimensions = positive(env, "AM_SEARCH_DIMENSIONS", 1024);
+  if (!Number.isInteger(dimensions)) throw new Error(`AM_SEARCH_DIMENSIONS=${dimensions} must be a positive whole number`);
   return {
     qdrantUrl: qdrantUrl.replace(/\/+$/, ""),
     qdrantApiKey: env.AM_QDRANT_API_KEY?.trim() || undefined,
     collection,
-    dimensions: Math.floor(positive(env, "AM_SEARCH_DIMENSIONS", 1024)),
+    dimensions,
     oversampling: atLeastOne(env, "AM_SEARCH_OVERSAMPLING", 6),
     avgdl: positive(env, "AM_SEARCH_AVGDL", DEFAULT_AVGDL),
   };

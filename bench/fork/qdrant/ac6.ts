@@ -65,8 +65,8 @@ const keywordIds = async (query: string) =>
     query: querySparse(query), using: "bm25", limit: 20, with_payload: ["doc_id"],
   })).points.map((p) => p.payload.doc_id);
 const vectorOf = async (id: string) => {
-  const [point] = await qd<Array<{ vector?: { dense?: number[] }; payload: { dense: boolean } }>>("POST", "/points", { ids: [pointId(id)], with_vector: ["dense"], with_payload: ["dense"] });
-  return point;
+  const [point] = await qd<Array<{ vector?: { dense?: number[] }; payload: { dense: boolean; deleted?: boolean } }>>("POST", "/points", { ids: [pointId(id)], with_vector: ["dense"], with_payload: ["dense", "deleted"] });
+  return point?.payload.deleted ? undefined : point;
 };
 const vectorIds = async (vector: number[]) =>
   (await qd<{ points: Array<{ payload: { doc_id: string } }> }>("POST", "/points/query", {

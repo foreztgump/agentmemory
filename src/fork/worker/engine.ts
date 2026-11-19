@@ -159,10 +159,23 @@ export class SearchEngine {
     const version = await this.versionFor(rawVersion);
     const failed: ApplyResult["failed"] = [];
     const ops: Op[] = [];
+    const terms = new Map<DocOp, string[]>();
     for (const op of rawOps) {
       const error = opError(op);
-      if (error) failed.push({ id: String((op as { id?: unknown })?.id ?? ""), error });
-      else ops.push(op as Op);
+      if (error) {
+        failed.push({ id: String((op as { id?: unknown })?.id ?? ""), error });
+        continue;
+      }
+      const validOp = op as Op;
+      if (validOp.k === "doc") {
+        try {
+          terms.set(validOp, extractTerms(validOp.fields));
+        } catch (cause) {
+          failed.push({ id: validOp.id, error: `invalid doc fields: ${cause instanceof Error ? cause.message : String(cause)}` });
+          continue;
+        }
+      }
+      ops.push(validOp);
     }
 
     const writtenFirst = new Set<string>();
@@ -175,8 +188,6 @@ export class SearchEngine {
     const stored = await this.storedPayloads([...lookup]);
     const rev = new Map<string, ContentRev | null>();
     const revOf = (id: string) => (rev.has(id) ? rev.get(id)! : stored.get(id)?.rev ?? null);
-    const terms = new Map<DocOp, string[]>();
-    for (const op of ops) if (op.k === "doc") terms.set(op, extractTerms(op.fields));
     const avgdl = terms.size > 0 ? await this.writeAvgdl([...terms.values()]) : this.fallbackAvgdl;
 
     // Ops are grouped by kind into a few Qdrant operations; Qdrant charges per

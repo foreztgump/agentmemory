@@ -22,12 +22,12 @@ describe("Coolify stacks", () => {
     expect(services.qdrant.mem_limit).toBe("${QDRANT_MEM_LIMIT:-1g}");
     expect(services.qdrant.ports).toBeUndefined();
     expect(services.qdrant.expose).toBeUndefined();
-    expect(services.qdrant.environment.QDRANT__SERVICE__API_KEY).toBe("${QDRANT_API_KEY:-}");
+    expect(services.qdrant.environment.QDRANT__SERVICE__API_KEY).toBe("${QDRANT_API_KEY:?}");
     expect(services.qdrant.healthcheck.test.join(" ")).toContain("/readyz");
     expect(services.agentmemory.environment).toMatchObject({
       AM_SEARCH_BACKEND: "${AM_SEARCH_BACKEND:-memory}",
       AM_QDRANT_URL: "http://qdrant:6333",
-      AM_QDRANT_API_KEY: "${QDRANT_API_KEY:-}",
+      AM_QDRANT_API_KEY: "${QDRANT_API_KEY:?}",
     });
     expect(services.agentmemory.depends_on.qdrant).toBeUndefined();
   });
