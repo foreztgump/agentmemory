@@ -1,7 +1,10 @@
-// Qdrant's memory while the disk search index is filled from empty: synthetic
-// documents with 1024-float vectors, written the way search-migrate fill writes
-// them (SearchEngine.load, one page per upsert), then held until the optimizer
-// settles. The container's cgroup is sampled from the host every 200 ms.
+// Qdrant's memory while the disk search index is filled from empty, from
+// synthetic documents, then held until the optimizer settles. --path load (the
+// default) writes each document with a 1024-float vector the way search-migrate
+// fill does (SearchEngine.load, one page per upsert, the corpus mean preset).
+// --path apply writes documents with no vector the way reconcile does
+// (SearchEngine.apply in outbox batches of 256, from the default mean, so the
+// worker's reweighting passes run as on a live stack). The container's cgroup is sampled from the host every 200 ms.
 // The collection is the worker's own (Qdrant.create); --during and --after
 // PATCH it before and after the load, to try another optimizer setting.
 //
@@ -18,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { contentRev, type DocOp } from "../../../src/fork/search/protocol.js";
+import { DEFAULT_AVGDL } from "../../../src/fork/search/settings.js";
 import { SearchEngine } from "../../../src/fork/worker/engine.js";
 import { Qdrant } from "../../../src/fork/worker/qdrant.js";
 import { termSourceOf } from "../../../src/state/term-extraction.js";
@@ -34,7 +38,8 @@ const { values: args } = parseArgs({
     "qdrant-key": { type: "string" },
     collection: { type: "string", default: "agentmemory" },
     dimensions: { type: "string", default: "1024" },
-    page: { type: "string", default: "200" },
+    path: { type: "string", default: "load" },
+    page: { type: "string" },
     seed: { type: "string", default: "1201" },
     "ceiling-mib": { type: "string" },
     "settle-timeout-s": { type: "string", default: "1800" },
@@ -43,7 +48,9 @@ const { values: args } = parseArgs({
   },
 });
 const count = Number(args.count);
-const page = Number(args.page);
+if (args.path !== "load" && args.path !== "apply") throw new Error("--path must be load or apply");
+const viaApply = args.path === "apply";
+const page = Number(args.page ?? (viaApply ? 256 : 200));
 const dimensions = Number(args.dimensions);
 const ceiling = args["ceiling-mib"] === undefined ? null : Number(args["ceiling-mib"]);
 if (!Number.isInteger(count) || count <= 0) throw new Error("--count N is required");
@@ -101,7 +108,7 @@ const timer = setInterval(() => {
 
 const qdrant = new Qdrant({ url: args.qdrant!, apiKey: args["qdrant-key"], collection: args.collection!, dimensions, oversampling: 6, timeoutMs: 120_000 });
 await qdrant.drop();
-const engine = new SearchEngine(qdrant, AVGDL);
+const engine = new SearchEngine(qdrant, viaApply ? DEFAULT_AVGDL : AVGDL);
 const patch = async (body: string | undefined) => { if (body) await qdrant.call("PATCH", qdrant.path, JSON.parse(body)); };
 await qdrant.ensure();
 await patch(args.during);
@@ -117,10 +124,10 @@ function vector(): string {
 
 const started = performance.now();
 let written = 0;
-let batch: Array<{ doc: DocOp; f32b64: string }> = [];
+let batch: Array<{ doc: DocOp; f32b64?: string }> = [];
 async function flush(): Promise<void> {
   if (batch.length === 0) return;
-  const result = await engine.load(batch, 1, AVGDL);
+  const result = viaApply ? await engine.apply(batch.map((b) => b.doc)) : await engine.load(batch, 1, AVGDL);
   if (result.failed.length > 0) throw new Error(`load failed: ${JSON.stringify(result.failed[0])}`);
   written += batch.length;
   batch = [];
@@ -133,7 +140,7 @@ try {
     for (let i = 0; i < size; i++) {
       const obs = gen.observation(session, i * 30_000);
       const fields = termSourceOf(obs as unknown as CompressedObservation);
-      batch.push({ doc: { k: "doc", id: obs.id, sessionId: obs.sessionId, layer: "observation", ts: Date.parse(obs.timestamp), rev: contentRev(fields), fields }, f32b64: vector() });
+      batch.push({ doc: { k: "doc", id: obs.id, sessionId: obs.sessionId, layer: "observation", ts: Date.parse(obs.timestamp), rev: contentRev(fields), fields }, f32b64: viaApply ? undefined : vector() });
       if (batch.length >= page) await flush();
     }
   }
@@ -141,6 +148,7 @@ try {
 } catch (error) {
   failure = error instanceof Error ? error.message : String(error);
 }
+if (!failure) await engine.settled();
 const loadSeconds = (performance.now() - started) / 1000;
 loading = false;
 if (!failure && !gone) await patch(args.after).catch((error) => { failure = `after: ${error instanceof Error ? error.message : String(error)}`; });
@@ -169,7 +177,7 @@ let cgroupPeak: number | null = null;
 try { cgroupPeak = Number(readFileSync(`${cgroupDir}/memory.peak`, "utf8")); } catch { /* the container is gone */ }
 const mib = (n: number | null) => (n === null ? null : Math.round(n / MiB));
 const report = {
-  count, written, page, limitMiB, loadSeconds: Math.round(loadSeconds), totalSeconds: Math.round(totalSeconds),
+  path: args.path, count, written, page, limitMiB, loadSeconds: Math.round(loadSeconds), totalSeconds: Math.round(totalSeconds),
   qdrant: { status: info.status, segments: info.segments_count, points: info.points_count, indexedVectors: info.indexed_vectors_count },
   memMiB: { cgroupPeak: mib(cgroupPeak), currentMax: mib(peaks.current), anonMax: mib(peaks.anon), anonMaxDuringLoad: mib(peaks.anonDuringLoad) },
   oomKills: peaks.oomKills, containerGone: gone, failure, ceilingMiB: ceiling,

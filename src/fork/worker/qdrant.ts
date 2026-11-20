@@ -20,11 +20,14 @@ const TEXT_INDEXES = [
   ["v", "integer"],
 ] as const;
 
-// A fill from empty merges and indexes ever larger segments; each build holds memory in proportion to
-// its segment, and one build per core pushed Qdrant past 1 GB at 130k documents. One build at a time on
-// segments of at most 300,000 KB of vectors (Qdrant's unit; about 100k documents at 1024 dimensions)
-// filled 500k documents under 1 GB (docs/fork/search-migration.md, "Qdrant memory during a fill").
-const FILL_OPTIMIZERS = { max_optimization_threads: 1, max_segment_size: 300_000 } as const;
+// A fill from empty merges and indexes ever larger segments, and each build holds memory in proportion to
+// its segment: with Qdrant's defaults (one build per core, 2 segments) a fill passed 1 GB at 130k documents.
+// One build at a time bounds how many run at once. max_segment_size (in KB of vectors, about 100k documents
+// with their 1024-dim vectors) bounds a build in the migration's fill. A reconcile from empty writes documents
+// with no vector, which that cap barely counts, so 4 target segments bound its merges instead. Measured at a
+// 1 GB limit: the migration's fill to 500k documents, reconcile's to 578k (docs/fork/search-migration.md,
+// "Qdrant memory during a fill").
+const OPTIMIZERS = { default_segment_number: 4, max_optimization_threads: 1, max_segment_size: 300_000 } as const;
 
 const IMAGE_INDEXES = [
   ["session_id", "keyword"],
@@ -90,7 +93,7 @@ export class Qdrant {
       quantization_config: { binary: { memory: "pinned", encoding: "one_bit", query_encoding: "scalar8bits" } },
       sparse_vectors: { bm25: { modifier: "idf", index: { memory: "cold" } } },
       hnsw_config: { m: 16, ef_construct: 100, memory: "cached" },
-      optimizers_config: { default_segment_number: 2, ...FILL_OPTIMIZERS },
+      optimizers_config: OPTIMIZERS,
       on_disk_payload: true,
     });
     await this.createPayloadIndexes();
@@ -114,16 +117,7 @@ export class Qdrant {
         if (!(error instanceof QdrantError && error.status === 409)) throw error;
       }
     }
-    if (this.config.layout !== "image") await this.applyFillOptimizers();
     await this.createPayloadIndexes();
-  }
-
-  /** A text collection created before FILL_OPTIMIZERS gets them too, so a reconcile into it is bounded the same way. */
-  private async applyFillOptimizers(): Promise<void> {
-    const info = await this.call<{ config: { optimizer_config: Record<string, unknown> } }>("GET", this.path);
-    const current = info.config.optimizer_config;
-    if (Object.entries(FILL_OPTIMIZERS).every(([key, value]) => current[key] === value)) return;
-    await this.call("PATCH", this.path, { optimizers_config: FILL_OPTIMIZERS });
   }
 
   async drop(): Promise<void> {

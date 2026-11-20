@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Qdrant } from "../src/fork/worker/qdrant.js";
 import { QDRANT_URL, qdrantFor } from "./helpers/search-engine.js";
 
-const FILL = { max_optimization_threads: 1, max_segment_size: 300_000 };
+const FILL = { default_segment_number: 4, max_optimization_threads: 1, max_segment_size: 300_000 };
 const optimizers = async (qdrant: Qdrant) =>
   (await qdrant.call<{ config: { optimizer_config: Record<string, unknown> } }>("GET", qdrant.path)).config.optimizer_config;
 
@@ -18,18 +18,10 @@ describe.skipIf(!QDRANT_URL)("collection optimizer settings for a fill", { timeo
   };
   afterAll(() => Promise.all(created.map((q) => q.drop())));
 
-  it("builds one segment at a time and caps segment size, on both text layouts", async () => {
+  it("builds one segment at a time, caps segment size and targets 4 segments, on both text layouts", async () => {
     for (const qdrant of [named("docs"), named("lessons", "lessons")]) {
       await qdrant.ensure();
-      expect(await optimizers(qdrant)).toMatchObject({ default_segment_number: 2, ...FILL });
+      expect(await optimizers(qdrant)).toMatchObject(FILL);
     }
-  });
-
-  it("gives the settings to a collection created without them", async () => {
-    const qdrant = named("older");
-    await qdrant.call("PUT", qdrant.path, { sparse_vectors: { bm25: { modifier: "idf" } }, optimizers_config: { default_segment_number: 2 } });
-    expect(await optimizers(qdrant)).not.toMatchObject(FILL);
-    await qdrant.ensure();
-    expect(await optimizers(qdrant)).toMatchObject({ default_segment_number: 2, ...FILL });
   });
 });
