@@ -59,14 +59,13 @@ const KEYWORD_VECTOR_BOUND_TERMS = 1024;
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
 
 /**
- * The payload of a live document point; apply and load both write it. A
- * lessons point also carries `lexical_order`, its write order, which exact
- * lexical ranking breaks ties by.
+ * The payload of a live document point; apply and load both write it.
+ * `lexical_order` is its write order, which exact lexical ranking breaks ties by.
  */
-function docPayload(op: DocOp, terms: string[], avgdl: number, version: OpVersion, lexicalOrder: [OpVersion, number] | null) {
+function docPayload(op: DocOp, terms: string[], avgdl: number, version: OpVersion, lexicalOrder: [OpVersion, number]) {
   return {
     doc_id: op.id, session_id: op.sessionId, layer: op.layer, ts: op.ts, rev: op.rev, v: version, dl: terms.length, ad: avgdl, terms,
-    ...(lexicalOrder ? { lexical_order: lexicalOrder } : {}),
+    lexical_order: lexicalOrder,
   };
 }
 
@@ -117,7 +116,7 @@ function opError(op: unknown): string | null {
 export class SearchEngine {
   private ensured: Promise<void> | null = null;
   private vocabulary: Promise<Map<string, number>> | null = null;
-  /** The second part of a lessons point's `lexical_order`; it keeps growing across calls, so writes at one version (a migration's) stay in write order. */
+  /** The second part of a point's `lexical_order`; it keeps growing across calls, so writes at one version (a migration's) stay in write order. */
   private lexicalPosition = 0;
   private lastVocabularySize = 0;
   /** The mean document length new BM25 weights are computed with; null until read from the collection. */
@@ -351,11 +350,10 @@ export class SearchEngine {
     const preset = typeof avgdl === "number" && Number.isFinite(avgdl) && avgdl > 0 ? avgdl : null;
     if (preset !== null) this.avgdl = preset;
     const weightBy = preset ?? (await this.writeAvgdl(valid.map((v) => v.terms)));
-    const lessons = this.qdrant.config.layout === "lessons";
     const points = valid.map(({ doc, terms, dense }) => ({
       id: pointId(doc.id),
       vector: { bm25: termsSparse(terms, weightBy), ...(dense ? { dense } : {}) },
-      payload: { ...docPayload(doc, terms, weightBy, version, lessons ? [version, this.lexicalPosition++] : null), dense: dense !== undefined },
+      payload: { ...docPayload(doc, terms, weightBy, version, [version, this.lexicalPosition++]), dense: dense !== undefined },
     }));
     try {
       await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, {
@@ -363,6 +361,8 @@ export class SearchEngine {
       });
     } finally {
       this.vocabulary = null;
+      // load does not count its documents into the prefix vocabulary, so the next search refills it.
+      this.prefixes?.clear();
     }
     if (preset === null) this.corpusDidChange();
     const now = await this.storedPayloads(valid.map((v) => v.doc.id));

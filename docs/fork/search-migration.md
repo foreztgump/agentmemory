@@ -30,7 +30,7 @@ The tool reads the store (Kvrocks, after TEE-1163) over RESP with `scripts/fork/
   - Rows further apart than that are a conflict that only re-embedding can settle. That document gets no vector and is counted. Buddy has none.
 - **The model.** Every stored vector was measured as voyage-code-4 at 1024 dimensions, float32 (TEE-1156, 2026-11-18). The tool records this in its marker and prints it in verify.
 
-**How it writes.** The tool uses an in-process `SearchEngine`, the am-search worker's own engine, with `SearchEngine.load`. `load` writes each document and its stored vector as one point in one conditional upsert per batch, with the payload `apply` writes.
+**How it writes.** The tool uses an in-process `SearchEngine`, the am-search worker's own engine, with `SearchEngine.load`. `load` writes each document and its stored vector as one point in one conditional upsert per batch, with the payload `apply` writes, including `lexical_order`: the load order, by which the worker breaks keyword ties as SearchIndex breaks them by insertion order.
 - **Why not `apply`.** `apply` spends one filtered payload write per document, about 20 documents a second at 1024 dimensions, which is 3 hours for buddy. `load` writes about 2,000 a second.
 - **Why one point.** It gives what the rev fence gives on the live path: the vector belongs to the content it is stored with.
 - **Why not iii.** The app and the worker are stopped during the window, so the tool is the store's only writer.
@@ -85,7 +85,7 @@ The replica ran on Kvrocks with Qdrant 1.20.2 (1.5 GB limit) on the workstation.
 
 **Plan the cutover window at about 5 minutes for buddy:** fill plus verify. Main's store is about 15% smaller in vectors.
 
-**Keyword ranking gap.** On the private tier, disk mode loses 3 points of recall and 8 of MRR on keyword queries. 15 cases rank lower, 2 rank higher, and 3 drop out of the top 10. The expected documents of those 3 are live in the index with the right rev, so the migration is not the cause. Their query terms match the document only through prefixes: for example, 0 of 4 terms match exactly and 2 match as prefixes. SearchIndex expands a query term to every index term it prefixes, at half weight. The disk engine adds only bare forms of words ending in punctuation (TEE-1164). The synthetic tier uses exact terms, so it did not show this.
+**Keyword ranking.** Disk mode expands query prefixes and re-scores candidates with SearchIndex's exact BM25 (TEE-1195). On the private tier its keyword recall and MRR are 0.86 and 0.7387, against 0.86 and 0.7347 in memory mode. Before TEE-1195, disk mode lost 3 points of recall and 8 of MRR on keyword queries, because it matched only exact terms and bare forms.
 
 ## Lessons and images
 
