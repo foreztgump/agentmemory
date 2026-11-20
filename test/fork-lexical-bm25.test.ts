@@ -76,3 +76,16 @@ describe("lexical BM25 parity with SearchIndex", () => {
     expect(hits[0]!.score).toBeGreaterThan(0);
   });
 });
+
+describe("lexical BM25 document frequency", () => {
+  it("scores a term whose vocabulary count fell to zero by its candidates, not as the rarest term", () => {
+    const docs: LexicalDocument[] = [
+      { id: "a", sessionId: "s", terms: ["alpha"], dl: 1 },
+      { id: "b", sessionId: "s", terms: ["alpha"], dl: 1 },
+    ];
+    const query = [{ term: "alpha", weight: 1, prefixes: [] }];
+    const stale = lexicalBm25(docs, query, new Map([["alpha", 0]]), 10, 1, 2);
+    const unknown = lexicalBm25(docs, query, new Map(), 10, 1, 2);
+    expect(stale).toEqual(unknown);
+  });
+});

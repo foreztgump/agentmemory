@@ -16,15 +16,22 @@ import {
   type ScanMissingResult,
   type StatsResult,
 } from "../search/protocol.js";
-import { querySparse, termsSparse } from "./bm25-sparse.js";
-import { expandLexicalTerms, lexicalBm25, type LexicalDocument } from "./lexical-bm25.js";
+import { querySparse, termsSparse, type Sparse } from "./bm25-sparse.js";
+import { expandLexicalTerms, lexicalBm25, storedDocument, type LexicalDocument } from "./lexical-bm25.js";
+import { DEFAULT_VOCABULARY_LIMITS, PrefixVocabulary, type VocabularyLimits } from "./prefix-vocabulary.js";
 import { pointId, type Qdrant } from "./qdrant.js";
 import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
 
-interface ScoredPoint { id: string; score: number; payload?: { doc_id?: string; session_id?: string } }
+interface ScoredPoint { id: string; score: number; payload?: RecordPoint["payload"]; vector?: { bm25?: Sparse } }
 interface RecordPoint {
   id: string;
   payload?: { doc_id?: string; session_id?: string; layer?: string; rev?: string; deleted?: boolean; terms?: unknown; dl?: number; lexical_order?: [number, number]; v?: unknown };
+}
+interface StoredPayload {
+  rev?: ContentRev;
+  v?: unknown;
+  deleted?: boolean;
+  document?: { terms: string[]; dl: number };
 }
 
 const HIT_PAYLOAD = ["doc_id", "session_id"];
@@ -37,18 +44,28 @@ const AVGDL_DRIFT = 0.1;
 const REWEIGHT_PAGE = 256;
 const DL_FACET_LIMIT = 100_000;
 const LESSON_TERMS_FILTER_LIMIT = 1024;
+// ponytail: the deep read stops at max(4 x limit, limit + 500) ids. Qdrant sums a term's prefix matches where SearchIndex takes the best one,
+// so on a short prefix query ("bes" at 200k synthetic docs) the exact top docs can sit near Qdrant position 2,000 and 7 of 540 lists differ.
+// Paging ids until the bound stops closes it but costs p99 430-700 ms; one Qdrant query per prefix term (a batch) would keep it exact and bounded.
+const KEYWORD_CANDIDATE_MULTIPLIER = 4;
+const KEYWORD_CANDIDATE_MARGIN = 500;
+/** Candidates read past the limit before the score bound decides whether a deeper read is needed. */
+const KEYWORD_SHALLOW_SLACK = 16;
+/** Deep candidates whose payload one request fetches; small, so a rising k-th score stops the read early. */
+const KEYWORD_PAYLOAD_CHUNK = 16;
+/** Sparse query size past which the deep read also takes each candidate's vector: a per-document bound costs less than the payloads a loose global bound would fetch. */
+const KEYWORD_VECTOR_BOUND_TERMS = 1024;
 
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
 
 /**
- * The payload of a live document point; apply and load both write it. A
- * lessons point also carries `lexical_order`, its write order, which exact
- * lexical ranking breaks ties by.
+ * The payload of a live document point; apply and load both write it.
+ * `lexical_order` is its write order, which exact lexical ranking breaks ties by.
  */
-function docPayload(op: DocOp, terms: string[], avgdl: number, version: OpVersion, lexicalOrder: [OpVersion, number] | null) {
+function docPayload(op: DocOp, terms: string[], avgdl: number, version: OpVersion, lexicalOrder: [OpVersion, number]) {
   return {
     doc_id: op.id, session_id: op.sessionId, layer: op.layer, ts: op.ts, rev: op.rev, v: version, dl: terms.length, ad: avgdl, terms,
-    ...(lexicalOrder ? { lexical_order: lexicalOrder } : {}),
+    lexical_order: lexicalOrder,
   };
 }
 
@@ -99,7 +116,7 @@ function opError(op: unknown): string | null {
 export class SearchEngine {
   private ensured: Promise<void> | null = null;
   private vocabulary: Promise<Map<string, number>> | null = null;
-  /** The second part of a lessons point's `lexical_order`; it keeps growing across calls, so writes at one version (a migration's) stay in write order. */
+  /** The second part of a point's `lexical_order`; it keeps growing across calls, so writes at one version (a migration's) stay in write order. */
   private lexicalPosition = 0;
   private lastVocabularySize = 0;
   /** The mean document length new BM25 weights are computed with; null until read from the collection. */
@@ -109,18 +126,22 @@ export class SearchEngine {
   /** Bumped when clear("all") drops the collection; a reweighting pass from before it stops. */
   private collectionEpoch = 0;
   private readonly clock: VersionClock;
+  /** Prefix expansion for the docs collection's keyword search; the lessons collection expands exactly. */
+  readonly prefixes: PrefixVocabulary | null;
 
-  constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number) {
+  constructor(private readonly qdrant: Qdrant, private readonly fallbackAvgdl: number, vocabulary: VocabularyLimits = DEFAULT_VOCABULARY_LIMITS) {
     this.clock = new VersionClock(qdrant, () => this.ready());
+    this.prefixes = qdrant.config.layout === "lessons" ? null : new PrefixVocabulary(qdrant, () => this.ready(), vocabulary);
   }
 
   maxVersion(): Promise<OpVersion> {
     return this.clock.maxVersion();
   }
 
-  /** Resolves once no reweighting pass is running. */
+  /** Resolves once no reweighting pass or prefix vocabulary read is running. */
   async settled(): Promise<void> {
     while (this.reweighting) await this.reweighting;
+    await this.prefixes?.settled();
   }
 
   /** Every call waits for the collection and its payload indexes; a facet before the index exists fails. */
@@ -168,6 +189,10 @@ export class SearchEngine {
       if (op.k === "doc" || op.k === "del") writtenFirst.add(op.id);
       else if (op.k === "vec" && !writtenFirst.has(op.id)) lookup.add(op.id);
     }
+    // Decided once: a delta needs the read before the batch and the read after it.
+    const corpusIds = this.prefixes?.counting ? [...writtenFirst] : [];
+    const epoch = this.collectionEpoch;
+    for (const id of corpusIds) lookup.add(id);
     await this.ready();
     const stored = await this.storedPayloads([...lookup]);
     const rev = new Map<string, ContentRev | null>();
@@ -178,6 +203,7 @@ export class SearchEngine {
     // operation, not per point. Every id's document change still precedes its
     // vector change, and every group is conditional per point.
     const claimedNow = { key: "v", match: { value: version } };
+    if (terms.size > 0) this.prefixes?.noteIndexedAverageLength(avgdl);
     const docPoints: unknown[] = [];
     const docPayloads: unknown[] = [];
     const docWeights: unknown[] = [];
@@ -188,14 +214,13 @@ export class SearchEngine {
     const fenced: string[] = [];
     const written: Array<{ id: string; rev: ContentRev }> = [];
     let applied = 0;
-    const lessons = this.qdrant.config.layout === "lessons";
     for (const op of ops) {
       const id = pointId(op.id);
       switch (op.k) {
         case "doc": {
           const docTerms = terms.get(op)!;
           const bm25 = termsSparse(docTerms, avgdl);
-          const payload = docPayload(op, docTerms, avgdl, version, lessons ? [version, this.lexicalPosition++] : null);
+          const payload = docPayload(op, docTerms, avgdl, version, [version, this.lexicalPosition++]);
           docPoints.push({ id, vector: { bm25 }, payload: { ...payload, dense: false } });
           docPayloads.push({ set_payload: { payload, filter: { must: [{ has_id: [id] }, notNewerThan(version)], must_not: [TOMBSTONE] } } });
           docWeights.push({ id, vector: { bm25 } });
@@ -265,8 +290,14 @@ export class SearchEngine {
     if (terms.size > 0 || ops.some((op) => op.k === "del")) this.corpusDidChange();
     // A vector change applied only if its claim held: the point is live and carries this version.
     // A vector delete on a tombstone or an absent point leaves no vector either way.
-    if (written.length > 0 || vecDeletes.length > 0) {
-      const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes])]);
+    if (written.length > 0 || vecDeletes.length > 0 || corpusIds.length > 0) {
+      const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes, ...corpusIds])]);
+      for (const id of corpusIds) {
+        const current = now.get(id);
+        if (epoch !== this.collectionEpoch || !this.prefixes || current?.v !== version) continue;
+        const previous = stored.get(id);
+        this.prefixes.replace(previous?.deleted ? undefined : previous?.document, current.deleted ? undefined : current.document);
+      }
       const lost = [
         ...written.filter((w) => { const p = now.get(w.id); return !(p && !p.deleted && p.rev === w.rev && p.v === version); }).map((w) => w.id),
         ...vecDeletes.filter((id) => { const p = now.get(id); return p !== undefined && !p.deleted && p.v !== version; }),
@@ -319,11 +350,10 @@ export class SearchEngine {
     const preset = typeof avgdl === "number" && Number.isFinite(avgdl) && avgdl > 0 ? avgdl : null;
     if (preset !== null) this.avgdl = preset;
     const weightBy = preset ?? (await this.writeAvgdl(valid.map((v) => v.terms)));
-    const lessons = this.qdrant.config.layout === "lessons";
     const points = valid.map(({ doc, terms, dense }) => ({
       id: pointId(doc.id),
       vector: { bm25: termsSparse(terms, weightBy), ...(dense ? { dense } : {}) },
-      payload: { ...docPayload(doc, terms, weightBy, version, lessons ? [version, this.lexicalPosition++] : null), dense: dense !== undefined },
+      payload: { ...docPayload(doc, terms, weightBy, version, [version, this.lexicalPosition++]), dense: dense !== undefined },
     }));
     try {
       await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, {
@@ -331,6 +361,8 @@ export class SearchEngine {
       });
     } finally {
       this.vocabulary = null;
+      // load does not count its documents into the prefix vocabulary, so the next search refills it.
+      this.prefixes?.clear();
     }
     if (preset === null) this.corpusDidChange();
     const now = await this.storedPayloads(valid.map((v) => v.doc.id));
@@ -355,16 +387,19 @@ export class SearchEngine {
     );
   }
 
-  private async storedPayloads(docIds: string[]): Promise<Map<string, { rev?: ContentRev; v?: unknown; deleted?: boolean }>> {
-    const payloads = new Map<string, { rev?: ContentRev; v?: unknown; deleted?: boolean }>();
+  private async storedPayloads(docIds: string[]): Promise<Map<string, StoredPayload>> {
+    const payloads = new Map<string, StoredPayload>();
     if (docIds.length === 0) return payloads;
     const points = await this.qdrant.call<RecordPoint[]>("POST", `${this.qdrant.path}/points`, {
       ids: docIds.map(pointId),
-      with_payload: ["doc_id", "rev", "v", "deleted"],
+      with_payload: ["doc_id", "rev", "v", "deleted", "terms", "dl"],
       with_vector: false,
     });
     for (const { payload: p } of points) {
-      if (p?.doc_id) payloads.set(p.doc_id, { rev: typeof p.rev === "string" ? (p.rev as ContentRev) : undefined, v: p.v, deleted: p.deleted === true });
+      if (p?.doc_id) payloads.set(p.doc_id, {
+        rev: typeof p.rev === "string" ? (p.rev as ContentRev) : undefined, v: p.v, deleted: p.deleted === true,
+        document: storedDocument(p),
+      });
     }
     return payloads;
   }
@@ -428,6 +463,7 @@ export class SearchEngine {
   }
 
   private async reweight(avgdl: number): Promise<void> {
+    this.prefixes?.noteIndexedAverageLength(avgdl);
     const epoch = this.collectionEpoch;
     const filter = {
       must_not: [{ is_empty: { key: "terms" } }, { key: "ad", range: { gte: avgdl * (1 - AVGDL_DRIFT), lte: avgdl * (1 + AVGDL_DRIFT) } }],
@@ -443,12 +479,13 @@ export class SearchEngine {
       });
       if (epoch !== this.collectionEpoch) return;
       const operations = page.points.flatMap(({ id, payload }) => {
-        const { terms, rev } = payload ?? {};
-        if (!Array.isArray(terms) || !terms.every((term) => typeof term === "string") || typeof rev !== "string") return [];
+        const stored = storedDocument(payload);
+        const rev = payload?.rev;
+        if (!stored || typeof rev !== "string") return [];
         // Keyed on rev, not v: the stored terms are the content of that rev, whichever op wrote it.
         const same = [{ key: "rev", match: { value: rev } }];
         return [
-          { update_vectors: { points: [{ id, vector: { bm25: termsSparse(terms as string[], avgdl) } }], update_filter: { must: same, must_not: [TOMBSTONE] } } },
+          { update_vectors: { points: [{ id, vector: { bm25: termsSparse(stored.terms, avgdl) } }], update_filter: { must: same, must_not: [TOMBSTONE] } } },
           { set_payload: { payload: { ad: avgdl }, filter: { must: [{ has_id: [id] }, ...same], must_not: [TOMBSTONE] } } },
         ];
       });
@@ -462,18 +499,67 @@ export class SearchEngine {
     if (this.qdrant.config.layout === "lessons") {
       return this.lessonKeyword(query, clampLimit(limit), isSearchLayer(layer) ? layer : "all");
     }
-    const sparse = querySparse(query);
+    const prefixes = this.prefixes;
+    prefixes?.fillInBackground();
+    const rescore = (prefixes?.isReady ?? false) && prefixes!.documentCount > 0;
+    const sparse = querySparse(query, prefixes ? (terms) => prefixes.expand(terms, rescore) : undefined);
     if (sparse.indices.length === 0) return [];
     await this.ready();
     if (this.avgdl === null) this.corpusDidChange();
-    const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", `${this.qdrant.path}/points/query`, {
-      query: sparse,
-      using: "bm25",
-      limit: clampLimit(limit),
-      filter: layerFilter(isSearchLayer(layer) ? layer : "all"),
-      with_payload: HIT_PAYLOAD,
+    const count = clampLimit(limit);
+    const filter = layerFilter(isSearchLayer(layer) ? layer : "all");
+    const terms = queryTerms(query);
+    const factor = rescore ? prefixes!.scoreUpperBound(terms, sparse) : Infinity;
+    const depth = Math.min(MAX_LIMIT, Math.max(count * KEYWORD_CANDIDATE_MULTIPLIER, count + KEYWORD_CANDIDATE_MARGIN));
+    const shallow = Number.isFinite(factor) ? Math.min(depth, count + KEYWORD_SHALLOW_SLACK) : depth;
+    const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", this.qdrant.path + "/points/query", {
+      query: sparse, using: "bm25", limit: rescore ? shallow : count, filter,
+      with_payload: rescore ? [...HIT_PAYLOAD, "terms", "dl", "lexical_order"] : HIT_PAYLOAD,
     });
-    return toHits(res.points);
+    if (!rescore || !prefixes?.isReady) return toHits(res.points);
+    const documents: Array<LexicalDocument & { order: [number, number] }> = [];
+    const candidateTerms = new Map<string, number>();
+    const add = (points: RecordPoint[]) => {
+      for (const { payload } of points) {
+        const stored = storedDocument(payload);
+        if (!payload?.doc_id || !stored) continue;
+        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", ...stored, order: payload.lexical_order ?? [0, 0] });
+        for (const term of stored.terms) candidateTerms.set(term, 1);
+      }
+    };
+    const score = () => {
+      documents.sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || (a.id < b.id ? -1 : Number(a.id > b.id)));
+      return lexicalBm25(documents, expandLexicalTerms(terms, new Map(candidateTerms)), prefixes.frequencies, prefixes.documentCount, prefixes.averageLength, count);
+    };
+    add(res.points);
+    let hits = score();
+    if (shallow < depth && res.points.length === shallow && (hits.length < count || res.points.at(-1)!.score * factor >= hits[count - 1]!.score)) {
+      const useVectorBound = sparse.indices.length > KEYWORD_VECTOR_BOUND_TERMS;
+      const deep = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", this.qdrant.path + "/points/query", {
+        query: sparse, using: "bm25", limit: depth, filter,
+        ...(hits.length >= count ? { score_threshold: hits[count - 1]!.score / factor } : {}),
+        with_payload: false,
+        with_vector: useVectorBound ? ["bm25"] : false,
+      });
+      const seen = new Set(res.points.map(({ id }) => id));
+      const bound = useVectorBound ? prefixes.documentScoreUpperBound(terms) : undefined;
+      const remaining = deep.points.filter(({ id }) => !seen.has(id))
+        .map((point) => ({ id: point.id, bound: Math.min(point.score * factor, point.vector?.bm25 && bound ? bound(point.vector.bm25) : Infinity) }))
+        .sort((a, b) => b.bound - a.bound);
+      for (let offset = 0; offset < remaining.length;) {
+        const threshold = hits.length >= count ? hits[count - 1]!.score : 0;
+        const chunk: string[] = [];
+        while (offset < remaining.length && chunk.length < KEYWORD_PAYLOAD_CHUNK && remaining[offset]!.bound >= threshold) {
+          chunk.push(remaining[offset++]!.id);
+        }
+        if (chunk.length === 0) break;
+        add(await this.qdrant.call<RecordPoint[]>("POST", this.qdrant.path + "/points", {
+          ids: chunk, with_payload: [...HIT_PAYLOAD, "terms", "dl", "lexical_order"], with_vector: false,
+        }));
+        hits = score();
+      }
+    }
+    return hits;
   }
 
   private lessonVocabulary(): Promise<Map<string, number>> {
@@ -534,10 +620,11 @@ export class SearchEngine {
         with_vector: false,
       });
       for (const { payload } of page.points) {
-        if (!payload?.doc_id || typeof payload.dl !== "number" || !Array.isArray(payload.terms) || !payload.terms.every((term) => typeof term === "string")) continue;
-        const matchedTerms = payload.terms.filter((term) => terms.has(term));
+        const stored = storedDocument(payload);
+        if (!payload?.doc_id || !stored) continue;
+        const matchedTerms = stored.terms.filter((term) => terms.has(term));
         if (matchedTerms.length === 0) continue;
-        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: matchedTerms, dl: payload.dl, order: payload.lexical_order ?? [0, 0] });
+        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: matchedTerms, dl: stored.dl, order: payload.lexical_order ?? [0, 0] });
       }
       offset = page.next_page_offset ?? undefined;
     } while (offset);
@@ -561,6 +648,8 @@ export class SearchEngine {
 
   async stats(): Promise<StatsResult> {
     await this.ready();
+    const rankingReady = this.prefixes?.isReady ?? true;
+    this.prefixes?.fillInBackground();
     const byLayer = (value: SearchResultLayer) => ({ must: [{ key: "layer", match: { value } }] });
     const [docs, vectors, memories, lessons, missingVectors] = await Promise.all([
       this.qdrant.count(LIVE_DOCS),
@@ -569,7 +658,7 @@ export class SearchEngine {
       this.qdrant.count(byLayer("lesson")),
       this.qdrant.count(MISSING_VECTOR_FILTER),
     ]);
-    return { docs, vectors, memories, lessons, missingVectors };
+    return { docs, vectors, memories, lessons, missingVectors, rankingReady };
   }
 
   async sessionCounts(): Promise<Array<[string, number]>> {
@@ -626,6 +715,7 @@ export class SearchEngine {
       await this.ready();
       await this.qdrant.drop();
       this.vocabulary = null;
+      this.prefixes?.clear();
       this.lastVocabularySize = 0;
       this.collectionEpoch++;
       this.corpusChanged = false;

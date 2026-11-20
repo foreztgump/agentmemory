@@ -591,6 +591,7 @@ async function runKeywordRebuild(
     // The index lives in the search worker and survives restarts; refreshing the counts is the whole boot cost.
     await idx.documentKindCounts()
     runtime.service?.start({ kv, embedBatch: vectorIndexAddBatchGuarded, embeddingEnabled: () => Boolean(vectorIndex && currentEmbeddingProvider) })
+    await runtime.service?.whenRankingReady?.()
     memoryIndexReady = true
     return { documents: idx.size, vectorJobs: [], fullBackfillPending: 0, historicalVectorGaps: 0 }
   }

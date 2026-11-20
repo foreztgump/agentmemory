@@ -109,6 +109,8 @@ export interface StatsResult {
   lessons: number;
   /** Observations and memories without a dense vector. */
   missingVectors: number;
+  /** False while the worker's prefix vocabulary is still filling; absent (an older worker) counts as ready. */
+  rankingReady?: boolean;
 }
 
 export interface SessionCountsResult { counts: Array<[string, number]> }
