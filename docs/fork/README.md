@@ -82,7 +82,7 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 
 Disk keyword search expands query prefixes and ranks with SearchIndex's exact BM25 (TEE-1195). Two checks hold its costs:
 
-- **Latency under capture writes.** Keyword search p99 under capture writes must stay at or under 60 ms at 200,000 documents. Measured on 2026-11-20 at 41–44 ms. Run it before a change to the keyword path ships. It needs a Qdrant of its own with a 1 GB limit and takes about 25 minutes:
+- **Latency under capture writes.** Keyword search p99 under capture writes must stay at or under 60 ms at 200,000 documents. Measured on 2026-11-20 at 41–44 ms. Run it before a change to the keyword path ships. It needs a Qdrant of its own with a 1 GB limit and takes about 15 minutes:
 
   ```
   docker run -d --name kw-qdrant -m 1g --memory-swap 1g -p 127.0.0.1:16345:6333 qdrant/qdrant:v1.20.2

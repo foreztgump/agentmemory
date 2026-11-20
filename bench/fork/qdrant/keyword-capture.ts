@@ -122,6 +122,7 @@ for (const run of [1, 2]) {
     });
   }
 }
+await engine.settled();
 await qdrant.drop();
 for (const failure of failures) console.error(`FAIL ${failure}`);
 process.exit(failures.length > 0 ? 1 : 0);
