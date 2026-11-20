@@ -297,6 +297,35 @@ describe("rebuildKeywordIndex", () => {
     }
   }, 10_000);
 
+  it("retries a session's observations when the store's reply times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const kv = mockKV();
+      const total = seed(kv, 3, 4, () => "2026-09-01T00:00:00.000Z");
+      let failures = 2;
+      const slowKv = {
+        ...kv,
+        list: async <T>(scope: string): Promise<T[]> => {
+          if (scope === "mem:obs:ses_1" && failures > 0) {
+            failures--;
+            throw new Error("handler error: Failed to get group from Redis: Response timed out");
+          }
+          return kv.list<T>(scope);
+        },
+      };
+
+      const promise = rebuildKeywordIndex(slowKv as never);
+      await vi.advanceTimersByTimeAsync(20_000);
+      const result = await promise;
+
+      expect(failures).toBe(0);
+      expect(result.documents).toBeGreaterThanOrEqual(total);
+      expect(isBm25RebuildIncomplete()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 10_000);
+
   it("shares one retry budget between the memories and sessions listings", async () => {
     vi.useFakeTimers();
     try {

@@ -49,11 +49,12 @@ import {
   STATE_PREFIX,
   STORED_VECTOR_MODEL,
 } from "../../src/fork/search/persisted-vectors.js";
-import { docOp, type DocOp, type ImgOp, type OpVersion } from "../../src/fork/search/protocol.js";
+import { docOp, type DocOp, type ImgOp, type OpVersion, type VecOp } from "../../src/fork/search/protocol.js";
 import { DEFAULT_AVGDL, loadSearchWorkerSettings } from "../../src/fork/search/settings.js";
 import { SearchEngine } from "../../src/fork/worker/engine.js";
 import { ImageEngine } from "../../src/fork/worker/image-engine.js";
 import { pointId, Qdrant } from "../../src/fork/worker/qdrant.js";
+import { validVersion } from "../../src/fork/worker/versioned.js";
 import { vectorBucketScope } from "../../src/state/index-persistence.js";
 import { lessonToObservation } from "../../src/state/memory-utils.js";
 import { KV } from "../../src/state/schema.js";
@@ -424,6 +425,36 @@ async function notAt(qdrant: Qdrant, ids: string[], version: OpVersion): Promise
   return ids.filter((id) => !held.has(id));
 }
 
+/**
+ * A live write fences the migration's point out, and a reconcile pass writes
+ * the document without its vector. Where the live point still holds the
+ * document's rev and has no vector, the stored vector is copied onto it at
+ * the point's own version, so any write after that still wins. Returns how
+ * many landed.
+ */
+async function adoptVectors(target: Targets["docs"], docs: DocOp[], fenced: ReadonlySet<string>, vectors: Map<string, Buffer>): Promise<number> {
+  const ids = docs.filter((d) => fenced.has(d.id) && vectors.has(d.id)).map((d) => d.id);
+  if (ids.length === 0) return 0;
+  const revs = new Map(docs.map((d) => [d.id, d.rev]));
+  const points = await target.qdrant.call<Array<{ payload?: { doc_id?: string; v?: unknown; rev?: string; dense?: boolean; deleted?: boolean } }>>(
+    "POST", `${target.qdrant.path}/points`, { ids: ids.map(pointId), with_payload: ["doc_id", "v", "rev", "dense", "deleted"], with_vector: false },
+  );
+  const byVersion = new Map<OpVersion, VecOp[]>();
+  for (const { payload } of points) {
+    const version = validVersion(payload?.v);
+    const id = payload?.doc_id;
+    if (!id || version === null || payload.deleted || payload.dense || payload.rev !== revs.get(id)) continue;
+    byVersion.set(version, [...(byVersion.get(version) ?? []), { k: "vec", id, rev: revs.get(id)!, f32b64: vectors.get(id)!.toString("base64") }]);
+  }
+  let adopted = 0;
+  for (const [version, ops] of byVersion) {
+    const applied = await target.engine.apply(ops, version);
+    if (applied.failed.length > 0) throw new MigrateError(`vector copy failed for ${applied.failed.length} documents, first ${JSON.stringify(applied.failed[0])}`, 3);
+    adopted += applied.applied;
+  }
+  return adopted;
+}
+
 async function fillLessons(store: Redis, target: Targets["lessons"], version: OpVersion, page: number): Promise<UnitResult> {
   const result = emptyResult();
   for await (const docs of lessonDocs(store, page, result)) {
@@ -506,7 +537,7 @@ async function readMeta(store: Redis): Promise<Meta | null> {
   if (raw === null) return null;
   try {
     const meta = JSON.parse(str(raw)) as { version?: unknown; startedAt?: unknown; avgdl?: unknown };
-    if (typeof meta.version === "number" && meta.version === MIGRATION_VERSION && (meta.avgdl === null || typeof meta.avgdl === "number")) {
+    if (typeof meta.version === "number" && meta.version === MIGRATION_VERSION && typeof meta.startedAt === "string" && (meta.avgdl === null || typeof meta.avgdl === "number")) {
       return meta as Meta;
     }
   } catch {
@@ -558,7 +589,7 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
       if (loaded.failed.length > 0) throw new MigrateError(`load failed for ${loaded.failed.length} documents, first ${JSON.stringify(loaded.failed[0])}`, 3);
       const kept = new Set(loaded.fenced);
       result.docs += docs.length;
-      result.vectors += [...vectors.keys()].filter((id) => !kept.has(id)).length;
+      result.vectors += [...vectors.keys()].filter((id) => !kept.has(id)).length + await adoptVectors(targets.docs, docs, kept, vectors);
       result.fenced += kept.size;
       sinceGate += docs.length;
       if (sinceGate >= gate) {
@@ -641,7 +672,8 @@ export function expectedStored(bytes: Buffer): number[] {
 }
 
 /** The units of the last place two half-precision values differ by; 0 means bit-equal. */
-function halfSteps(a: number, b: number): number {
+export function halfSteps(a: number, b: number): number {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return Infinity;
   if (a === b) return 0;
   const exp = Math.max(Math.floor(Math.log2(Math.max(Math.abs(a), Math.abs(b)))), -14);
   return Math.abs(a - b) / 2 ** (exp - 10);

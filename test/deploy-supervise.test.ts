@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const supervise = "deploy/runtime/supervise.mjs";
@@ -111,6 +114,55 @@ describe("deploy supervisor", () => {
     expect(code).toBe(1);
     expect(output).toContain("[supervise] could not start /nonexistent/iii");
     expect(output).not.toContain("Unhandled 'error' event");
+  });
+
+  it("copies each worker's new stderr lines to its own stderr, across a log rotation and a worker that starts later", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "supervise-logs-"));
+    const logs = join(stateDir, "data-1234", "agentmemory", "logs");
+    mkdirSync(logs, { recursive: true });
+    const header = "# iii-compose-worker-log-v1 0000\n";
+    writeFileSync(join(logs, "agentmemory.log"), `${header}stderr\tfrom an earlier boot\n`);
+    const compose = `
+      const fs = require("node:fs");
+      const logs = ${JSON.stringify(logs)};
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      (async () => {
+        await wait(500);
+        fs.appendFileSync(logs + "/agentmemory.log", "stdout\\tObservation captured\\nstderr\\tFATAL ERROR: JavaScript heap out of memory\\n");
+        await wait(500);
+        fs.renameSync(logs + "/agentmemory.log", logs + "/agentmemory.log.1");
+        fs.writeFileSync(logs + "/agentmemory.log", ${JSON.stringify(header)} + "stderr\\tafter the rotation\\n");
+        fs.writeFileSync(logs + "/am-search.log", ${JSON.stringify(header)} + "stderr\\tam-search failed\\n");
+        await wait(2500);
+        process.exit(0);
+      })();
+    `;
+    try {
+      const result = await run(compose, { AGENTMEMORY_READY_TIMEOUT_MS: "60000", III_COMPOSE_STATE_DIR: stateDir });
+      expect(result.code).toBe(0);
+      const copied = result.output.split("\n").filter((line) => /^\[(agentmemory|am-search)\] /.test(line));
+      expect(copied.sort()).toEqual([
+        "[agentmemory] FATAL ERROR: JavaScript heap out of memory",
+        "[agentmemory] after the rotation",
+        "[am-search] am-search failed",
+      ]);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("starts compose when a listed worker log is gone before it can be read", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "supervise-logs-"));
+    const logs = join(stateDir, "data-1234", "agentmemory", "logs");
+    mkdirSync(logs, { recursive: true });
+    symlinkSync(join(logs, "rotated-away"), join(logs, "agentmemory.log"));
+    try {
+      const result = await run("process.exit(0)", { AGENTMEMORY_READY_TIMEOUT_MS: "60000", III_COMPOSE_STATE_DIR: stateDir });
+      expect(result.output).not.toContain("ENOENT");
+      expect(result.code).toBe(0);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it.each(["0x10", "12e3", " 1000", "1000.0"])("rejects the non-decimal ready wait %j, which compose cannot parse", async (value) => {

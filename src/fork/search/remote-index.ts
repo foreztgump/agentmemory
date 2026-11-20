@@ -1,12 +1,12 @@
 import type { CompressedObservation } from "../../types.js";
-import { logger } from "../../logger.js";
 import { getSearchResultLayer, type SearchLayer, type SearchResultLayer } from "../../state/search-layer.js";
-import type { KeywordIndexPort, RevisionToken, ScoredId, VectorStorePort, VectorToken } from "../../state/search-ports.js";
+import type { KeywordIndexPort, RevisionToken, ScoredId, SearchOpts, VectorStorePort, VectorToken } from "../../state/search-ports.js";
 import { termSourceOf } from "../../state/term-extraction.js";
 import { float32ToBase64 } from "../../state/vector-index.js";
 import type { SearchWorkerClient } from "./client.js";
+import type { BackendHealth } from "./health.js";
 import type { DocLedger, SearchOutbox } from "./outbox.js";
-import { contentRev, docOp, type Hit, type StatsResult } from "./protocol.js";
+import { contentRev, docOp, type ContentRev, type Hit, type StatsResult } from "./protocol.js";
 
 /** Read-your-writes bound: a search waits at most this long for queued writes. */
 export const READ_YOUR_WRITES_MS = 1000;
@@ -21,8 +21,6 @@ const EMPTY_STATS: StatsResult = { docs: 0, vectors: 0, memories: 0, lessons: 0,
 /** Counts from the worker, polled and bumped optimistically between polls so size checks stay synchronous. */
 export class StatsCache {
   value: StatsResult = EMPTY_STATS;
-  degraded = false;
-  lastError: string | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** Running sum of every optimistic bump, so a poll can re-apply the ones made while it was in flight. */
   private bumped = { docs: 0, vectors: 0 };
@@ -63,19 +61,10 @@ export class StatsCache {
           vectors: Math.max(0, snapshot.vectors + this.bumped.vectors - before.vectors),
         };
       }
-      this.degraded = false;
-      this.lastError = null;
-    } catch (err) {
-      this.markDegraded(err);
+    } catch {
+      // BackendHealth records the failure; the last counts stay until a poll succeeds.
     }
     return this.value;
-  }
-
-  markDegraded(err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
-    if (!this.degraded) logger.warn("search worker unavailable; keyword search returns no hits until it recovers", { error: message });
-    this.degraded = true;
-    this.lastError = message;
   }
 
   bump(field: "docs" | "vectors", delta: number): void {
@@ -95,6 +84,7 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
     private readonly outbox: SearchOutbox,
     private readonly ledger: DocLedger,
     private readonly stats: StatsCache,
+    private readonly health: BackendHealth,
   ) {}
 
   add(obs: CompressedObservation, layer: SearchResultLayer = "observation"): void {
@@ -125,15 +115,19 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
     this.stats.reset(EMPTY_STATS);
   }
 
-  async search(query: string, limit = 20, layer: SearchLayer = "all"): Promise<ScoredId[]> {
-    await this.outbox.drainFor(READ_YOUR_WRITES_MS);
+  /**
+   * With the backend down this returns [] (HybridSearch still has the graph
+   * stream; a throw would fail the whole request) unless opts.strict asks for
+   * the error, for a caller that has its own fallback. While degraded it fails
+   * fast and does not wait on writes that cannot be sent.
+   */
+  async search(query: string, limit = 20, layer: SearchLayer = "all", opts?: SearchOpts): Promise<ScoredId[]> {
     try {
-      const hits = await this.client.keyword(query, limit, layer);
-      this.stats.degraded = false;
-      return toScored(hits);
+      if (!this.health.allowRequest()) throw new Error("search backend unavailable");
+      if (this.health.ok) await this.outbox.drainFor(READ_YOUR_WRITES_MS);
+      return toScored(await this.client.keyword(query, limit, layer));
     } catch (err) {
-      // HybridSearch still has the vector and graph streams; a thrown error here would fail the whole request.
-      this.stats.markDegraded(err);
+      if (opts?.strict) throw err;
       return [];
     }
   }
@@ -144,6 +138,16 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
 
   invalidateRevision(id: string): void {
     this.ledger.replace(id, { ...this.ledger.get(id) });
+  }
+
+  /** The indexed content's rev as this process knows it; undefined when unknown or removed. */
+  revOf(id: string): ContentRev | undefined {
+    return this.ledger.get(id)?.rev ?? undefined;
+  }
+
+  /** True when this process removed the doc and has not added it since. */
+  removedHere(id: string): boolean {
+    return this.ledger.get(id)?.rev === null;
   }
 
   layerOf(id: string): SearchResultLayer | undefined {
@@ -173,8 +177,7 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
       let items: Awaited<ReturnType<SearchWorkerClient["lookup"]>>;
       try {
         items = await this.client.lookup(unknown.slice(i, i + LOOKUP_BATCH));
-      } catch (err) {
-        this.stats.markDegraded(err);
+      } catch {
         return;
       }
       if (epoch !== this.ledger.epoch) return;
@@ -191,11 +194,10 @@ export class RemoteKeywordIndex implements KeywordIndexPort {
   }
 
   async observationCountsBySession(): Promise<Map<string, number>> {
-    await this.outbox.drainFor(READ_YOUR_WRITES_MS);
+    if (this.health.ok) await this.outbox.drainFor(READ_YOUR_WRITES_MS);
     try {
       return new Map(await this.client.sessionCounts());
-    } catch (err) {
-      this.stats.markDegraded(err);
+    } catch {
       return new Map();
     }
   }
@@ -220,6 +222,7 @@ export class RemoteVectorStore implements VectorStorePort {
     private readonly outbox: SearchOutbox,
     private readonly ledger: DocLedger,
     private readonly stats: StatsCache,
+    private readonly health: BackendHealth,
   ) {}
 
   add(obsId: string, _sessionId: string, embedding: Float32Array): void {
@@ -250,7 +253,8 @@ export class RemoteVectorStore implements VectorStorePort {
   }
 
   async search(query: Float32Array, limit = 20, layer: SearchLayer = "all"): Promise<ScoredId[]> {
-    await this.outbox.drainFor(READ_YOUR_WRITES_MS);
+    if (!this.health.allowRequest()) throw new Error("search backend unavailable");
+    if (this.health.ok) await this.outbox.drainFor(READ_YOUR_WRITES_MS);
     return toScored(await this.client.vector(float32ToBase64(query), limit, layer));
   }
 

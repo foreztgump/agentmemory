@@ -180,6 +180,8 @@ The order makes the first disk-mode start find every stored vector already in Qd
 
 Starting the app in disk mode before step 4 would make TEE-1169's re-embed spend quota on vectors that exist, and after step 4 the collection would hold documents the tool did not write. The tool refuses such a collection unless it is given `--allow-nonempty`.
 
+If the app does run during a fill, for example after a kill and before the resume, nothing is lost. Reconcile writes the missing documents without vectors at a live version, which outranks the migration's version 1. The fill then copies each stored vector onto any such document that still has the same rev and no vector, at that document's own version, so a later live write still wins. `test/fork-search-migrate.test.ts` pins this.
+
 ## Replica
 
 ```
