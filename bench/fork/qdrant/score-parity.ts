@@ -67,6 +67,7 @@ if (batch.length > 0) await engine.apply(batch);
 // A first search starts the vocabulary fill; every compared search runs after it.
 await engine.keyword(queries[0] ?? "warmup", K, "all");
 await engine.settled();
+if (!engine.prefixes?.isReady) throw new Error("the prefix vocabulary did not fill; the engine would rank in Qdrant's raw order");
 console.error(`loaded ${memory.size} docs in ${((performance.now() - started) / 1000).toFixed(0)} s; ${queries.length} queries`);
 
 const internals = memory as unknown as { invertedIndex: Map<string, Set<string>>; totalDocLength: number };

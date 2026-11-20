@@ -1,7 +1,7 @@
 import type { WeightedTerm } from "../../state/term-extraction.js";
 import { logger } from "../../logger.js";
 import { bareForm, PREFIX_WEIGHT } from "./bm25-sparse.js";
-import { lowerBound } from "./lexical-bm25.js";
+import { lowerBound, storedDocument } from "./lexical-bm25.js";
 import type { Qdrant } from "./qdrant.js";
 import { TOMBSTONE } from "./versioned.js";
 
@@ -192,11 +192,12 @@ export class PrefixVocabulary {
       });
       if (epoch !== this.epoch) return;
       for (const { payload } of page.points) {
-        // The same gate as the engine's stored-document read, so a later replace or delete subtracts what was added here.
-        if (!Array.isArray(payload?.terms) || !payload.terms.every((term) => typeof term === "string")) continue;
+        // The engine's stored-document read too, so a later replace or delete subtracts what was added here.
+        const stored = storedDocument(payload);
+        if (!stored) continue;
         documents++;
-        totalLength += typeof payload.dl === "number" ? payload.dl : payload.terms.length;
-        for (const term of new Set(payload.terms as string[])) {
+        totalLength += stored.dl;
+        for (const term of new Set(stored.terms)) {
           const known = counted.get(term);
           if (known !== undefined) counted.set(term, known + 1);
           else if (counted.size < this.limits.maxTerms) counted.set(term, 1);

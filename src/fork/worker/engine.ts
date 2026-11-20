@@ -16,7 +16,7 @@ import {
   type StatsResult,
 } from "../search/protocol.js";
 import { querySparse, termsSparse } from "./bm25-sparse.js";
-import { expandLexicalTerms, lexicalBm25, type LexicalDocument } from "./lexical-bm25.js";
+import { expandLexicalTerms, lexicalBm25, storedDocument, type LexicalDocument } from "./lexical-bm25.js";
 import { DEFAULT_VOCABULARY_LIMITS, PrefixVocabulary, type VocabularyLimits } from "./prefix-vocabulary.js";
 import { pointId, type Qdrant } from "./qdrant.js";
 import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
@@ -315,7 +315,7 @@ export class SearchEngine {
     for (const { payload: p } of points) {
       if (p?.doc_id) payloads.set(p.doc_id, {
         rev: typeof p.rev === "string" ? (p.rev as ContentRev) : undefined, v: p.v, deleted: p.deleted === true,
-        ...(Array.isArray(p.terms) && p.terms.every((term) => typeof term === "string") ? { document: { terms: p.terms, dl: typeof p.dl === "number" ? p.dl : p.terms.length } } : {}),
+        document: storedDocument(p),
       });
     }
     return payloads;
@@ -395,12 +395,13 @@ export class SearchEngine {
       });
       if (epoch !== this.collectionEpoch) return;
       const operations = page.points.flatMap(({ id, payload }) => {
-        const { terms, rev } = payload ?? {};
-        if (!Array.isArray(terms) || !terms.every((term) => typeof term === "string") || typeof rev !== "string") return [];
+        const stored = storedDocument(payload);
+        const rev = payload?.rev;
+        if (!stored || typeof rev !== "string") return [];
         // Keyed on rev, not v: the stored terms are the content of that rev, whichever op wrote it.
         const same = [{ key: "rev", match: { value: rev } }];
         return [
-          { update_vectors: { points: [{ id, vector: { bm25: termsSparse(terms as string[], avgdl) } }], update_filter: { must: same, must_not: [TOMBSTONE] } } },
+          { update_vectors: { points: [{ id, vector: { bm25: termsSparse(stored.terms, avgdl) } }], update_filter: { must: same, must_not: [TOMBSTONE] } } },
           { set_payload: { payload: { ad: avgdl }, filter: { must: [{ has_id: [id] }, ...same], must_not: [TOMBSTONE] } } },
         ];
       });
@@ -433,9 +434,10 @@ export class SearchEngine {
     const documents: Array<LexicalDocument & { order: [number, number] }> = [];
     const candidateTerms = new Map<string, number>();
     for (const { payload } of res.points) {
-      if (!payload?.doc_id || typeof payload.dl !== "number" || !Array.isArray(payload.terms) || !payload.terms.every((term) => typeof term === "string")) continue;
-      documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: payload.terms, dl: payload.dl, order: payload.lexical_order ?? [0, 0] });
-      for (const term of payload.terms) candidateTerms.set(term, 1);
+      const stored = storedDocument(payload);
+      if (!payload?.doc_id || !stored) continue;
+      documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", ...stored, order: payload.lexical_order ?? [0, 0] });
+      for (const term of stored.terms) candidateTerms.set(term, 1);
     }
     documents.sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || (a.id < b.id ? -1 : Number(a.id > b.id)));
     return lexicalBm25(documents, expandLexicalTerms(queryTerms(query), candidateTerms), prefixes.frequencies, prefixes.documentCount, prefixes.averageLength, count);
@@ -499,10 +501,11 @@ export class SearchEngine {
         with_vector: false,
       });
       for (const { payload } of page.points) {
-        if (!payload?.doc_id || typeof payload.dl !== "number" || !Array.isArray(payload.terms) || !payload.terms.every((term) => typeof term === "string")) continue;
-        const matchedTerms = payload.terms.filter((term) => terms.has(term));
+        const stored = storedDocument(payload);
+        if (!payload?.doc_id || !stored) continue;
+        const matchedTerms = stored.terms.filter((term) => terms.has(term));
         if (matchedTerms.length === 0) continue;
-        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: matchedTerms, dl: payload.dl, order: payload.lexical_order ?? [0, 0] });
+        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: matchedTerms, dl: stored.dl, order: payload.lexical_order ?? [0, 0] });
       }
       offset = page.next_page_offset ?? undefined;
     } while (offset);

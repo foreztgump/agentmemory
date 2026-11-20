@@ -15,6 +15,13 @@ export interface LexicalTerm extends WeightedTerm {
   prefixes: string[];
 }
 
+/** The terms and length a stored point was indexed with; undefined for a payload without valid terms. */
+export function storedDocument(payload: { terms?: unknown; dl?: unknown } | undefined): { terms: string[]; dl: number } | undefined {
+  const terms = payload?.terms;
+  if (!Array.isArray(terms) || !terms.every((term): term is string => typeof term === "string")) return undefined;
+  return { terms, dl: typeof payload?.dl === "number" ? payload.dl : terms.length };
+}
+
 const sortedVocabularies = new WeakMap<ReadonlyMap<string, number>, string[]>();
 
 /** The vocabulary in sort order, computed once per cached frequency map rather than per query. */
