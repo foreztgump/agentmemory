@@ -39,7 +39,6 @@ interface ScrollPage {
 
 export class PrefixVocabulary {
   private df = new Map<string, number>();
-  private indexedDf = new Map<number, number>();
   private minimumAverageLength = Infinity;
   private sorted: string[] = [];
   private fresh: string[] = [];
@@ -96,11 +95,25 @@ export class PrefixVocabulary {
     const weights = new Map(sparse.indices.map((id, i) => [id, sparse.values[i]!]));
     const coefficients = new Map<string, number>();
     const add = (term: string, weight: number) => coefficients.set(term, (coefficients.get(term) ?? 0) + weight);
+    // Qdrant indexes a term's bare form too, and every term whose bare form is a coefficient starts with it, so the ranges scanned here hold them all.
+    const indexed = new Map<number, number>();
+    const scanned = new Set<string>();
+    const index = (term: string) => {
+      const df = this.df.get(term) ?? 0;
+      if (scanned.has(term) || df <= 0) return;
+      scanned.add(term);
+      const bare = bareForm(term);
+      for (const id of new Set([termId(term), ...(bare !== term && bare.length >= 2 ? [termId(bare)] : [])])) indexed.set(id, (indexed.get(id) ?? 0) + df);
+    };
     for (const { term, weight } of query) {
       const prefixes = this.completePrefixes(term);
       if (!prefixes) return Infinity;
       if ((this.df.get(term) ?? 0) > 0) add(term, weight);
-      for (const prefix of prefixes) add(prefix, weight * PREFIX_WEIGHT);
+      index(term);
+      for (const prefix of prefixes) {
+        add(prefix, weight * PREFIX_WEIGHT);
+        index(prefix);
+      }
     }
     let ratio = 0;
     for (const [term, coefficient] of coefficients) {
@@ -108,7 +121,7 @@ export class PrefixVocabulary {
       const weight = weights.get(id);
       if (!weight) return Infinity;
       const df = this.df.get(term)!;
-      const indexedDf = Math.min(this.documents, this.indexedDf.get(id) ?? this.documents);
+      const indexedDf = Math.min(this.documents, indexed.get(id) ?? this.documents);
       const idf = Math.log((this.documents - df + 0.5) / (df + 0.5) + 1);
       const indexedIdf = Math.log((this.documents - indexedDf + 0.5) / (indexedDf + 0.5) + 1);
       ratio = Math.max(ratio, coefficient * idf / (weight * indexedIdf));
@@ -152,7 +165,6 @@ export class PrefixVocabulary {
         const count = this.df.get(term);
         if (count !== undefined) {
           this.df.set(term, Math.max(0, count - 1));
-          if (count > 0) this.indexFrequency(term, -1);
         }
       }
     }
@@ -191,7 +203,6 @@ export class PrefixVocabulary {
   /** The collection was dropped; a running fill is discarded. */
   clear(): void {
     this.df = new Map();
-    this.indexedDf = new Map();
     this.minimumAverageLength = Infinity;
     this.sorted = [];
     this.fresh = [];
@@ -203,18 +214,10 @@ export class PrefixVocabulary {
     this.epoch++;
   }
 
-  private indexFrequency(term: string, count: number): void {
-    const ids = new Set([termId(term)]);
-    const bare = bareForm(term);
-    if (bare !== term && bare.length >= 2) ids.add(termId(bare));
-    for (const id of ids) this.indexedDf.set(id, (this.indexedDf.get(id) ?? 0) + count);
-  }
-
   private learn(term: string, count: number): void {
     const known = this.df.get(term);
     if (known !== undefined) {
       this.df.set(term, known + count);
-      this.indexFrequency(term, count);
       return;
     }
     if (this.df.size >= this.limits.maxTerms) {
@@ -222,7 +225,6 @@ export class PrefixVocabulary {
       return;
     }
     this.df.set(term, count);
-    this.indexFrequency(term, count);
     this.fresh.push(term);
   }
 
@@ -308,7 +310,6 @@ export class PrefixVocabulary {
       if (this.df.has(term)) {
         const previous = this.df.get(term)!;
         this.df.set(term, Math.max(previous, count));
-        this.indexFrequency(term, Math.max(0, count - previous));
       }
       else this.learn(term, count);
     }
