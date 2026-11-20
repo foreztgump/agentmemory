@@ -656,7 +656,7 @@ async function runKeywordRebuild(
         const observations = await listWithRetry<CompressedObservation>(
           kv,
           KV.observations(s.id),
-          'rebuildKeywordIndex: observations',
+          `rebuildKeywordIndex: observations of ${s.id}`,
           observationsDeadline,
           () => kv.list<CompressedObservation>(KV.observations(s.id)),
         )
