@@ -1,7 +1,8 @@
 // Qdrant's memory while the disk search index is filled from empty, from
 // synthetic documents, then held until the optimizer settles. --path load (the
 // default) writes each document with a 1024-float vector the way search-migrate
-// fill does (SearchEngine.load, one page per upsert, the corpus mean preset).
+// fill does (SearchEngine.load, one page per upsert, the corpus mean preset,
+// waiting for the optimizer every OPTIMIZER_GATE_DOCS).
 // --path apply writes documents with no vector the way reconcile does
 // (SearchEngine.apply in outbox batches of 256, from the default mean, so the
 // worker's reweighting passes run as on a live stack). The container's cgroup is sampled from the host every 200 ms.
@@ -20,6 +21,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { OPTIMIZER_GATE_DOCS, waitForOptimizer } from "../../../scripts/fork/search-migrate.js";
 import { contentRev, type DocOp } from "../../../src/fork/search/protocol.js";
 import { DEFAULT_AVGDL } from "../../../src/fork/search/settings.js";
 import { SearchEngine } from "../../../src/fork/worker/engine.js";
@@ -130,6 +132,7 @@ async function flush(): Promise<void> {
   const result = viaApply ? await engine.apply(batch.map((b) => b.doc)) : await engine.load(batch, 1, AVGDL);
   if (result.failed.length > 0) throw new Error(`load failed: ${JSON.stringify(result.failed[0])}`);
   written += batch.length;
+  if (!viaApply && written % OPTIMIZER_GATE_DOCS < batch.length) await waitForOptimizer(qdrant);
   batch = [];
 }
 let failure: string | null = null;

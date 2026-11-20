@@ -454,12 +454,37 @@ export interface FillOptions {
   dimensions: number;
   allowNonempty: boolean;
   log: (line: string) => void;
+  /** Documents written between waits for Qdrant's optimizer (default OPTIMIZER_GATE_DOCS). */
+  optimizerGateDocs?: number;
+}
+
+/**
+ * A writer faster than Qdrant's one optimizer thread leaves the unoptimized
+ * points in RAM, about 6.7 KB each with their vector: buddy's fill on a quiet
+ * host reached 921 MiB of a 1 GiB limit that way. Waiting for the optimizer
+ * every 20,000 documents bounds that backlog near 130 MB.
+ */
+export const OPTIMIZER_GATE_DOCS = 20_000;
+const OPTIMIZER_WAIT_MS = 15 * 60_000;
+
+/** Waits while the collection is optimizing; returns whether it waited. */
+export async function waitForOptimizer(qdrant: Pick<Qdrant, "call" | "path" | "config">): Promise<boolean> {
+  const deadline = Date.now() + OPTIMIZER_WAIT_MS;
+  let waited = false;
+  while ((await qdrant.call<{ status: string }>("GET", qdrant.path)).status === "yellow") {
+    if (Date.now() > deadline) throw new MigrateError(`Qdrant was still optimizing ${qdrant.config.collection} after ${OPTIMIZER_WAIT_MS / 60_000} minutes; rerun fill to resume`, 3);
+    waited = true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return waited;
 }
 
 export interface FillResult {
   version: OpVersion;
   plan: PlanReport;
   units: number;
+  /** Times the fill waited for Qdrant's optimizer to catch up. */
+  optimizerWaits: number;
   skipped: number;
   written: UnitResult;
 }
@@ -511,6 +536,9 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
     for (const key of Object.keys(written) as Array<keyof UnitResult>) written[key] += result[key];
   };
   let finished = 0;
+  const gate = options.optimizerGateDocs ?? OPTIMIZER_GATE_DOCS;
+  let sinceGate = 0;
+  let optimizerWaits = 0;
   for (const unit of units) {
     if (done.has(unit.name)) continue;
     const result = emptyResult();
@@ -522,6 +550,11 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
       result.docs += docs.length;
       result.vectors += [...vectors.keys()].filter((id) => !kept.has(id)).length;
       result.fenced += kept.size;
+      sinceGate += docs.length;
+      if (sinceGate >= gate) {
+        sinceGate = 0;
+        if (await waitForOptimizer(qdrant)) optimizerWaits++;
+      }
     }
     await store.call("HSET", MARKER_KEY, UNIT_PREFIX + unit.name, JSON.stringify(result));
     add(result);
@@ -541,7 +574,7 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
     options.log(`${name} ${JSON.stringify(result)}`);
     add(result);
   }
-  return { version: meta.version, plan: plan.report, units: units.length + 2, skipped, written };
+  return { version: meta.version, plan: plan.report, units: units.length + 2, skipped, written, optimizerWaits };
 }
 
 /**
@@ -892,7 +925,7 @@ async function main(): Promise<number> {
     }
     if (command === "fill") {
       const r = await fill(store, targets, { page, dimensions, allowNonempty: args["allow-nonempty"], log });
-      log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them, ${r.written.unparsable} records unreadable, ${r.written.refused} image vectors refused; ${((Date.now() - started) / 1000).toFixed(1)} s`);
+      log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them, ${r.written.unparsable} records unreadable, ${r.written.refused} image vectors refused, ${r.optimizerWaits} waits for the optimizer; ${((Date.now() - started) / 1000).toFixed(1)} s`);
       const settling = Date.now();
       await targets.docs.engine.settled();
       log(`keyword weights settled in ${((Date.now() - settling) / 1000).toFixed(1)} s`);
