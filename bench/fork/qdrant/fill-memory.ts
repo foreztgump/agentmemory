@@ -25,6 +25,7 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { OPTIMIZER_GATE_DOCS, waitForOptimizer } from "../../../scripts/fork/search-migrate.js";
 import { contentRev, type DocOp } from "../../../src/fork/search/protocol.js";
+import { DEFAULT_OUTBOX_LIMITS } from "../../../src/fork/search/outbox.js";
 import { DEFAULT_AVGDL } from "../../../src/fork/search/settings.js";
 import { SearchEngine } from "../../../src/fork/worker/engine.js";
 import { Qdrant } from "../../../src/fork/worker/qdrant.js";
@@ -54,7 +55,7 @@ const { values: args } = parseArgs({
 const count = Number(args.count);
 if (args.path !== "load" && args.path !== "apply") throw new Error("--path must be load or apply");
 const viaApply = args.path === "apply";
-const page = Number(args.page ?? (viaApply ? 256 : 200));
+const page = Number(args.page ?? (viaApply ? DEFAULT_OUTBOX_LIMITS.batch : 200));
 const dimensions = Number(args.dimensions);
 const ceiling = args["ceiling-mib"] === undefined ? null : Number(args["ceiling-mib"]);
 if (!Number.isInteger(count) || count <= 0) throw new Error("--count N is required");
@@ -128,13 +129,18 @@ function vector(): string {
 
 const started = performance.now();
 let written = 0;
+let sinceGate = 0;
 let batch: Array<{ doc: DocOp; f32b64?: string }> = [];
 async function flush(): Promise<void> {
   if (batch.length === 0) return;
   const result = viaApply ? await engine.apply(batch.map((b) => b.doc)) : await engine.load(batch, 1, AVGDL);
-  if (result.failed.length > 0) throw new Error(`load failed: ${JSON.stringify(result.failed[0])}`);
+  if (result.failed.length > 0) throw new Error(`${args.path} failed: ${JSON.stringify(result.failed[0])}`);
   written += batch.length;
-  if (!viaApply && written % OPTIMIZER_GATE_DOCS < batch.length) await waitForOptimizer(qdrant);
+  sinceGate += batch.length;
+  if (!viaApply && sinceGate >= OPTIMIZER_GATE_DOCS) {
+    sinceGate = 0;
+    await waitForOptimizer(qdrant);
+  }
   batch = [];
 }
 let failure: string | null = null;

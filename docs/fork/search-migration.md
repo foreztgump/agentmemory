@@ -117,7 +117,9 @@ A fill from empty, by `search-migrate fill` or by reconcile on an empty index, u
 | `max_segment_size` | 300,000 KB | A build of documents with vectors: about 100k documents |
 | `default_segment_number` | 4 (was 2) | Merges of documents with no vector (reconcile), which the size cap barely counts: about 0.3 KB each against 2.3 KB with a vector |
 
-`search-migrate fill` also waits for the optimizer every 20,000 documents (`OPTIMIZER_GATE_DOCS`); buddy's fill waits 9 times and takes about 10% longer. Reconcile needs no gate: its outbox paces it.
+A collection keeps the settings it was created with: one created before TEE-1201 must be dropped and filled again to get them. Production had no Qdrant then; the cutover creates its collections.
+
+`search-migrate fill` also waits for the optimizer every 20,000 documents, and once more before it returns (`OPTIMIZER_GATE_DOCS`); buddy's fill waits 9 times and takes about 10% longer. Reconcile needs no gate: its outbox paces it.
 
 **Measured** (Qdrant 1.20.2, swap off, `bench/fork/qdrant/fill-memory.ts`; anon is the cgroup's anonymous memory, since `memory.peak` also counts page cache, which fills to the limit on every run):
 

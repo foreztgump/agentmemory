@@ -560,6 +560,7 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
     add(result);
     if (++finished % 50 === 0) options.log(`${finished} units this run, ${written.docs} docs, ${written.vectors} vectors`);
   }
+  if (await waitForOptimizer(qdrant)) optimizerWaits++;
   let skipped = done.size;
   for (const [name, run] of [
     [LESSONS_UNIT, () => fillLessons(store, targets.lessons, meta.version, options.page)],
