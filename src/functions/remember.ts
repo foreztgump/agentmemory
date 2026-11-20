@@ -98,7 +98,7 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
             // >0.7-Jaccard duplicate shares most tokens with the query so
             // it ranks near the top regardless. Only mem_-prefixed ids can
             // resolve in KV.memories, so skip the guaranteed-miss lookups.
-            const hits = (await idx.search(data.content, 50))
+            const hits = (await idx.search(data.content, 50, "all", { strict: true }))
               .filter((h) => h.obsId.startsWith("mem_"));
             const loaded = await Promise.all(
               hits.map((h) =>

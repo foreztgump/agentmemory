@@ -13,6 +13,7 @@ export const SEARCH_FN = {
   health: "search::health",
   lookup: "search::lookup",
   maxVersion: "search::max-version",
+  scanDocs: "search::scan-docs",
   imageQuery: "search::image-query",
 } as const;
 
@@ -110,8 +111,13 @@ export interface ScanMissingResult {
   next?: string;
 }
 
+/** Live documents of one session's observations, or of every memory when sessionId is absent. */
+export interface ScanDocsRequest extends CollectionScoped { sessionId?: string; cursor?: string; limit: number }
+export interface DocStub { id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }
+export interface ScanDocsResult { items: DocStub[]; next?: string }
+
 export interface LookupRequest extends CollectionScoped { ids: string[] }
-export interface LookupResult { items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }> }
+export interface LookupResult { items: DocStub[] }
 
 export interface ClearRequest extends CollectionScoped { scope: ClearScope }
 export interface HealthResult { ok: boolean; collection: string; dimensions: number; status: string; error?: string }

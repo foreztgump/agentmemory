@@ -27,6 +27,8 @@ import { withoutObservationSource } from "./observation-source.js";
 import { getCounters } from "../telemetry/setup.js";
 import { memoryToObservation } from "../state/memory-utils.js";
 import { getSearchIndex } from "./search.js";
+import { getSearchRuntime } from "../state/search-ports.js";
+import type { DegradedNotice } from "../fork/search/backend-status.js";
 
 export interface RecentSearch {
   sessionId: string;
@@ -183,7 +185,8 @@ export function registerSmartSearchFunction(
           returned: scoped.length,
           truncated,
         });
-        return { mode: "expanded", results: scoped, truncated };
+        const degraded = getSearchRuntime().service?.degradedNotice();
+        return { mode: "expanded", results: scoped, truncated, ...(degraded ? { degraded } : {}) };
       }
 
       if (!data.query || typeof data.query !== "string" || !data.query.trim()) {
@@ -320,8 +323,11 @@ export function registerSmartSearchFunction(
         mode: "compact";
         results: CompactSearchResult[];
         lessons?: CompactLessonResult[];
+        degraded?: DegradedNotice;
       } = { mode: "compact", results: compact };
       if (includeLessons) response.lessons = lessons;
+      const degraded = getSearchRuntime().service?.degradedNotice();
+      if (degraded) response.degraded = degraded;
       return response;
     },
   );

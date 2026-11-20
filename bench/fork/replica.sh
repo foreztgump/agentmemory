@@ -19,16 +19,23 @@
 #
 # Settings (environment): AM_IMAGE (required for up, app, kvrocks, migrate and client), REPLICA_PROJECT (default amreplica),
 # REPLICA_STORE (valkey or kvrocks, default valkey), KVROCKS_MEM_LIMIT, AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, AGENTMEMORY_SCOPE_GUARD, READY_TIMEOUT_S,
-# REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container).
+# REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container), REPLICA_COMPOSE_EXTRA (an overlay compose file).
 set -euo pipefail
+
+die() { echo "replica: $*" >&2; exit 1; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPLICA_PROJECT="${REPLICA_PROJECT:-amreplica}"
-COMPOSE=(docker compose -f "$HERE/replica-compose.yml" -p "$REPLICA_PROJECT")
+COMPOSE=(docker compose -f "$HERE/replica-compose.yml")
+# An overlay such as qdrant/replica-disk.yml (disk-mode search) is added after the base file.
+if [[ -n "${REPLICA_COMPOSE_EXTRA:-}" ]]; then
+  [[ -f "$REPLICA_COMPOSE_EXTRA" ]] || die "no overlay at $REPLICA_COMPOSE_EXTRA"
+  COMPOSE+=(-f "$(cd "$(dirname "$REPLICA_COMPOSE_EXTRA")" && pwd)/$(basename "$REPLICA_COMPOSE_EXTRA")")
+fi
+COMPOSE+=(-p "$REPLICA_PROJECT")
 SECRET="replica-dummy-secret"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-900}"
 
-die() { echo "replica: $*" >&2; exit 1; }
 log() { echo "replica: $*" >&2; }
 
 container() { echo "${REPLICA_PROJECT}-$1-1"; }
@@ -218,7 +225,7 @@ down() {
   docker rm -f "$(container client)" >/dev/null 2>&1 || true
   # The compose file requires AM_IMAGE; down never starts a container, so any value will do.
   AM_IMAGE="${AM_IMAGE:-none}" "${COMPOSE[@]}" --profile app --profile kvrocks down -v --remove-orphans >/dev/null 2>&1 || true
-  docker volume rm "${REPLICA_PROJECT}_valkey-data" "${REPLICA_PROJECT}_agentmemory-data" "${REPLICA_PROJECT}_kvrocks-data" >/dev/null 2>&1 || true
+  docker volume rm "${REPLICA_PROJECT}_valkey-data" "${REPLICA_PROJECT}_agentmemory-data" "${REPLICA_PROJECT}_kvrocks-data" "${REPLICA_PROJECT}_qdrant-data" >/dev/null 2>&1 || true
 }
 
 case "${1:-}" in

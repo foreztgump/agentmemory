@@ -382,6 +382,10 @@ describe.skipIf(!live)("finding 5: disk mode after a process restart", () => {
     registerSearchFunction(sdk as never, kv as never);
     const search = (await sdk.handlers.get("mem::search")!({ query: "subject", limit: 10 } as never)) as { results: Array<{ observation: { id: string } }> };
     expect(search.results.map((x) => x.observation.id).sort()).toEqual(["obs_ok_0", "obs_ok_1", "obs_ok_2", "obs_ok_3"]);
+    second.runtime.reconciler.start(kv as never);
+    await second.runtime.reconciler.runPass();
+    second.runtime.reconciler.stop();
+    expect(second.runtime.reconciler.report().added).toBe(0);
     const report = await createStatusReporter(sdk as never, kv as never, {})({ health: null });
     expect(report.index.missingObservations).toBe(0);
   }, 60_000);
