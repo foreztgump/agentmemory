@@ -26,7 +26,7 @@ if (!args.cases) throw new Error("--cases is required");
 const queries = (JSON.parse(readFileSync(args.cases, "utf8")) as { cases: Array<{ query: string }> }).cases.map((c) => c.query);
 const rounds = Number(args.rounds), p50Extra = Number(args["p50-extra-ms"]), p99Ratio = Number(args["p99-ratio"]);
 if (queries.length === 0) throw new Error("--cases holds no queries");
-if (!(Number.isInteger(rounds) && rounds > 0) || !Number.isFinite(p50Extra) || !(p99Ratio > 0)) throw new Error("--rounds, --p50-extra-ms and --p99-ratio must be positive numbers");
+if (!(Number.isInteger(rounds) && rounds > 0) || !(p50Extra >= 0) || !(p99Ratio > 0)) throw new Error("--rounds must be a positive whole number, --p50-extra-ms at least 0, --p99-ratio above 0");
 const qdrant = new Qdrant({ url: args.qdrant!, apiKey: args.key || undefined, collection: args.collection!, dimensions: 16, oversampling: 6, timeoutMs: 60_000 });
 const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
 await engine.keyword(queries[0]!, 10, "all");

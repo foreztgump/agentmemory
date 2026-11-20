@@ -168,6 +168,7 @@ export class SearchEngine {
       if (op.k === "doc" || op.k === "del") writtenFirst.add(op.id);
       else if (op.k === "vec" && !writtenFirst.has(op.id)) lookup.add(op.id);
     }
+    // Decided once: a delta needs the read before the batch and the read after it.
     const corpusIds = this.prefixes?.counting ? [...writtenFirst] : [];
     const epoch = this.collectionEpoch;
     for (const id of corpusIds) lookup.add(id);
@@ -276,7 +277,7 @@ export class SearchEngine {
       const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes, ...corpusIds])]);
       for (const id of corpusIds) {
         const current = now.get(id);
-        if (epoch !== this.collectionEpoch || !this.prefixes?.counting || current?.v !== version) continue;
+        if (epoch !== this.collectionEpoch || !this.prefixes || current?.v !== version) continue;
         const previous = stored.get(id);
         this.prefixes.replace(previous?.deleted ? undefined : previous?.document, current.deleted ? undefined : current.document);
       }
