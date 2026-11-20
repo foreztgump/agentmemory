@@ -60,7 +60,7 @@ Settings, parsed once: `AM_RETENTION=enforce`, `AM_RETENTION_WINDOWS=trim:45,obs
 
 **Per-run vault plus a locator.**
 - A moved row goes to `mem:retention:vault:<runId>`, with snapshots of its satellites: the stored vector, the capture event, and the image embedding row when this row held the last live reference.
-- `mem:retention:items` maps an item id to its run, so restore by id and erase by id are each one point read.
+- `mem:retention:items` maps an item id to its run, so restore by id and erase by id are each one point read. A demote is a point read of `mem:retention:demoted`.
 - Restore of a run pages one scope. Purge deletes a run's scope once it empties.
 - Demote records are not purged, so they live in `mem:retention:demoted`, outside the vault.
 
@@ -71,7 +71,7 @@ Settings, parsed once: `AM_RETENTION=enforce`, `AM_RETENTION_WINDOWS=trim:45,obs
 - The session count is assigned from `ObservationStats`, not incremented, so it converges after any replay (L4, R11).
 
 **Ordering invariant (R12).**
-- The vault entry is written before the live row is deleted, and `take` is the last step of a restore or a purge. A crash can leave an item in both places, but never in neither.
+- For the trash stages, the vault entry is written before the live row is deleted, and `take` is the last step of a restore or a purge. A crash can leave an item in both places, but never in neither. A trimmed row is live with its `source` in the vault by design. A demote writes its record, then the mark, then the index removals, so re-running it converges.
 - `recoverRun` runs first on every resume and settles the doubles by row fingerprint. A row rewritten after the plan read it stays live.
 
 **Restore never embeds (R3).** `reattachDocument` adds the keyword doc, then the stored vector, in one synchronous tick. The keyword doc comes first because the ledger must know the rev before the vector lands. Both ops ride the docs outbox, so the re-embed loop does not see the doc without its vector.
