@@ -8,6 +8,7 @@ import type {
   QueryExpansion,
 } from "../types.js";
 import { memoryToObservation } from "./memory-utils.js";
+import { embedQuery } from "../providers/embedding/query.js";
 import type { StateKV } from "./kv.js";
 import { KV } from "./schema.js";
 import {
@@ -117,7 +118,7 @@ export class HybridSearch {
       try {
         if (request) {
           if (!request.embedding || request.embedding.query !== query) {
-            request.embedding = { query, value: this.embeddingProvider.embed(query) };
+            request.embedding = { query, value: embedQuery(this.embeddingProvider, query) };
           }
           const embedding = request.embedding;
           try {
@@ -127,7 +128,7 @@ export class HybridSearch {
             throw error;
           }
         } else {
-          queryEmbedding = await this.embeddingProvider.embed(query);
+          queryEmbedding = await embedQuery(this.embeddingProvider, query);
         }
         vectorResults = await this.vector.search(queryEmbedding, poolLimit, targetLayer, (id) => this.bm25.layerOf(id));
       } catch {

@@ -20,6 +20,18 @@ export class CohereEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embedBatch(texts: string[]): Promise<Float32Array[]> {
+    return this.embedWithInputType(texts, "search_document");
+  }
+
+  async embedQuery(text: string): Promise<Float32Array> {
+    const [result] = await this.embedWithInputType([text], "search_query");
+    return result;
+  }
+
+  private async embedWithInputType(
+    texts: string[],
+    inputType: "search_document" | "search_query",
+  ): Promise<Float32Array[]> {
     const response = await fetchWithTimeout(API_URL, {
       method: "POST",
       headers: {
@@ -29,7 +41,7 @@ export class CohereEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         model: "embed-english-v3.0",
         texts,
-        input_type: "search_document",
+        input_type: inputType,
       }),
     });
 
