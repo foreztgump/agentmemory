@@ -167,7 +167,7 @@ export class ImageEngine {
   /** One page of every live image, as id and the revision of its metadata. */
   async scanEntries(cursor: unknown, limit: unknown): Promise<ScanEntriesResult> {
     await this.ready();
-    const res = await this.qdrant.call<{ points: ImagePoint[]; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
+    const res = await this.qdrant.call<{ points: Array<Omit<ImagePoint, "score">>; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
       filter: { must_not: [TOMBSTONE] },
       limit: clampLimit(limit),
       ...(typeof cursor === "string" ? { offset: cursor } : {}),

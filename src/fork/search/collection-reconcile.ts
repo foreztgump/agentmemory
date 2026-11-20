@@ -111,13 +111,20 @@ export class CollectionReconciler {
       let diff = await this.compare(kv);
       const checked = diff.checked;
       const repair = [...diff.missing, ...diff.stale, ...diff.leaked];
-      const added = diff.missing.length + diff.stale.length;
-      const deleted = diff.leaked.length;
-      for (let i = 0; i < repair.length && !stopped(); i += PAGE) {
-        await records.repair(kv, repair.slice(i, i + PAGE));
+      let sent = 0;
+      while (sent < repair.length && health.ok && !stopped()) {
+        const page = repair.slice(sent, sent + PAGE);
+        await records.repair(kv, page);
+        sent += page.length;
         await outbox.drainFor(DRAIN_MS);
       }
-      if (repair.length > 0 && !stopped()) diff = await this.compare(kv);
+      const added = Math.min(sent, diff.missing.length + diff.stale.length);
+      const deleted = sent - added;
+      if (stopped() || !health.ok) {
+        this.state = { ...this.state, state: "paused-degraded", checked, added, deleted };
+        return;
+      }
+      if (repair.length > 0) diff = await this.compare(kv);
       const finished = Date.now();
       this.state = { state: off ? "off" : "idle", startedAt: this.state.startedAt, finishedAt: new Date(finished).toISOString(), durationMs: finished - started, checked, added, deleted, error: null };
       if (repair.length > 0) logger.info(`search ${this.name} collection reconciled`, { added, deleted, missing: this.found?.missing, extra: this.found?.extra });

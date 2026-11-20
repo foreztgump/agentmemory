@@ -138,6 +138,15 @@ export function searchBackendProblems(s: SearchBackendStatus | null | undefined)
     });
   }
   for (const [name, c] of Object.entries(s.collections ?? {})) {
+    if (!c) continue;
+    if (c.state === "healthy" && c.reconcile.error) {
+      problems.push({
+        level: "warn",
+        code: "search-collection-reconcile-failing",
+        message: `The ${name} search collection reconcile failed: ${c.reconcile.error}. Its missing and extra counts may be stale.`,
+        fix: "The next pass retries. Check the server log if this stays.",
+      });
+    }
     const missing = c.missing ?? 0;
     const extra = c.extra ?? 0;
     if (missing + extra === 0) continue;
@@ -150,7 +159,7 @@ export function searchBackendProblems(s: SearchBackendStatus | null | undefined)
         : "No action needed: reconcile repairs it in the background.",
     });
   }
-  const droppedWrites = Object.values(s.collections ?? {}).reduce((n, c) => n + c.droppedWrites, s.droppedWrites);
+  const droppedWrites = Object.values(s.collections ?? {}).reduce((n, c) => n + (c?.droppedWrites ?? 0), s.droppedWrites);
   if (droppedWrites > 0) {
     problems.push({
       level: "info",
