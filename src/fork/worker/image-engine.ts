@@ -1,5 +1,5 @@
 import { base64ToFloat32 } from "../../state/vector-index.js";
-import type { ApplyResult, HealthResult, ImageHit, ImageQueryResult, OpVersion } from "../search/protocol.js";
+import { imageRev, type ApplyResult, type HealthResult, type ImageHit, type ImageQueryResult, type OpVersion, type ScanEntriesResult } from "../search/protocol.js";
 import { clampLimit } from "./engine.js";
 import { pointId, type Qdrant } from "./qdrant.js";
 import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
@@ -162,6 +162,22 @@ export class ImageEngine {
         : [],
     );
     return { hits, total };
+  }
+
+  /** One page of every live image, as id and the revision of its metadata. */
+  async scanEntries(cursor: unknown, limit: unknown): Promise<ScanEntriesResult> {
+    await this.ready();
+    const res = await this.qdrant.call<{ points: Array<Omit<ImagePoint, "score">>; next_page_offset?: string | null }>("POST", `${this.qdrant.path}/points/scroll`, {
+      filter: { must_not: [TOMBSTONE] },
+      limit: clampLimit(limit),
+      ...(typeof cursor === "string" ? { offset: cursor } : {}),
+      with_payload: HIT_PAYLOAD,
+      with_vector: false,
+    });
+    const items = res.points.flatMap(({ payload: p }) =>
+      p?.doc_id ? [{ id: p.doc_id, rev: imageRev({ sessionId: p.session_id, observationId: p.observation_id, updatedAt: p.updated_at }) }] : [],
+    );
+    return { items, ...(res.next_page_offset ? { next: res.next_page_offset } : {}) };
   }
 
   async clear(scope: unknown): Promise<void> {

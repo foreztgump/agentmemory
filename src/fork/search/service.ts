@@ -39,7 +39,10 @@ export class DiskBackendService implements SearchBackendService {
   async status(): Promise<SearchBackendStatus> {
     const { client, health, stats, outbox, reconciler, reembed } = this.parts;
     // While the circuit is open the last failure stands; the probe runs once per retry window.
-    if (health.ok || health.allowRequest()) await health.probe(client, PROBE_MS);
+    await Promise.all([
+      health.ok || health.allowRequest() ? health.probe(client, PROBE_MS) : undefined,
+      ...reconciler.collections.map((c) => c.probe(PROBE_MS)),
+    ]);
     const now = health.current;
     const missing = reconciler.missing();
     const vectorsTracked = this.parts.withVectors && (this.hooks?.embeddingEnabled() ?? false);
@@ -57,6 +60,7 @@ export class DiskBackendService implements SearchBackendService {
       missingVectors: vectorsTracked ? stats.value.missingVectors : null,
       reconcile: reconciler.report(),
       reembed: reembed.report(),
+      ...(reconciler.collections.length > 0 && { collections: Object.fromEntries(reconciler.collections.map((c) => [c.name, c.status()])) }),
     };
   }
 

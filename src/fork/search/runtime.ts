@@ -3,6 +3,7 @@ import { SHUTDOWN_FLUSH_TIMEOUT_MS } from "../../shutdown.js";
 import type { IndexPersistenceStatus, PendingReplayResult, VectorLoadResult } from "../../state/index-persistence.js";
 import { registerSearchBackend, type IndexPersistencePort, type LessonIndexPort, type SearchRuntime } from "../../state/search-ports.js";
 import { iiiSearchClient, type SearchWorkerClient } from "./client.js";
+import { CollectionReconciler, imageRecords, lessonRecords } from "./collection-reconcile.js";
 import { RemoteImageIndex } from "./images.js";
 import { DocLedger, SearchOutbox } from "./outbox.js";
 import { BackendHealth, trackHealth } from "./health.js";
@@ -90,13 +91,20 @@ function createCollectionStores(clients: CollectionClients) {
   const lessonsHealth = new BackendHealth();
   const lessonsClient = trackHealth(clients.lessons, lessonsHealth);
   const lessonsOutbox = new SearchOutbox(lessonsClient);
-  const imagesOutbox = new SearchOutbox(clients.images);
+  const imagesHealth = new BackendHealth();
+  const imagesClient = trackHealth(clients.images, imagesHealth);
+  const imagesOutbox = new SearchOutbox(imagesClient);
+  // Lesson recall reads search hits only, so this index never starts a stats poll.
+  const lessons = new RemoteKeywordIndex(lessonsClient, lessonsOutbox, new DocLedger(), new StatsCache(lessonsClient, lessonsOutbox), lessonsHealth);
+  const images = new RemoteImageIndex(imagesClient, imagesOutbox);
   return {
     outboxes: [lessonsOutbox, imagesOutbox],
-    // Lesson recall reads search hits only, so this index never starts a stats poll.
-    // Lesson health logs failures separately: backend status and reconcile cover docs only (lessons and images reconcile is TEE-1196).
-    lessons: new RemoteKeywordIndex(lessonsClient, lessonsOutbox, new DocLedger(), new StatsCache(lessonsClient, lessonsOutbox), lessonsHealth),
-    images: new RemoteImageIndex(clients.images, imagesOutbox),
+    lessons,
+    images,
+    reconcilers: [
+      new CollectionReconciler("lessons", { client: lessonsClient, health: lessonsHealth, outbox: lessonsOutbox, records: lessonRecords(lessons) }),
+      new CollectionReconciler("images", { client: imagesClient, health: imagesHealth, outbox: imagesOutbox, records: imageRecords(images) }),
+    ],
   };
 }
 
@@ -131,7 +139,7 @@ export function createDiskSearchRuntime(
   );
   const keyword = new RemoteKeywordIndex(client, outbox, ledger, stats, health);
   const vector = withVectors ? new RemoteVectorStore(client, outbox, ledger, stats, health) : null;
-  const reconciler = new Reconciler({ client, keyword, outbox, health, intervalMs: maintenance.reconcileIntervalMs, sweepPerPass: maintenance.sweepPerPass });
+  const reconciler = new Reconciler({ client, keyword, outbox, health, intervalMs: maintenance.reconcileIntervalMs, sweepPerPass: maintenance.sweepPerPass, collections: extra?.reconcilers });
   const reembed = new ReembedLoop({ client, keyword, vector, health, perMinute: maintenance.reembedPerMinute });
   const service = new DiskBackendService({ client, health, stats, outbox, reconciler, reembed, withVectors });
   persistence.onStop(() => void service.stop());

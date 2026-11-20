@@ -9,6 +9,7 @@ import {
   type KeywordRequest,
   type LookupRequest,
   type ScanDocsRequest,
+  type ScanEntriesRequest,
   type ScanMissingRequest,
   type VectorRequest,
 } from "../search/protocol.js";
@@ -56,6 +57,11 @@ export function createSearchHandlers(engines: WorkerEngines, oversampling: numbe
     [SEARCH_FN.sessionCounts]: async (data: CollectionScoped) => ({ counts: await text(data, SEARCH_FN.sessionCounts).sessionCounts() }),
     [SEARCH_FN.scanMissingVectors]: async (data: Partial<ScanMissingRequest>) => text(data, SEARCH_FN.scanMissingVectors).scanMissingVectors(data?.cursor, data?.limit),
     [SEARCH_FN.scanDocs]: async (data: Partial<ScanDocsRequest>) => text(data, SEARCH_FN.scanDocs).scanDocs(data?.sessionId, data?.cursor, data?.limit),
+    [SEARCH_FN.scanEntries]: async (data: Partial<ScanEntriesRequest>) => {
+      const id = collectionOf(data);
+      if (id === "docs") throw new Error(`${SEARCH_FN.scanEntries} is not served by the docs collection`);
+      return engines[id].scanEntries(data?.cursor, data?.limit);
+    },
     [SEARCH_FN.clear]: async (data: Partial<ClearRequest>) => {
       await engineFor(data).clear(data?.scope);
       return { ok: true };
