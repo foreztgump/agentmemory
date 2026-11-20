@@ -11,6 +11,8 @@ import { searchBackendProblems, type SearchBackendStatus } from "../src/fork/sea
 import { DEFAULT_AVGDL } from "../src/fork/search/settings.js";
 import { SEARCH_FN } from "../src/fork/search/protocol.js";
 import { createSearchHandlers } from "../src/fork/worker/router.js";
+import { BackendHealth } from "../src/fork/search/health.js";
+import { CollectionReconciler, type CollectionRecords } from "../src/fork/search/collection-reconcile.js";
 import { setEmbeddingProvider } from "../src/functions/search.js";
 import { lessonToObservation } from "../src/state/memory-utils.js";
 import { KV } from "../src/state/schema.js";
@@ -77,6 +79,59 @@ describe("collection problems on the status page", () => {
   it("counts writes the collections dropped with the docs ones", () => {
     const dropped = { ...collection(0, 0), droppedWrites: 7 };
     expect(searchBackendProblems({ ...base, droppedWrites: 1, collections: { lessons: dropped } }).find((p) => p.code === "search-writes-dropped")?.message).toMatch(/^8 /);
+  });
+});
+
+describe("collection reconcile fix round (ocr)", () => {
+  /** 2500 records the index lacks: three repair pages. */
+  function collectionRig(onRepair: (page: number) => void) {
+    const health = new BackendHealth();
+    const pages: string[][] = [];
+    const records: CollectionRecords = {
+      wanted: async () => new Map(Array.from({ length: 2500 }, (_, i) => [`id_${i}`, "r"])),
+      repair: async (_kv, ids) => {
+        pages.push([...ids]);
+        onRepair(pages.length);
+      },
+    };
+    const outbox = { drainFor: async () => {}, pending: 0, counters: { spilled: 0 } };
+    const client = { scanEntries: async () => ({ items: [] }), health: async () => ({ ok: true }) };
+    const c = new CollectionReconciler("lessons", { client: client as never, health, outbox: outbox as never, records });
+    return { c, health, pages };
+  }
+
+  it("stops repairing and reports paused-degraded when the backend degrades between pages (#5)", async () => {
+    const { c, health, pages } = collectionRig(() => health.reportFailure(new Error("worker gone")));
+    await c.run(mockKV() as never, () => false);
+    expect(pages).toHaveLength(1);
+    expect(c.status().reconcile).toMatchObject({ state: "paused-degraded", added: 1000, finishedAt: null });
+  });
+
+  it("does not report a pass cut short by stop as finished, and counts only the repairs it sent (#9)", async () => {
+    let stopped = false;
+    const { c, pages } = collectionRig(() => (stopped = true));
+    await c.run(mockKV() as never, () => stopped);
+    expect(pages).toHaveLength(1);
+    expect(c.status().reconcile.state).not.toBe("idle");
+    expect(c.status().reconcile).toMatchObject({ added: 1000, deleted: 0, finishedAt: null });
+  });
+
+  it("reports a collection whose reconcile keeps failing (#8)", () => {
+    const failing = {
+      state: "healthy" as const, reason: null, pendingWrites: 0, droppedWrites: 0, missing: 3, extra: 0,
+      reconcile: { state: "idle" as const, startedAt: null, finishedAt: null, durationMs: null, checked: 0, added: 0, deleted: 0, error: "scan failed" },
+    };
+    const status = {
+      backend: "disk" as const, state: "healthy" as const, reason: null, since: "", documents: 0, vectors: 0, pendingWrites: 0, droppedWrites: 0,
+      missingDocuments: 0, missing: { observations: 0, memories: 0 }, missingVectors: null,
+      reconcile: { state: "idle" as const, startedAt: null, finishedAt: null, durationMs: null, checked: 0, added: 0, deleted: 0, error: null },
+      reembed: { state: "off" as const, perMinute: 0, embedded: 0, failed: 0 },
+      collections: { images: failing },
+    };
+    const problem = searchBackendProblems(status).find((p) => p.code === "search-collection-reconcile-failing");
+    expect(problem).toMatchObject({ level: "warn" });
+    expect(problem?.message).toContain("images");
+    expect(problem?.message).toContain("scan failed");
   });
 });
 
