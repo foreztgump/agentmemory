@@ -5,7 +5,7 @@
 //   capture         10 documents a second, as capture hooks write them
 //   capture-prefix  the same, with every query word cut to 60% of its length
 //   import          256-document batches back to back
-// Exits 1 when a capture phase's p99 passes --ceiling-p99-ms.
+// Exits 1 when the capture phase's p99 passes --ceiling-p99-ms in either run; the other phases are reported, not gated.
 //
 //   node --import tsx bench/fork/qdrant/keyword-capture.ts --qdrant http://127.0.0.1:16345 [--count 200000] [--seconds 60] [--ceiling-p99-ms 60]
 //
@@ -31,7 +31,10 @@ const { values: args } = parseArgs({
   },
 });
 const COUNT = Number(args.count), SECONDS = Number(args.seconds), CEILING = Number(args["ceiling-p99-ms"]);
+const PHASES = ["idle", "capture", "capture-prefix", "import"];
 const phases = new Set(args.phases!.split(","));
+const unknown = [...phases].filter((p) => !PHASES.includes(p));
+if (unknown.length > 0) throw new Error(`--phases takes ${PHASES.join(",")}; got ${unknown.join(",")}`);
 if (!(Number.isInteger(COUNT) && COUNT >= 1000) || !(Number.isFinite(SECONDS) && SECONDS > 0) || !(Number.isFinite(CEILING) && CEILING > 0)) {
   throw new Error("--count must be a whole number of at least 1000, --seconds and --ceiling-p99-ms finite numbers above 0");
 }
@@ -77,13 +80,16 @@ async function phase(name: string, run: number, qs: string[], writer?: (stop: { 
   if (writer) await sleep(2000);
   const latency: number[] = [];
   const started = performance.now();
-  for (let i = 0; latency.length < 500 || performance.now() - started < SECONDS * 1000; i++) {
-    const t0 = performance.now();
-    await engine.keyword(qs[i % qs.length]!, 10, "all");
-    latency.push(performance.now() - t0);
+  try {
+    for (let i = 0; latency.length < 500 || performance.now() - started < SECONDS * 1000; i++) {
+      const t0 = performance.now();
+      await engine.keyword(qs[i % qs.length]!, 10, "all");
+      latency.push(performance.now() - t0);
+    }
+  } finally {
+    stop.v = true;
+    await writing;
   }
-  stop.v = true;
-  await writing;
   const p99 = pct(latency, 0.99);
   log({ phase: name, run, searches: latency.length, p50: pct(latency, 0.5), p95: pct(latency, 0.95), p99, max: pct(latency, 1) });
   return p99;
@@ -103,6 +109,7 @@ for (let i = 0; i < corpus.length; i += 256) await apply(corpus.slice(i, i + 256
 log({ phase: "load", docs: corpus.length, s: Math.round((performance.now() - loadStarted) / 1000) });
 engine.prefixes!.fillInBackground();
 await settle();
+if (!engine.prefixes!.isReady) throw new Error("the prefix vocabulary did not fill; the run would measure search without prefix expansion");
 log({ phase: "prefix-vocabulary", terms: engine.prefixes!.size, ready: engine.prefixes!.isReady });
 for (const q of queries(555).slice(0, 100)) await engine.keyword(q, 10, "all");
 

@@ -33,6 +33,7 @@ await engine.keyword(queries[0]!, 10, "all");
 await engine.settled();
 if (!engine.prefixes?.isReady) throw new Error("the prefix vocabulary did not fill");
 
+// The raw query uses the capped prefix expansion, cheaper than the engine's complete one, so the budget errs strict.
 async function raw(query: string, limit: number): Promise<void> {
   const prefixes = engine.prefixes!;
   await qdrant.call("POST", `${qdrant.path}/points/query`, {

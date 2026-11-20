@@ -56,6 +56,7 @@ for await (const points of scroll()) {
     for (const t of new Set(payload.terms as string[])) df.set(t, (df.get(t) ?? 0) + 1);
   }
 }
+if (N === 0) throw new Error("the collection holds no documents with stored terms");
 const avgdl = totalLength / N;
 const expanded = new Map(cases.map((c) => [c.id, expandLexicalTerms(queryTerms(c.query), df)]));
 const relevant = new Set([...expanded.values()].flatMap((q) => q.flatMap(({ term, prefixes }) => [term, ...prefixes])));
@@ -77,7 +78,7 @@ if (!engine.prefixes?.isReady) throw new Error("the prefix vocabulary did not fi
 const exactOf = new Map<string, ReturnType<typeof lexicalBm25>>();
 for (const c of cases) exactOf.set(c.id, lexicalBm25(documents, expanded.get(c.id)!, df, N, avgdl, 100_000));
 
-// Qdrant's own order for the engine's sparse query, before any re-scoring in the worker.
+// Qdrant's own order for the sparse query with capped prefix expansion, as the engine sends before its vocabulary is ready; no re-scoring.
 async function rawQdrant(query: string, depth = DEPTH): Promise<string[]> {
   const prefixes = engine.prefixes;
   const sparse = querySparse(query, prefixes ? (terms) => prefixes.expand(terms) : undefined);

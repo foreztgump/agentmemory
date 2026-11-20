@@ -33,6 +33,10 @@ const K = Number(args.k);
 const profile = JSON.parse(readFileSync(args.profile!, "utf8")) as Profile;
 const qdrant = new Qdrant({ url: args.qdrant!, collection: args.collection ?? `parity_${DOCS}`, dimensions: 16, oversampling: 6, timeoutMs: 120_000 });
 const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
+async function apply(batch: Parameters<typeof engine.apply>[0]): Promise<void> {
+  const r = await engine.apply(batch);
+  if (r.failed.length > 0 || r.applied !== batch.length) throw new Error(`apply: ${JSON.stringify(r).slice(0, 300)}`);
+}
 const memory = new SearchIndex();
 const seen = new Set<string>();
 const queries: string[] = [];
@@ -58,12 +62,12 @@ for (let s = 0; memory.size < DOCS; s++) {
     const fields = termSourceOf(o);
     batch.push({ k: "doc", id: o.id, sessionId: o.sessionId, layer: "observation", ts: Date.parse(o.timestamp), rev: contentRev(fields), fields });
     if (batch.length >= 512) {
-      await engine.apply(batch);
+      await apply(batch);
       batch = [];
     }
   }
 }
-if (batch.length > 0) await engine.apply(batch);
+if (batch.length > 0) await apply(batch);
 // A first search starts the vocabulary fill; every compared search runs after it.
 await engine.keyword(queries[0] ?? "warmup", K, "all");
 await engine.settled();
