@@ -103,7 +103,7 @@ export class PrefixVocabulary {
       if (scanned.has(term) || df <= 0) return;
       scanned.add(term);
       const bare = bareForm(term);
-      for (const id of new Set([termId(term), ...(bare !== term && bare.length >= 2 ? [termId(bare)] : [])])) indexed.set(id, (indexed.get(id) ?? 0) + df);
+      for (const id of [termId(term), ...(bare !== term && bare.length >= 2 ? [termId(bare)] : [])]) indexed.set(id, (indexed.get(id) ?? 0) + df);
     };
     for (const { term, weight } of query) {
       const prefixes = this.completePrefixes(term);
