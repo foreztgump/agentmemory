@@ -117,6 +117,18 @@ describe("PrefixVocabulary", () => {
     expect(vocab.scoreUpperBound(query, querySparse("redis", (terms) => vocab.expand(terms, true)))).toBe(Infinity);
   });
 
+  it("turns both score bounds off when terms not yet folded push a complete expansion past its ceiling", () => {
+    const { vocab } = vocabulary([], { maxTerms: 10_000, expansionsPerTerm: 4 });
+    for (let i = 0; i < 2049; i++) vocab.observe([`redis${i}`]);
+    vocab.noteIndexedAverageLength(1);
+    const { sorted, fresh } = vocab as unknown as { sorted: string[]; fresh: string[] };
+    expect(sorted.length).toBeLessThanOrEqual(2048);
+    expect(fresh.length).toBeGreaterThan(0);
+    const query = queryTerms("redis");
+    expect(vocab.scoreUpperBound(query, querySparse("redis", (terms) => vocab.expand(terms, true)))).toBe(Infinity);
+    expect(vocab.documentScoreUpperBound(query)({ indices: [termId("redis0")], values: [1] })).toBe(Infinity);
+  });
+
   it("expands a query term into the longer terms it prefixes, at half its weight, after one scroll", async () => {
     const { vocab, calls } = vocabulary([["deploy", "deployment"], ["deployer", "other"], ["dep"], ["deploy."]]);
     expect(expanded(vocab, "deploy")).toEqual([]);

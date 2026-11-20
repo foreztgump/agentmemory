@@ -43,11 +43,16 @@ const AVGDL_DRIFT = 0.1;
 const REWEIGHT_PAGE = 256;
 const DL_FACET_LIMIT = 100_000;
 const LESSON_TERMS_FILTER_LIMIT = 1024;
+// ponytail: the deep read stops at max(4 x limit, limit + 500) ids. Qdrant sums a term's prefix matches where SearchIndex takes the best one,
+// so on a short prefix query ("bes" at 200k synthetic docs) the exact top docs can sit near Qdrant position 2,000 and 7 of 540 lists differ.
+// Paging ids until the bound stops closes it but costs p99 430-700 ms; one Qdrant query per prefix term (a batch) would keep it exact and bounded.
 const KEYWORD_CANDIDATE_MULTIPLIER = 4;
 const KEYWORD_CANDIDATE_MARGIN = 500;
 /** Candidates read past the limit before the score bound decides whether a deeper read is needed. */
 const KEYWORD_SHALLOW_SLACK = 16;
+/** Deep candidates whose payload one request fetches; small, so a rising k-th score stops the read early. */
 const KEYWORD_PAYLOAD_CHUNK = 16;
+/** Sparse query size past which the deep read also takes each candidate's vector: a per-document bound costs less than the payloads a loose global bound would fetch. */
 const KEYWORD_VECTOR_BOUND_TERMS = 1024;
 
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };

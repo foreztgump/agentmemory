@@ -26,6 +26,9 @@ const MAX_SCAN = 8192;
 /** Prefix terms one query term may add when re-scoring needs all of them; past it the term expands as usual and the score bound is off. */
 const COMPLETE_EXPANSION_MAX = 2048;
 /** Slack on the score bound, so float rounding in the two scorers cannot drop a document that ties the k-th. */
+// ponytail: Qdrant's idf also counts point versions it has not vacuumed yet (up to its 20% deleted threshold per segment), so its df
+// can exceed the live df and an exact score can pass the bound: 0.7% on one of 540 lists at 200k docs. A 1% slack closes it but
+// triples keyword p95; reading Qdrant's effective idf per query term would make the bound exact.
 const BOUND_SLACK = 1 + 1e-5;
 const FILL_PAGE = 1000;
 
@@ -94,15 +97,10 @@ export class PrefixVocabulary {
     const coefficients = new Map<string, number>();
     const add = (term: string, weight: number) => coefficients.set(term, (coefficients.get(term) ?? 0) + weight);
     for (const { term, weight } of query) {
+      const prefixes = this.completePrefixes(term);
+      if (!prefixes) return Infinity;
       if ((this.df.get(term) ?? 0) > 0) add(term, weight);
-      for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && this.sorted[i]!.startsWith(term); i++, scanned++) {
-        if (scanned > COMPLETE_EXPANSION_MAX) return Infinity;
-        const prefix = this.sorted[i]!;
-        if (prefix !== term && (this.df.get(prefix) ?? 0) > 0) add(prefix, weight * PREFIX_WEIGHT);
-      }
-      for (const prefix of this.fresh) {
-        if (prefix !== term && prefix.startsWith(term) && (this.df.get(prefix) ?? 0) > 0) add(prefix, weight * PREFIX_WEIGHT);
-      }
+      for (const prefix of prefixes) add(prefix, weight * PREFIX_WEIGHT);
     }
     let ratio = 0;
     for (const [term, coefficient] of coefficients) {
@@ -119,9 +117,11 @@ export class PrefixVocabulary {
   }
 
   documentScoreUpperBound(query: readonly WeightedTerm[]): (document: Sparse) => number {
-    const coefficients = query.map((exact) => {
+    const expansions = query.map(({ term }) => this.completePrefixes(term));
+    if (expansions.some((prefixes) => !prefixes)) return () => Infinity;
+    const coefficients = query.map((exact, q) => {
       const weights = new Map<number, number>();
-      for (const { term, weight } of [exact, ...this.expand([exact], true)]) {
+      for (const { term, weight } of [exact, ...expansions[q]!.map((prefix) => ({ term: prefix, weight: exact.weight * PREFIX_WEIGHT }))]) {
         const df = this.df.get(term) ?? 0;
         if (df <= 0) continue;
         const id = termId(term);
@@ -239,17 +239,30 @@ export class PrefixVocabulary {
     this.fresh = [];
   }
 
+  /** Every known term the exact scorer counts as a prefix match of `term`, or null past COMPLETE_EXPANSION_MAX. */
+  private completePrefixes(term: string): string[] | null {
+    const found: string[] = [];
+    const keep = (candidate: string) => (this.df.get(candidate) ?? 0) > 0 && candidate !== term && candidate.startsWith(term);
+    for (let i = lowerBound(this.sorted, term); i < this.sorted.length && found.length <= COMPLETE_EXPANSION_MAX; i++) {
+      const candidate = this.sorted[i]!;
+      if (!candidate.startsWith(term)) break;
+      if (keep(candidate)) found.push(candidate);
+    }
+    for (const candidate of this.fresh) if (found.length <= COMPLETE_EXPANSION_MAX && keep(candidate)) found.push(candidate);
+    return found.length <= COMPLETE_EXPANSION_MAX ? found : null;
+  }
+
   private prefixesOf(term: string, complete = false): string[] {
+    if (complete) return this.completePrefixes(term) ?? this.prefixesOf(term);
     const found: string[] = [];
     // The stored document vector already gives "deploy." the bare form "deploy" at half weight.
-    const keep = (candidate: string) => (this.df.get(candidate) ?? 0) > 0 && candidate !== term && candidate.startsWith(term) && (complete || bareForm(candidate) !== term);
-    for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && (complete ? found.length <= COMPLETE_EXPANSION_MAX : scanned < MAX_SCAN); i++, scanned++) {
+    const keep = (candidate: string) => (this.df.get(candidate) ?? 0) > 0 && candidate !== term && candidate.startsWith(term) && bareForm(candidate) !== term;
+    for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && scanned < MAX_SCAN; i++, scanned++) {
       const candidate = this.sorted[i]!;
       if (!candidate.startsWith(term)) break;
       if (keep(candidate)) found.push(candidate);
     }
     for (const candidate of this.fresh) if (keep(candidate)) found.push(candidate);
-    if (complete) return found.length <= COMPLETE_EXPANSION_MAX ? found : this.prefixesOf(term);
     if (found.length <= this.limits.expansionsPerTerm) return found;
     const rarity = (t: string) => this.df.get(t) ?? 0;
     const ranked = found.sort((a, b) => rarity(a) - rarity(b) || (a < b ? -1 : 1));
