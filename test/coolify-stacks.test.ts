@@ -6,8 +6,28 @@ const load = (file: string) => parse(readFileSync(`deploy/coolify/${file}`, "utf
 const main = load("docker-compose.yml");
 const buddy = load("docker-compose.buddy.yml");
 const buddyOnlyKeys = ["VIEWER_ALLOWED_HOSTS", "VIEWER_ALLOWED_ORIGINS"];
+type Service = { ulimits?: { core?: unknown } };
+type Services = Record<string, Service>;
+// A zero core limit is written as 0, or as a soft/hard pair that is both zero.
+const hasZeroCoreLimit = (service: Service | undefined): boolean => {
+  const core: unknown = service?.ulimits?.core;
+  if (core === 0 || core === "0") return true;
+  return typeof core === "object" && core !== null && "soft" in core && "hard" in core && core.soft === 0 && core.hard === 0;
+};
+const servicesWithoutCoreLimit = (services: Services) => Object.keys(services).filter((name) => !hasZeroCoreLimit(services[name]));
 
 describe("Coolify stacks", () => {
+  // A crashing agentmemory writes a Node core dump of 2.3-3.6 GB into the
+  // container's filesystem: the host's core_pattern names a file and no service
+  // caps the dump size. Main collected 31 GB of them in 10 days.
+  it.each([
+    ["main", main],
+    ["buddy", buddy],
+  ])("%s dumps no core file for any service", (_, services: Services) => {
+    expect(Object.keys(services).length).toBeGreaterThan(0);
+    expect(servicesWithoutCoreLimit(services)).toEqual([]);
+  });
+
   it("give buddy the same agentmemory settings as main apart from the viewer", () => {
     const strip = (environment: Record<string, string>) =>
       Object.fromEntries(Object.entries(environment).filter(([key]) => !buddyOnlyKeys.includes(key)));
