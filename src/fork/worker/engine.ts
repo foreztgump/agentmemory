@@ -12,6 +12,7 @@ import {
   type Op,
   type OpVersion,
   type ScanDocsResult,
+  type ScanEntriesResult,
   type ScanMissingResult,
   type StatsResult,
 } from "../search/protocol.js";
@@ -520,6 +521,12 @@ export class SearchEngine {
       ? [{ key: "layer", match: { value: "observation" } }, { key: "session_id", match: { value: sessionId } }]
       : [{ key: "layer", match: { value: "memory" } }];
     return this.scrollStubs({ must, must_not: [TOMBSTONE] }, cursor, limit);
+  }
+
+  /** One page of every live doc, as id and revision. */
+  async scanEntries(cursor: unknown, limit: unknown): Promise<ScanEntriesResult> {
+    const page = await this.scrollStubs({ must_not: [TOMBSTONE] }, cursor, limit);
+    return { ...page, items: page.items.map(({ id, rev }) => ({ id, rev })) };
   }
 
   private async scrollStubs(filter: unknown, cursor: unknown, limit: unknown): Promise<ScanDocsResult> {

@@ -19,6 +19,7 @@ export function engineClient(engine: SearchEngine, oversampling = 6): SearchWork
     sessionCounts: () => engine.sessionCounts(),
     scanMissingVectors: (cursor, limit) => engine.scanMissingVectors(cursor, limit),
     scanDocs: (sessionId, cursor, limit) => engine.scanDocs(sessionId, cursor, limit),
+    scanEntries: (cursor, limit) => engine.scanEntries(cursor, limit),
     clear: (scope) => engine.clear(scope),
     health: () => engine.health(),
   };
@@ -38,6 +39,7 @@ export function imageEngineClient(engine: ImageEngine): SearchWorkerClient {
     sessionCounts: notServed,
     scanMissingVectors: notServed,
     scanDocs: notServed,
+    scanEntries: (cursor, limit) => engine.scanEntries(cursor, limit),
     clear: (scope) => engine.clear(scope),
     health: () => engine.health(),
   };
