@@ -1,7 +1,7 @@
 import type { SearchResultLayer } from "../../state/search-layer.js";
 import { logger } from "../../logger.js";
 import type { SearchWorkerClient } from "./client.js";
-import { nextOpVersion, seedOpVersion, type ClearScope, type ContentRev, type DelOp, type DocOp, type Op, type VecDelOp, type VecOp } from "./protocol.js";
+import { nextOpVersion, seedOpVersion, type ClearScope, type ContentRev, type DelOp, type DocOp, type ImgOp, type Op, type VecDelOp, type VecOp } from "./protocol.js";
 
 export interface OutboxLimits {
   maxOps: number;
@@ -14,11 +14,11 @@ export const DEFAULT_OUTBOX_LIMITS: OutboxLimits = { maxOps: 5000, maxBytes: 64 
 
 const MAX_BACKOFF_MS = 5000;
 
-/** Pending writes for one id: at most one document change and one vector change, flushed in that order. */
+/** Pending writes for one id: at most one document change (an image counts as one) and one vector change, flushed in that order. */
 interface Slot {
   firstSeq: number;
   lastSeq: number;
-  doc?: DocOp | DelOp;
+  doc?: DocOp | DelOp | ImgOp;
   vec?: VecOp | VecDelOp;
   bytes: number;
 }
@@ -26,6 +26,7 @@ interface Slot {
 function merge(slot: Slot, op: Op): void {
   switch (op.k) {
     case "doc":
+    case "img":
       slot.doc = op;
       break;
     case "del":
@@ -38,7 +39,9 @@ function merge(slot: Slot, op: Op): void {
 }
 
 function slotBytes(slot: Slot): number {
-  const doc = slot.doc?.k === "doc" ? JSON.stringify(slot.doc.fields).length : 0;
+  let doc = 0;
+  if (slot.doc?.k === "doc") doc = JSON.stringify(slot.doc.fields).length;
+  else if (slot.doc?.k === "img") doc = slot.doc.f32b64.length + slot.doc.updatedAt.length + slot.doc.sessionId.length + (slot.doc.observationId?.length ?? 0);
   const vec = slot.vec?.k === "vec" ? slot.vec.f32b64.length : 0;
   return 128 + doc + vec;
 }

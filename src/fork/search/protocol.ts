@@ -13,7 +13,25 @@ export const SEARCH_FN = {
   health: "search::health",
   lookup: "search::lookup",
   maxVersion: "search::max-version",
+  imageQuery: "search::image-query",
 } as const;
+
+/** One list drives the collection names, the worker's routing and the client binding. */
+export const COLLECTION_SUFFIX = { docs: "", lessons: "_lessons", images: "_images" } as const;
+export type CollectionId = keyof typeof COLLECTION_SUFFIX;
+
+export const COLLECTION_IDS = Object.keys(COLLECTION_SUFFIX) as CollectionId[];
+
+export function isCollectionId(value: unknown): value is CollectionId {
+  return typeof value === "string" && Object.hasOwn(COLLECTION_SUFFIX, value);
+}
+
+export function collectionName(base: string, id: CollectionId): string {
+  return `${base}${COLLECTION_SUFFIX[id]}`;
+}
+
+/** Every request may name its collection; absent means docs, so the docs wire format carries no field. */
+export interface CollectionScoped { collection?: CollectionId }
 
 /** Content hash of a document's indexed text; the fence a vector must match to be stored. */
 export type ContentRev = string & { readonly __brand: "ContentRev" };
@@ -26,7 +44,9 @@ export type DocOp = { k: "doc"; id: string; sessionId: string; layer: SearchResu
 export type DelOp = { k: "del"; id: string };
 export type VecOp = { k: "vec"; id: string; rev: ContentRev; f32b64: string };
 export type VecDelOp = { k: "vec-del"; id: string };
-export type Op = DocOp | DelOp | VecOp | VecDelOp;
+/** An image embedding with its metadata; valid only on the images collection. */
+export type ImgOp = { k: "img"; id: string; sessionId: string; f32b64: string; observationId?: string; updatedAt: string };
+export type Op = DocOp | DelOp | VecOp | VecDelOp | ImgOp;
 
 export type ClearScope = "all" | "vectors";
 
@@ -55,7 +75,7 @@ export function seedOpVersion(version: OpVersion): void {
 
 export interface MaxVersionResult { version: OpVersion }
 
-export interface ApplyRequest { ops: Op[]; version?: OpVersion }
+export interface ApplyRequest extends CollectionScoped { ops: Op[]; version?: OpVersion }
 export interface ApplyResult {
   applied: number;
   /** Vector changes dropped because the record changed, was deleted, or holds a newer invocation's version. */
@@ -64,9 +84,14 @@ export interface ApplyResult {
 }
 
 export interface Hit { id: string; sessionId: string; score: number }
-export interface KeywordRequest { query: string; limit: number; layer: SearchLayer }
-export interface VectorRequest { f32b64: string; limit: number; layer: SearchLayer }
+export interface KeywordRequest extends CollectionScoped { query: string; limit: number; layer: SearchLayer }
+export interface VectorRequest extends CollectionScoped { f32b64: string; limit: number; layer: SearchLayer }
 export interface HitsResult { hits: Hit[] }
+
+export interface ImageQueryRequest extends CollectionScoped { f32b64: string; limit: number; sessionId?: string }
+export interface ImageHit { id: string; sessionId: string; observationId?: string; updatedAt: string; score: number }
+/** `total` counts the live images under the same session filter. */
+export interface ImageQueryResult { hits: ImageHit[]; total: number }
 
 export interface StatsResult {
   docs: number;
@@ -79,14 +104,14 @@ export interface StatsResult {
 
 export interface SessionCountsResult { counts: Array<[string, number]> }
 
-export interface ScanMissingRequest { cursor?: string; limit: number }
+export interface ScanMissingRequest extends CollectionScoped { cursor?: string; limit: number }
 export interface ScanMissingResult {
   items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }>;
   next?: string;
 }
 
-export interface LookupRequest { ids: string[] }
+export interface LookupRequest extends CollectionScoped { ids: string[] }
 export interface LookupResult { items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }> }
 
-export interface ClearRequest { scope: ClearScope }
+export interface ClearRequest extends CollectionScoped { scope: ClearScope }
 export interface HealthResult { ok: boolean; collection: string; dimensions: number; status: string; error?: string }
