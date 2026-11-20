@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { DEFAULT_AVGDL } from "../../../src/fork/search/settings.js";
+import { querySparse } from "../../../src/fork/worker/bm25-sparse.js";
 import { SearchEngine } from "../../../src/fork/worker/engine.js";
 import { expandLexicalTerms, lexicalBm25, type LexicalDocument } from "../../../src/fork/worker/lexical-bm25.js";
 import { Qdrant } from "../../../src/fork/worker/qdrant.js";
@@ -75,12 +76,24 @@ await engine.settled();
 const exactOf = new Map<string, ReturnType<typeof lexicalBm25>>();
 for (const c of cases) exactOf.set(c.id, lexicalBm25(documents, expanded.get(c.id)!, df, N, avgdl, 100_000));
 
+// Qdrant's own order for the engine's sparse query, before any re-scoring in the worker.
+async function rawQdrant(query: string): Promise<string[]> {
+  const prefixes = engine.prefixes;
+  const sparse = querySparse(query, prefixes ? (terms) => prefixes.expand(terms) : undefined);
+  if (sparse.indices.length === 0) return [];
+  const res = await qdrant.call<{ points: Array<{ payload?: { doc_id?: string } }> }>("POST", `${qdrant.path}/points/query`, {
+    query: sparse, using: "bm25", limit: DEPTH, filter: { must_not: [{ key: "deleted", match: { value: true } }] }, with_payload: ["doc_id"],
+  });
+  return res.points.flatMap((p) => (p.payload?.doc_id ? [p.payload.doc_id] : []));
+}
+
 const firstRank = (ids: string[], expected: string[]) => {
   const i = ids.slice(0, 10).findIndex((id) => expected.includes(id));
   return i < 0 ? null : i + 1;
 };
 const runs: Array<Record<string, number | null>> = [];
 const perCase: unknown[] = [];
+let rawMrr = 0, rawRecall = 0;
 let exactMrr = 0, exactRecall = 0, diskMrr = 0, diskRecall = 0, sameTop10 = 0, sameTop10Set = 0, tiedTop10 = 0;
 for (let r = 0; r < Number(args.repeat); r++) {
   const ranks: Record<string, number | null> = {};
@@ -88,6 +101,8 @@ for (let r = 0; r < Number(args.repeat); r++) {
     const disk = await engine.keyword(c.query, DEPTH, "all");
     ranks[c.id] = firstRank(disk.map((h) => h.id), c.expected);
     if (r > 0) continue;
+    const rr = firstRank(await rawQdrant(c.query), c.expected);
+    rawMrr += rr ? 1 / rr : 0; rawRecall += rr ? 1 : 0;
     const exactAll = exactOf.get(c.id)!;
     const exactScore = new Map(exactAll.map((h) => [h.id, h.score]));
     const exact = exactAll.slice(0, DEPTH);
@@ -125,6 +140,7 @@ console.log(JSON.stringify({
   keywordLeg: {
     exact: { recallAt10: +(exactRecall / n).toFixed(4), mrr: +(exactMrr / n).toFixed(4) },
     disk: { recallAt10: +(diskRecall / n).toFixed(4), mrr: +(diskMrr / n).toFixed(4) },
+    rawQdrant: { recallAt10: +(rawRecall / n).toFixed(4), mrr: +(rawMrr / n).toFixed(4) },
     sameTop10: sameTop10 / n, sameTop10Set: sameTop10Set / n, casesWithTiesInExactTop10: tiedTop10,
   },
   unstableAcrossRepeats: unstable,
