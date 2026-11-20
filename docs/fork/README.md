@@ -78,6 +78,20 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 
 [baseline/README.md](baseline/README.md) records the in-memory system's numbers on a replica of buddy's stack and on synthetic stores, and how to re-run them. The scripts are in `bench/fork/`, and `bench/fork/ceilings.json` fails a run that regresses.
 
+## Disk keyword search ceilings
+
+Disk keyword search expands query prefixes and ranks with SearchIndex's exact BM25 (TEE-1195). Two checks hold its costs:
+
+- **Latency under capture writes.** Keyword search p99 under capture writes must stay at or under 60 ms at 200,000 documents. Measured on 2026-11-20 at 41–44 ms. Run it before a change to the keyword path ships. It needs a Qdrant of its own with a 1 GB limit and takes about 25 minutes:
+
+  ```
+  docker run -d --name kw-qdrant -m 1g --memory-swap 1g -p 127.0.0.1:16345:6333 qdrant/qdrant:v1.20.2
+  node --import tsx bench/fork/qdrant/keyword-capture.ts --qdrant http://127.0.0.1:16345 --count 200000
+  ```
+
+  It prints p50, p95 and p99 for each phase. It exits 1 when a capture phase's p99 is above `--ceiling-p99-ms` (default 60).
+- **Worker heap.** `bench/fork/qdrant/prefix-vocabulary-heap.ts` fills the prefix vocabulary to its 1,000,000-term bound and exits 1 above 78 MiB. `npm test` runs it, in `test/fork-prefix-vocabulary-heap.test.ts`.
+
 ## Search engine spikes
 
 [spikes/qdrant.md](spikes/qdrant.md) records the Qdrant memory, recall, latency and point-lifecycle spikes (TEE-1161), the engine decision and the settings for the search worker. The scripts are in `bench/fork/qdrant/`.
