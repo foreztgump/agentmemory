@@ -39,8 +39,8 @@ export class HybridSearch {
     private vector: VectorStorePort | null,
     private embeddingProvider: EmbeddingProvider | null,
     private kv: StateKV,
-    private bm25Weight = 0.4,
-    private vectorWeight = 0.6,
+    private bm25Weight = 0.6,
+    private vectorWeight = 0.4,
     private graphWeight = 0.3,
     private rerankEnabled = process.env.RERANK_ENABLED === "true",
   ) {

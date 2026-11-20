@@ -41,10 +41,9 @@ async function keywordHitRank(bm25Weight: number, vectorWeight: number): Promise
 }
 
 describe("hybrid fusion keeps a keyword rank-1 hit when the vector list does not overlap", () => {
-  // TEE-1204: fails at the shipped 0.4/0.6; flip to `it` when the owner's default weights land.
   afterEach(() => vi.unstubAllEnvs());
 
-  it.fails("at the default weights", async () => {
+  it("at the default weights", async () => {
     vi.stubEnv("BM25_WEIGHT", "");
     vi.stubEnv("VECTOR_WEIGHT", "");
     const { bm25Weight, vectorWeight } = loadEmbeddingConfig();
