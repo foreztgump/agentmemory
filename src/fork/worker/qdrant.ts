@@ -84,7 +84,10 @@ export class Qdrant {
       quantization_config: { binary: { memory: "pinned", encoding: "one_bit", query_encoding: "scalar8bits" } },
       sparse_vectors: { bm25: { modifier: "idf", index: { memory: "cold" } } },
       hnsw_config: { m: 16, ef_construct: 100, memory: "cached" },
-      optimizers_config: { default_segment_number: 2 },
+      // A fill from empty merges and indexes ever larger segments; each build holds memory in proportion
+      // to its segment, and one build per core pushed Qdrant past 1 GB at 130k documents. One build at a
+      // time on segments of at most ~130k documents fills 850k documents under 1 GB (docs/fork/search-migration.md).
+      optimizers_config: { default_segment_number: 2, max_optimization_threads: 1, max_segment_size: 300_000 },
       on_disk_payload: true,
     });
     await this.createPayloadIndexes();
