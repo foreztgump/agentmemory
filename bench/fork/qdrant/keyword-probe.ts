@@ -96,7 +96,9 @@ const runs: Array<Record<string, number | null>> = [];
 const perCase: unknown[] = [];
 let rawMrr = 0, rawRecall = 0;
 // How deep in Qdrant's own order the exact top k sit: the candidate depth a re-score needs.
-const needed: Record<number, number[]> = { 10: [], 40: [] };
+const RAW_DEPTH = 1000;
+const NEEDED_TOP = [10, 40];
+const needed = Object.fromEntries(NEEDED_TOP.map((k) => [k, [] as number[]]));
 let exactMrr = 0, exactRecall = 0, diskMrr = 0, diskRecall = 0, sameTop10 = 0, sameTop10Set = 0, tiedTop10 = 0;
 for (let r = 0; r < Number(args.repeat); r++) {
   const ranks: Record<string, number | null> = {};
@@ -104,10 +106,10 @@ for (let r = 0; r < Number(args.repeat); r++) {
     const disk = await engine.keyword(c.query, DEPTH, "all");
     ranks[c.id] = firstRank(disk.map((h) => h.id), c.expected);
     if (r > 0) continue;
-    const raw = await rawQdrant(c.query, 1000);
+    const raw = await rawQdrant(c.query, RAW_DEPTH);
     const rawPos = new Map(raw.map((id, i) => [id, i + 1]));
-    for (const k of [10, 40]) needed[k]!.push(Math.max(0, ...exactOf.get(c.id)!.slice(0, k).map((h) => rawPos.get(h.id) ?? 1001)));
-    const rr = firstRank(raw, c.expected);
+    for (const k of NEEDED_TOP) needed[k]!.push(Math.max(0, ...exactOf.get(c.id)!.slice(0, k).map((h) => rawPos.get(h.id) ?? RAW_DEPTH + 1)));
+    const rr = firstRank(raw.slice(0, DEPTH), c.expected);
     rawMrr += rr ? 1 / rr : 0; rawRecall += rr ? 1 : 0;
     const exactAll = exactOf.get(c.id)!;
     const exactScore = new Map(exactAll.map((h) => [h.id, h.score]));

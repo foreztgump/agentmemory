@@ -23,6 +23,10 @@ export const DEFAULT_VOCABULARY_LIMITS: VocabularyLimits = { maxTerms: 1_000_000
 const foldAfter = (sorted: number) => Math.max(1024, sorted >>> 6);
 /** Prefix matches examined per query term, so a two-letter term cannot walk the whole vocabulary. */
 const MAX_SCAN = 8192;
+/** Prefix terms one query term may add when re-scoring needs all of them; past it the term expands as usual and the score bound is off. */
+const COMPLETE_EXPANSION_MAX = 2048;
+/** Slack on the score bound, so float rounding in the two scorers cannot drop a document that ties the k-th. */
+const BOUND_SLACK = 1 + 1e-5;
 const FILL_PAGE = 1000;
 
 interface ScrollPage {
@@ -80,7 +84,8 @@ export class PrefixVocabulary {
   }
 
   noteIndexedAverageLength(averageLength: number): void {
-    this.minimumAverageLength = Math.min(this.minimumAverageLength, averageLength > 0 ? averageLength : 0);
+    // A point without a stored mean (older than the field) carries no bound; reweighting stamps it later.
+    if (averageLength > 0) this.minimumAverageLength = Math.min(this.minimumAverageLength, averageLength);
   }
 
   scoreUpperBound(query: readonly WeightedTerm[], sparse: Sparse): number {
@@ -90,7 +95,8 @@ export class PrefixVocabulary {
     const add = (term: string, weight: number) => coefficients.set(term, (coefficients.get(term) ?? 0) + weight);
     for (const { term, weight } of query) {
       if ((this.df.get(term) ?? 0) > 0) add(term, weight);
-      for (let i = lowerBound(this.sorted, term); i < this.sorted.length && this.sorted[i]!.startsWith(term); i++) {
+      for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && this.sorted[i]!.startsWith(term); i++, scanned++) {
+        if (scanned > COMPLETE_EXPANSION_MAX) return Infinity;
         const prefix = this.sorted[i]!;
         if (prefix !== term && (this.df.get(prefix) ?? 0) > 0) add(prefix, weight * PREFIX_WEIGHT);
       }
@@ -109,7 +115,7 @@ export class PrefixVocabulary {
       const indexedIdf = Math.log((this.documents - indexedDf + 0.5) / (indexedDf + 0.5) + 1);
       ratio = Math.max(ratio, coefficient * idf / (weight * indexedIdf));
     }
-    return ratio * Math.max(1, this.averageLength / this.minimumAverageLength) * (1 + 1e-5);
+    return ratio * Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK;
   }
 
   observe(terms: readonly string[]): void {
@@ -215,13 +221,14 @@ export class PrefixVocabulary {
     const found: string[] = [];
     // The stored document vector already gives "deploy." the bare form "deploy" at half weight.
     const keep = (candidate: string) => (this.df.get(candidate) ?? 0) > 0 && candidate !== term && candidate.startsWith(term) && (complete || bareForm(candidate) !== term);
-    for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && (complete || scanned < MAX_SCAN); i++, scanned++) {
+    for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && (complete ? found.length <= COMPLETE_EXPANSION_MAX : scanned < MAX_SCAN); i++, scanned++) {
       const candidate = this.sorted[i]!;
       if (!candidate.startsWith(term)) break;
       if (keep(candidate)) found.push(candidate);
     }
     for (const candidate of this.fresh) if (keep(candidate)) found.push(candidate);
-    if (complete || found.length <= this.limits.expansionsPerTerm) return found;
+    if (complete) return found.length <= COMPLETE_EXPANSION_MAX ? found : this.prefixesOf(term);
+    if (found.length <= this.limits.expansionsPerTerm) return found;
     const rarity = (t: string) => this.df.get(t) ?? 0;
     const ranked = found.sort((a, b) => rarity(a) - rarity(b) || (a < b ? -1 : 1));
     // Common terms can win on short documents despite their lower idf.

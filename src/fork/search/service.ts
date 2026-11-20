@@ -45,7 +45,7 @@ export class DiskBackendService implements SearchBackendService {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const stats = await Promise.race([
-          this.parts.client.stats(),
+          this.parts.client.stats().catch(() => null),
           new Promise<null>((resolve) => {
             timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
           }),

@@ -76,6 +76,24 @@ describe("PrefixVocabulary", () => {
     expect(Number.isFinite(vocab.scoreUpperBound(query, querySparse("redis", (terms) => vocab.expand(terms, true))))).toBe(true);
   });
 
+  it("keeps its score bound when a point carries no stored mean length", () => {
+    const { vocab } = vocabulary([]);
+    vocab.observe(["redis1"]);
+    vocab.noteIndexedAverageLength(1);
+    vocab.noteIndexedAverageLength(0);
+    const query = queryTerms("redis");
+    expect(Number.isFinite(vocab.scoreUpperBound(query, querySparse("redis", (terms) => vocab.expand(terms, true))))).toBe(true);
+  });
+
+  it("bounds a complete expansion: past its ceiling a term expands as usual and the score bound is off", () => {
+    const { vocab } = vocabulary([], { maxTerms: 10_000, expansionsPerTerm: 4 });
+    for (let i = 0; i < 3000; i++) vocab.observe([`redis${i}`]);
+    vocab.noteIndexedAverageLength(1);
+    expect(vocab.expand([{ term: "redis", weight: 1 }], true)).toHaveLength(4);
+    const query = queryTerms("redis");
+    expect(vocab.scoreUpperBound(query, querySparse("redis", (terms) => vocab.expand(terms, true)))).toBe(Infinity);
+  });
+
   it("expands a query term into the longer terms it prefixes, at half its weight, after one scroll", async () => {
     const { vocab, calls } = vocabulary([["deploy", "deployment"], ["deployer", "other"], ["dep"], ["deploy."]]);
     expect(expanded(vocab, "deploy")).toEqual([]);

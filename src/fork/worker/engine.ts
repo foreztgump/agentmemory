@@ -45,6 +45,8 @@ const DL_FACET_LIMIT = 100_000;
 const LESSON_TERMS_FILTER_LIMIT = 1024;
 const KEYWORD_CANDIDATE_MULTIPLIER = 4;
 const KEYWORD_CANDIDATE_MARGIN = 500;
+/** Candidates read past the limit before the score bound decides whether a deeper read is needed. */
+const KEYWORD_SHALLOW_SLACK = 16;
 
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
 
@@ -166,7 +168,7 @@ export class SearchEngine {
       if (op.k === "doc" || op.k === "del") writtenFirst.add(op.id);
       else if (op.k === "vec" && !writtenFirst.has(op.id)) lookup.add(op.id);
     }
-    const corpusIds = this.prefixes ? [...writtenFirst] : [];
+    const corpusIds = this.prefixes?.counting ? [...writtenFirst] : [];
     const epoch = this.collectionEpoch;
     for (const id of corpusIds) lookup.add(id);
     await this.ready();
@@ -429,7 +431,7 @@ export class SearchEngine {
     const terms = queryTerms(query);
     const factor = rescore ? prefixes!.scoreUpperBound(terms, sparse) : Infinity;
     const depth = Math.min(MAX_LIMIT, Math.max(count * KEYWORD_CANDIDATE_MULTIPLIER, count + KEYWORD_CANDIDATE_MARGIN));
-    const shallow = Number.isFinite(factor) ? Math.min(depth, count + 16) : depth;
+    const shallow = Number.isFinite(factor) ? Math.min(depth, count + KEYWORD_SHALLOW_SLACK) : depth;
     const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", this.qdrant.path + "/points/query", {
       query: sparse, using: "bm25", limit: rescore ? shallow : count, filter,
       with_payload: rescore ? [...HIT_PAYLOAD, "terms", "dl", "lexical_order"] : HIT_PAYLOAD,
@@ -440,7 +442,7 @@ export class SearchEngine {
     const add = (points: RecordPoint[]) => {
       for (const { payload } of points) {
         const stored = storedDocument(payload);
-        if (!payload?.doc_id || payload.deleted || !stored) continue;
+        if (!payload?.doc_id || !stored) continue;
         documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", ...stored, order: payload.lexical_order ?? [0, 0] });
         for (const term of stored.terms) candidateTerms.set(term, 1);
       }
