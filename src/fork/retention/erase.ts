@@ -11,9 +11,9 @@ import type { StateKV } from "../../state/kv.js";
  *     stale with mutateIndexedGraphRecord, the path mem::cascade-update uses; graph queries already skip
  *     stale items. Marked stale, not deleted, in phase 1 (design 4.7).
  *   - session count: assign Session.observationCount from ObservationStats (L4).
- *   - retention copies: a vault entry (found through mem:retention:items) or a demote record (a point read
- *     of mem:retention:demoted) for the id is deleted, with its locator, so a forgotten item cannot come
- *     back by restore. An id that exists only in a vault (forget arrived during
+ *   - retention copies: a vault entry and its locator (found through mem:retention:items), or a demote
+ *     record (a point read of mem:retention:demoted; demotes have no locator), is deleted, so a forgotten
+ *     item cannot come back by restore. An id that exists only in a vault (forget arrived during
  *     grace) is erased from there; forget's own not-found answer for it is replaced by "erased from trash".
  */
 export interface ErasedIds {

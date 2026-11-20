@@ -52,6 +52,9 @@ export function reinstateDemote(deps: RetentionDeps, record: DemoteRecord): Prom
  *  demote: the record is written first, then the mark, then the index removals, so re-running the demote
  *    for every DemoteRecord of the run converges. They are found by a paged pass over
  *    mem:retention:demoted filtered by runId (small: memories only).
+ *
+ * Counts: `finished` is a trashed id settled, a trim rewrite completed or a demote replayed;
+ * `detachedAgain` is trash only.
  */
 export function recoverRun(deps: RetentionDeps, vault: Vault, runId: RunId): Promise<{ finished: number; detachedAgain: number }> {
   void deps;
