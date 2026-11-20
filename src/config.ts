@@ -438,12 +438,12 @@ export function describeLlmRoute(provider: ProviderConfig): string | null {
 
 export function loadEmbeddingConfig(): EmbeddingConfig {
   const env = getMergedEnv();
-  let bm25Weight = parseFloat(env["BM25_WEIGHT"] || "0.4");
-  let vectorWeight = parseFloat(env["VECTOR_WEIGHT"] || "0.6");
+  let bm25Weight = parseFloat(env["BM25_WEIGHT"] || "0.6");
+  let vectorWeight = parseFloat(env["VECTOR_WEIGHT"] || "0.4");
   bm25Weight =
-    isNaN(bm25Weight) || bm25Weight < 0 ? 0.4 : Math.min(bm25Weight, 1);
+    isNaN(bm25Weight) || bm25Weight < 0 ? 0.6 : Math.min(bm25Weight, 1);
   vectorWeight =
-    isNaN(vectorWeight) || vectorWeight < 0 ? 0.6 : Math.min(vectorWeight, 1);
+    isNaN(vectorWeight) || vectorWeight < 0 ? 0.4 : Math.min(vectorWeight, 1);
   return {
     provider: env["EMBEDDING_PROVIDER"] || undefined,
     bm25Weight,

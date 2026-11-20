@@ -17,7 +17,7 @@ export interface ReconcileReport {
   finishedAt: string | null;
   durationMs: number | null;
   sessions?: number;
-  /** Units (a session's observations, the memories, a session gone from the records) compared document by document. */
+  /** Units (a session's observations, the memories, a session gone from the records) compared document by document; for a collection, its records. */
   checked: number;
   added: number;
   deleted: number;
@@ -29,6 +29,22 @@ export interface ReembedReport {
   perMinute: number;
   embedded: number;
   failed: number;
+}
+
+export type CollectionName = "lessons" | "images";
+
+/** One small collection (lessons, images) against its records, as the last reconcile compare found it. */
+export interface CollectionStatus {
+  state: "healthy" | "degraded";
+  reason: string | null;
+  pendingWrites: number;
+  /** Writes dropped while the worker was unreachable; reconcile repairs them. */
+  droppedWrites: number;
+  /** Records with no entry or an outdated one; null until a compare has finished. */
+  missing: number | null;
+  /** Entries with no live record; null until a compare has finished. */
+  extra: number | null;
+  reconcile: ReconcileReport;
 }
 
 /** The status page's view of a search backend that lives outside the app worker. */
@@ -50,6 +66,7 @@ export interface SearchBackendStatus {
   missingVectors: number | null;
   reconcile: ReconcileReport;
   reembed: ReembedReport;
+  collections?: Partial<Record<CollectionName, CollectionStatus>>;
 }
 
 /** What smart-search attaches while it answers without the keyword and vector streams. */
@@ -121,11 +138,34 @@ export function searchBackendProblems(s: SearchBackendStatus | null | undefined)
         : "No action needed: reconcile adds them in the background.",
     });
   }
-  if (s.droppedWrites > 0) {
+  for (const [name, c] of Object.entries(s.collections ?? {})) {
+    if (!c) continue;
+    if (c.state === "healthy" && c.reconcile.error) {
+      problems.push({
+        level: "warn",
+        code: "search-collection-reconcile-failing",
+        message: `The ${name} search collection reconcile failed: ${c.reconcile.error}. Its missing and extra counts may be stale.`,
+        fix: "The next pass retries. Check the server log if this stays.",
+      });
+    }
+    const missing = c.missing ?? 0;
+    const extra = c.extra ?? 0;
+    if (missing + extra === 0) continue;
+    problems.push({
+      level: "warn",
+      code: "search-collection-differs",
+      message: `The ${name} search collection differs from the records: ${missing} missing or outdated, ${extra} with no record.`,
+      fix: c.reconcile.state === "off"
+        ? "Reconcile is off. Set AM_SEARCH_RECONCILE_INTERVAL_MS above 0 to repair it."
+        : "No action needed: reconcile repairs it in the background.",
+    });
+  }
+  const droppedWrites = Object.values(s.collections ?? {}).reduce((n, c) => n + (c?.droppedWrites ?? 0), s.droppedWrites);
+  if (droppedWrites > 0) {
     problems.push({
       level: "info",
       code: "search-writes-dropped",
-      message: `${s.droppedWrites} search index writes were dropped while the search worker was unreachable.`,
+      message: `${droppedWrites} search index writes were dropped while the search worker was unreachable.`,
       fix: s.reconcile.state === "off"
         ? "Reconcile is off. Set AM_SEARCH_RECONCILE_INTERVAL_MS above 0 to re-derive them from the records."
         : "No action needed: reconcile re-derives them from the records.",

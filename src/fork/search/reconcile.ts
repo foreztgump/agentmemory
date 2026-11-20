@@ -6,10 +6,11 @@ import { sessionObservationTotals } from "../kv/observation-stats.js";
 import { countRows, scanRows } from "../kv/paged-scan.js";
 import type { ReconcileReport } from "./backend-status.js";
 import type { SearchWorkerClient } from "./client.js";
+import type { CollectionReconciler } from "./collection-reconcile.js";
 import { docOfRecord, type IndexDoc } from "./doc-of-record.js";
 import type { BackendHealth } from "./health.js";
 import type { SearchOutbox } from "./outbox.js";
-import type { ContentRev, DocStub } from "./protocol.js";
+import type { ContentRev, DocStub, EntryStub } from "./protocol.js";
 import type { RemoteKeywordIndex } from "./remote-index.js";
 
 const SCAN_PAGE = 1000;
@@ -28,8 +29,8 @@ export interface UnitDiff {
   leaked: string[];
 }
 
-/** Pure: compares what the records want indexed (id to rev) with the live docs of one unit. */
-export function diffDocs(wanted: ReadonlyMap<string, ContentRev>, indexed: readonly DocStub[]): UnitDiff {
+/** Pure: compares what the records want indexed (id to rev) with the live entries of one unit. */
+export function diffDocs(wanted: ReadonlyMap<string, string>, indexed: readonly EntryStub[]): UnitDiff {
   const seen = new Set<string>();
   const stale: string[] = [];
   const leaked: string[] = [];
@@ -51,6 +52,8 @@ export interface ReconcilerDeps {
   health: BackendHealth;
   intervalMs: number;
   sweepPerPass: number;
+  /** Lessons and images: compared in full after the docs on every pass. */
+  collections?: readonly CollectionReconciler[];
 }
 
 interface UnitResult { added: number; deleted: number; wanted: number }
@@ -87,12 +90,14 @@ export class Reconciler {
     this.kv = kv;
     if (this.deps.intervalMs === 0) {
       this.state = { ...this.state, state: "off" };
+      for (const collection of this.collections) collection.turnOff();
       return;
     }
     this.deps.health.onRecover(() => {
       this.memoriesDue = true;
       this.kick();
     });
+    for (const collection of this.collections) collection.health.onRecover(() => this.kick());
     this.schedule(FIRST_PASS_DELAY_MS);
   }
 
@@ -112,6 +117,10 @@ export class Reconciler {
       this.running = null;
     });
     return this.running;
+  }
+
+  get collections(): readonly CollectionReconciler[] {
+    return this.deps.collections ?? [];
   }
 
   report(): ReconcileReport {
@@ -135,6 +144,14 @@ export class Reconciler {
   }
 
   private async pass(): Promise<void> {
+    await this.passDocs();
+    for (const collection of this.collections) {
+      if (!this.kv || this.stopped) return;
+      await collection.run(this.kv, () => this.stopped);
+    }
+  }
+
+  private async passDocs(): Promise<void> {
     const { client, outbox, health } = this.deps;
     const kv = this.kv;
     if (!kv || this.stopped) return;

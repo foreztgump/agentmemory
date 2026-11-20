@@ -45,6 +45,13 @@ The stacks use an Anthropic-compatible endpoint for the LLM and Voyage for embed
 
 Changing the model or the dimension does not re-embed stored vectors. Vectors from different models are not comparable, even at the same size.
 
+### Hybrid search with embeddings
+
+The fork changes two things in hybrid search (TEE-1204). Upstream still has both problems.
+
+- **Query embeddings.** Voyage and Cohere embed a search query with their query input type (`query`, `search_query`) and stored content with their document type. Stored vectors are unchanged, so nothing is re-embedded.
+- **Default fusion weights.** The defaults are `BM25_WEIGHT=0.6` and `VECTOR_WEIGHT=0.4`. Upstream uses 0.4 and 0.6. At upstream's weights, any vector-only hit in the top 30 ranks above the keyword rank-1 hit. On buddy's eval, recall@10 was then 0.10, against 0.86 for keyword search alone. Set both variables to override the defaults.
+
 `test/fork-deploy-config.test.ts` checks these settings. It fails if a rebase changes how they select the LLM or the embedding model.
 
 ## Scope guard (measurement)
@@ -62,6 +69,10 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 ## Records on Kvrocks
 
 [kvrocks.md](kvrocks.md) describes the Kvrocks state store (TEE-1163): the stack service, the resumable Valkey-to-Kvrocks copy and its verify (`scripts/fork/kvrocks-migrate.ts`), and how the replica and the bench run on Kvrocks.
+
+## Filling the disk search index
+
+[search-migration.md](search-migration.md) describes the migration that fills Qdrant from a memory-mode stack's records and persisted vectors with no embedding calls (TEE-1168): `scripts/fork/search-migrate.ts`, its verify, the measured results on buddy's snapshot, Qdrant's memory during a fill (TEE-1201) and the cutover order.
 
 ## Baseline and benchmarks
 

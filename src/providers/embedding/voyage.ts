@@ -39,6 +39,18 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embedBatch(texts: string[]): Promise<Float32Array[]> {
+    return this.embedWithInputType(texts, "document");
+  }
+
+  async embedQuery(text: string): Promise<Float32Array> {
+    const [result] = await this.embedWithInputType([text], "query");
+    return result;
+  }
+
+  private async embedWithInputType(
+    texts: string[],
+    inputType: "document" | "query",
+  ): Promise<Float32Array[]> {
     const response = await fetchWithTimeout(API_URL, {
       method: "POST",
       headers: {
@@ -48,7 +60,7 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         model: this.model,
         input: texts,
-        input_type: "document",
+        input_type: inputType,
         ...(this.outputDimension !== undefined && { output_dimension: this.outputDimension }),
       }),
     });

@@ -12,6 +12,7 @@ import {
   type Op,
   type OpVersion,
   type ScanDocsResult,
+  type ScanEntriesResult,
   type ScanMissingResult,
   type StatsResult,
 } from "../search/protocol.js";
@@ -56,6 +57,18 @@ const KEYWORD_PAYLOAD_CHUNK = 16;
 const KEYWORD_VECTOR_BOUND_TERMS = 1024;
 
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
+
+/**
+ * The payload of a live document point; apply and load both write it. A
+ * lessons point also carries `lexical_order`, its write order, which exact
+ * lexical ranking breaks ties by.
+ */
+function docPayload(op: DocOp, terms: string[], avgdl: number, version: OpVersion, lexicalOrder: [OpVersion, number] | null) {
+  return {
+    doc_id: op.id, session_id: op.sessionId, layer: op.layer, ts: op.ts, rev: op.rev, v: version, dl: terms.length, ad: avgdl, terms,
+    ...(lexicalOrder ? { lexical_order: lexicalOrder } : {}),
+  };
+}
 
 function meanLength(docs: string[][]): number | null {
   const total = docs.reduce((n, terms) => n + terms.length, 0);
@@ -104,6 +117,8 @@ function opError(op: unknown): string | null {
 export class SearchEngine {
   private ensured: Promise<void> | null = null;
   private vocabulary: Promise<Map<string, number>> | null = null;
+  /** The second part of a lessons point's `lexical_order`; it keeps growing across calls, so writes at one version (a migration's) stay in write order. */
+  private lexicalPosition = 0;
   private lastVocabularySize = 0;
   /** The mean document length new BM25 weights are computed with; null until read from the collection. */
   private avgdl: number | null = null;
@@ -200,17 +215,13 @@ export class SearchEngine {
     const fenced: string[] = [];
     const written: Array<{ id: string; rev: ContentRev }> = [];
     let applied = 0;
-    let lexicalPosition = 0;
     for (const op of ops) {
       const id = pointId(op.id);
       switch (op.k) {
         case "doc": {
           const docTerms = terms.get(op)!;
           const bm25 = termsSparse(docTerms, avgdl);
-          const payload = {
-            doc_id: op.id, session_id: op.sessionId, layer: op.layer, ts: op.ts, rev: op.rev, v: version, dl: docTerms.length, ad: avgdl, terms: docTerms,
-            lexical_order: [version, lexicalPosition++],
-          };
+          const payload = docPayload(op, docTerms, avgdl, version, [version, this.lexicalPosition++]);
           docPoints.push({ id, vector: { bm25 }, payload: { ...payload, dense: false } });
           docPayloads.push({ set_payload: { payload, filter: { must: [{ has_id: [id] }, notNewerThan(version)], must_not: [TOMBSTONE] } } });
           docWeights.push({ id, vector: { bm25 } });
@@ -296,6 +307,67 @@ export class SearchEngine {
       applied -= lost.length;
     }
     return { applied, fenced, failed };
+  }
+
+  /**
+   * Bulk load for the disk migration: each document and its stored vector as
+   * one point, in one conditional upsert. Writing the document and the vector
+   * together is what the rev fence otherwise guarantees: the vector belongs to
+   * this content. A point with a newer version than `version` (a live write or
+   * delete) is left as it is and reported in `fenced`. apply() spends one
+   * filtered payload write per document, about 20 documents a second at 1024
+   * dims; this is one operation per batch.
+   *
+   * `avgdl` is the mean term count of everything the caller will load. Every
+   * document is weighted with it and no reweighting pass starts, so a bulk
+   * load never rewrites the weights it just wrote (a full pass rewrites every
+   * point, one payload write each).
+   */
+  async load(items: Array<{ doc: DocOp; f32b64?: string }>, version: OpVersion, avgdl?: number): Promise<ApplyResult> {
+    const failed: ApplyResult["failed"] = [];
+    const valid: Array<{ doc: DocOp; terms: string[]; dense?: number[] }> = [];
+    for (const { doc, f32b64 } of items) {
+      const error = opError(doc) ?? (doc.k === "doc" ? null : "load takes doc ops");
+      if (error) {
+        failed.push({ id: String(doc?.id ?? ""), error });
+        continue;
+      }
+      let terms: string[];
+      try {
+        terms = extractTerms(doc.fields);
+      } catch (cause) {
+        failed.push({ id: doc.id, error: `invalid doc fields: ${cause instanceof Error ? cause.message : String(cause)}` });
+        continue;
+      }
+      const dense = f32b64 === undefined ? undefined : Array.from(base64ToFloat32(f32b64));
+      if (dense && dense.length !== this.qdrant.config.dimensions) {
+        failed.push({ id: doc.id, error: `vector length ${dense.length} does not match dimensions ${this.qdrant.config.dimensions}` });
+        continue;
+      }
+      valid.push({ doc, terms, dense });
+    }
+    if (valid.length === 0) return { applied: 0, fenced: [], failed };
+    await this.ready();
+    const preset = typeof avgdl === "number" && Number.isFinite(avgdl) && avgdl > 0 ? avgdl : null;
+    if (preset !== null) this.avgdl = preset;
+    const weightBy = preset ?? (await this.writeAvgdl(valid.map((v) => v.terms)));
+    const lessons = this.qdrant.config.layout === "lessons";
+    const points = valid.map(({ doc, terms, dense }) => ({
+      id: pointId(doc.id),
+      vector: { bm25: termsSparse(terms, weightBy), ...(dense ? { dense } : {}) },
+      payload: { ...docPayload(doc, terms, weightBy, version, lessons ? [version, this.lexicalPosition++] : null), dense: dense !== undefined },
+    }));
+    try {
+      await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, {
+        operations: [{ upsert: { points, update_filter: notNewerThan(version) } }],
+      });
+    } finally {
+      this.vocabulary = null;
+    }
+    if (preset === null) this.corpusDidChange();
+    const now = await this.storedPayloads(valid.map((v) => v.doc.id));
+    const fenced = valid.filter((v) => now.get(v.doc.id)?.v !== version).map((v) => v.doc.id);
+    return { applied: valid.length - fenced.length, fenced, failed };
   }
 
   /** Live documents among ids, read from their payload. */
@@ -610,6 +682,12 @@ export class SearchEngine {
       ? [{ key: "layer", match: { value: "observation" } }, { key: "session_id", match: { value: sessionId } }]
       : [{ key: "layer", match: { value: "memory" } }];
     return this.scrollStubs({ must, must_not: [TOMBSTONE] }, cursor, limit);
+  }
+
+  /** One page of every live doc, as id and revision. */
+  async scanEntries(cursor: unknown, limit: unknown): Promise<ScanEntriesResult> {
+    const page = await this.scrollStubs({ must_not: [TOMBSTONE] }, cursor, limit);
+    return { ...page, items: page.items.map(({ id, rev }) => ({ id, rev })) };
   }
 
   private async scrollStubs(filter: unknown, cursor: unknown, limit: unknown): Promise<ScanDocsResult> {

@@ -15,6 +15,7 @@ import {
   type Op,
   type OpVersion,
   type ScanDocsResult,
+  type ScanEntriesResult,
   type ScanMissingResult,
   type SessionCountsResult,
   type StatsResult,
@@ -36,6 +37,8 @@ export interface SearchWorkerClient {
   scanMissingVectors(cursor: string | undefined, limit: number): Promise<ScanMissingResult>;
   /** Live observation docs of a session, or live memory docs when sessionId is undefined. */
   scanDocs(sessionId: string | undefined, cursor: string | undefined, limit: number): Promise<ScanDocsResult>;
+  /** Every live entry of the bound collection; served by lessons and images, not docs. */
+  scanEntries(cursor: string | undefined, limit: number): Promise<ScanEntriesResult>;
   clear(scope: ClearScope): Promise<void>;
   health(): Promise<HealthResult>;
 }
@@ -60,6 +63,7 @@ export function iiiSearchClient(sdk: IIIClient, collection: CollectionId = "docs
     sessionCounts: async () => (await call<SessionCountsResult>(SEARCH_FN.sessionCounts, {})).counts,
     scanMissingVectors: (cursor, limit) => call<ScanMissingResult>(SEARCH_FN.scanMissingVectors, { cursor, limit }),
     scanDocs: (sessionId, cursor, limit) => call<ScanDocsResult>(SEARCH_FN.scanDocs, { sessionId, cursor, limit }),
+    scanEntries: (cursor, limit) => call<ScanEntriesResult>(SEARCH_FN.scanEntries, { cursor, limit }),
     clear: async (scope) => {
       await call(SEARCH_FN.clear, { scope }, WRITE_TIMEOUT_MS);
     },
