@@ -192,11 +192,11 @@ export class PrefixVocabulary {
       });
       if (epoch !== this.epoch) return;
       for (const { payload } of page.points) {
+        // The same gate as the engine's stored-document read, so a later replace or delete subtracts what was added here.
+        if (!Array.isArray(payload?.terms) || !payload.terms.every((term) => typeof term === "string")) continue;
         documents++;
-        totalLength += payload?.dl ?? (Array.isArray(payload?.terms) ? payload.terms.length : 0);
-        if (!Array.isArray(payload?.terms)) continue;
-        for (const term of new Set(payload.terms)) {
-          if (typeof term !== "string") continue;
+        totalLength += typeof payload.dl === "number" ? payload.dl : payload.terms.length;
+        for (const term of new Set(payload.terms as string[])) {
           const known = counted.get(term);
           if (known !== undefined) counted.set(term, known + 1);
           else if (counted.size < this.limits.maxTerms) counted.set(term, 1);

@@ -315,7 +315,7 @@ export class SearchEngine {
     for (const { payload: p } of points) {
       if (p?.doc_id) payloads.set(p.doc_id, {
         rev: typeof p.rev === "string" ? (p.rev as ContentRev) : undefined, v: p.v, deleted: p.deleted === true,
-        ...(Array.isArray(p.terms) && p.terms.every((term) => typeof term === "string") && typeof p.dl === "number" ? { document: { terms: p.terms, dl: p.dl } } : {}),
+        ...(Array.isArray(p.terms) && p.terms.every((term) => typeof term === "string") ? { document: { terms: p.terms, dl: typeof p.dl === "number" ? p.dl : p.terms.length } } : {}),
       });
     }
     return payloads;

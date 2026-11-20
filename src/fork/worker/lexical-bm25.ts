@@ -68,7 +68,7 @@ export function lexicalBm25(
   const score = (term: string, tf: number, dl: number, weight: number, prefix: boolean): number => {
     // ponytail: beyond the vocabulary's maxTerms ceiling (or during a concurrent fill), candidate df is the bounded fallback.
     const candidateDocumentFrequency = postings.get(term)?.size ?? 1;
-    const df = frequencies.get(term) ?? candidateDocumentFrequency;
+    const df = frequencies.get(term) || candidateDocumentFrequency;
     const idf = Math.log((documentCount - df + 0.5) / (df + 0.5) + 1) * (prefix ? 0.5 : 1);
     const numerator = tf * (K1 + 1);
     const denominator = tf + K1 * (1 - B + B * (dl / averageLength));

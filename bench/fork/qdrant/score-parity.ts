@@ -8,10 +8,11 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { contentRev, type DocOp } from "../../../src/fork/search/protocol.js";
 import { termId } from "../../../src/fork/worker/bm25-sparse.js";
+import { DEFAULT_AVGDL } from "../../../src/fork/search/settings.js";
 import { SearchEngine } from "../../../src/fork/worker/engine.js";
 import { Qdrant } from "../../../src/fork/worker/qdrant.js";
 import { SearchIndex } from "../../../src/state/search-index.js";
-import { extractTerms, queryTerms, termSourceOf } from "../../../src/state/term-extraction.js";
+import { queryTerms, termSourceOf } from "../../../src/state/term-extraction.js";
 import type { CompressedObservation } from "../../../src/types.js";
 import { Generator, type Profile } from "../lib/synthetic.js";
 import { mulberry32 } from "../lib/stats.js";
@@ -31,9 +32,9 @@ const DOCS = Number(args.docs);
 const K = Number(args.k);
 const profile = JSON.parse(readFileSync(args.profile!, "utf8")) as Profile;
 const qdrant = new Qdrant({ url: args.qdrant!, collection: args.collection ?? `parity_${DOCS}`, dimensions: 16, oversampling: 6, timeoutMs: 120_000 });
-const engine = new SearchEngine(qdrant, 70);
+const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
 const memory = new SearchIndex();
-const docTerms = new Map<string, string[]>();
+const seen = new Set<string>();
 const queries: string[] = [];
 const rand = mulberry32(7);
 
@@ -45,9 +46,9 @@ for (let s = 0; memory.size < DOCS; s++) {
   const session = gen.session(s);
   for (let i = 0; i < gen.sessionSize() && memory.size < DOCS; i++) {
     const o = gen.observation(session, i * 30_000) as unknown as CompressedObservation;
-    if (!o.title || !o.narrative || docTerms.has(o.id)) continue;
+    if (!o.title || !o.narrative || seen.has(o.id)) continue;
     memory.add(o);
-    docTerms.set(o.id, extractTerms(o));
+    seen.add(o.id);
     if (queries.length < Number(args.queries) && rand() < 0.02) {
       const words = `${o.title} ${o.narrative}`.split(/\s+/).filter((w) => w.length > 3);
       const n = 1 + Math.floor(rand() * 3);
@@ -63,6 +64,8 @@ for (let s = 0; memory.size < DOCS; s++) {
   }
 }
 if (batch.length > 0) await engine.apply(batch);
+// A first search starts the vocabulary fill; every compared search runs after it.
+await engine.keyword(queries[0] ?? "warmup", K, "all");
 await engine.settled();
 console.error(`loaded ${memory.size} docs in ${((performance.now() - started) / 1000).toFixed(0)} s; ${queries.length} queries`);
 

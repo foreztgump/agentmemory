@@ -72,6 +72,7 @@ for await (const points of scroll()) {
 const loadSeconds = (performance.now() - started) / 1000;
 engine.prefixes?.fillInBackground();
 await engine.settled();
+if (!engine.prefixes?.isReady) throw new Error("the prefix vocabulary did not fill; the engine would rank in Qdrant's raw order");
 
 const exactOf = new Map<string, ReturnType<typeof lexicalBm25>>();
 for (const c of cases) exactOf.set(c.id, lexicalBm25(documents, expanded.get(c.id)!, df, N, avgdl, 100_000));
