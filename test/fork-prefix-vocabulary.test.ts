@@ -56,6 +56,18 @@ describe("PrefixVocabulary", () => {
     expect(terms(vocab, "auth")).toEqual(["authn", "authority"]);
   });
 
+  it("reserves candidate expansion slots for common prefixes that can win on short documents", async () => {
+    const docs = Array.from({ length: 128 }, (_, i) => [`prefix${String(i).padStart(3, "0")}`]);
+    docs.push(...Array.from({ length: 10 }, () => ["prefixcommon"]));
+    const { vocab } = vocabulary(docs);
+    vocab.fillInBackground();
+    await vocab.settled();
+    const candidates = terms(vocab, "prefix");
+    expect(candidates).toHaveLength(64);
+    expect(candidates).toContain("prefixcommon");
+    expect(candidates).toContain("prefix000");
+  });
+
   it("learns the terms of later writes without another scroll, before and after they fold into the sorted array", async () => {
     const { vocab, calls } = vocabulary([["alpha"]], { maxTerms: 10_000 });
     vocab.fillInBackground();
@@ -75,6 +87,43 @@ describe("PrefixVocabulary", () => {
     vocab.observe(Array.from({ length: 1000 }, (_, i) => `term${i}`));
     expect(vocab.size).toBe(100);
     expect(vocab.refusals).toBe(900);
+  });
+
+  it("tracks live corpus statistics through replacements, deletes and revivals", async () => {
+    const { vocab, calls } = vocabulary([["alpha", "alpha", "alpine"], [], ["alpine", "beta"]]);
+    expect(vocab.isReady).toBe(false);
+    vocab.fillInBackground();
+    await vocab.settled();
+    expect(vocab.isReady).toBe(true);
+    expect(vocab.documentCount).toBe(3);
+    expect(vocab.averageLength).toBe(5 / 3);
+    expect([...vocab.frequencies]).toEqual([["alpha", 1], ["alpine", 2], ["beta", 1]]);
+    const previous = { terms: ["alpha", "alpha", "alpine"], dl: 3 };
+    const next = { terms: ["beta", "beta", "algebra", "algebra"], dl: 4 };
+    vocab.replace(previous, next);
+    expect(vocab.documentCount).toBe(3);
+    expect(vocab.averageLength).toBe(2);
+    expect(vocab.frequencies.get("alpha")).toBe(0);
+    expect(vocab.frequencies.get("alpine")).toBe(1);
+    expect(vocab.frequencies.get("beta")).toBe(2);
+    expect(vocab.frequencies.get("algebra")).toBe(1);
+    expect(terms(vocab, "al")).toEqual(["algebra", "alpine"]);
+    vocab.replace(next, undefined);
+    expect(vocab.documentCount).toBe(2);
+    expect(vocab.averageLength).toBe(1);
+    expect(vocab.frequencies.get("beta")).toBe(1);
+    expect(terms(vocab, "al")).toEqual(["alpine"]);
+    vocab.observe(previous.terms);
+    expect(vocab.documentCount).toBe(3);
+    expect(vocab.averageLength).toBe(5 / 3);
+    expect(vocab.frequencies.get("alpha")).toBe(1);
+    expect(vocab.frequencies.get("alpine")).toBe(2);
+    expect(calls).toHaveLength(2);
+    vocab.clear();
+    expect(vocab.isReady).toBe(false);
+    expect(vocab.documentCount).toBe(0);
+    expect(vocab.averageLength).toBe(0);
+    expect(vocab.frequencies.size).toBe(0);
   });
 
   it("holds no more than its bound after scrolling a collection with more distinct terms", async () => {

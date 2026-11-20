@@ -66,8 +66,9 @@ export function lexicalBm25(
   }
   const scores = new Map<LexicalDocument, number>();
   const score = (term: string, tf: number, dl: number, weight: number, prefix: boolean): number => {
-    // A document written after the vocabulary was read can carry a term it lacks; count it from the candidates.
-    const df = frequencies.get(term) ?? postings.get(term)?.size ?? 1;
+    // ponytail: beyond the vocabulary's maxTerms ceiling (or during a concurrent fill), candidate df is the bounded fallback.
+    const candidateDocumentFrequency = postings.get(term)?.size ?? 1;
+    const df = frequencies.get(term) ?? candidateDocumentFrequency;
     const idf = Math.log((documentCount - df + 0.5) / (df + 0.5) + 1) * (prefix ? 0.5 : 1);
     const numerator = tf * (K1 + 1);
     const denominator = tf + K1 * (1 - B + B * (dl / averageLength));

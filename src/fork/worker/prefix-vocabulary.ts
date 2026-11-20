@@ -8,7 +8,7 @@ import { TOMBSTONE } from "./versioned.js";
 export interface VocabularyLimits {
   /** Distinct terms held. Past it new terms are not learned; their exact matches still work. */
   maxTerms: number;
-  /** Prefix terms one query term adds; the rarest survive, as they score highest. */
+  /** Prefix terms one query term adds. */
   expansionsPerTerm: number;
 }
 
@@ -26,17 +26,10 @@ const MAX_SCAN = 8192;
 const FILL_PAGE = 1000;
 
 interface ScrollPage {
-  points: Array<{ payload?: { terms?: unknown } }>;
+  points: Array<{ payload?: { terms?: unknown; dl?: number } }>;
   next_page_offset?: string | null;
 }
 
-/**
- * The docs collection's terms with an approximate document frequency, for
- * prefix expansion of keyword queries. One background scroll of the stored
- * `terms` payload fills it; afterwards the engine's writes teach it new
- * terms, so a write never invalidates it. df only orders expansions (Qdrant
- * owns the idf the score uses), so it is never decremented.
- */
 export class PrefixVocabulary {
   private df = new Map<string, number>();
   private sorted: string[] = [];
@@ -45,6 +38,8 @@ export class PrefixVocabulary {
   private filled = false;
   private epoch = 0;
   private refused = 0;
+  private documents = 0;
+  private totalLength = 0;
 
   constructor(
     private readonly qdrant: Qdrant,
@@ -61,9 +56,40 @@ export class PrefixVocabulary {
     return this.refused;
   }
 
-  /** The terms of one written document. */
+  get isReady(): boolean {
+    return this.filled;
+  }
+
+  get frequencies(): ReadonlyMap<string, number> {
+    return this.df;
+  }
+
+  get documentCount(): number {
+    return this.documents;
+  }
+
+  get averageLength(): number {
+    return this.documents > 0 ? this.totalLength / this.documents : 0;
+  }
+
   observe(terms: readonly string[]): void {
-    for (const term of new Set(terms)) this.learn(term, 1);
+    this.replace(undefined, { terms, dl: terms.length });
+  }
+
+  replace(previous: { terms: readonly string[]; dl: number } | undefined, next: { terms: readonly string[]; dl: number } | undefined): void {
+    if (previous) {
+      this.documents--;
+      this.totalLength -= previous.dl;
+      for (const term of new Set(previous.terms)) {
+        const count = this.df.get(term);
+        if (count !== undefined) this.df.set(term, Math.max(0, count - 1));
+      }
+    }
+    if (next) {
+      this.documents++;
+      this.totalLength += next.dl;
+      for (const term of new Set(next.terms)) this.learn(term, 1);
+    }
     if (this.fresh.length > foldAfter(this.sorted.length)) this.fold();
   }
 
@@ -99,6 +125,8 @@ export class PrefixVocabulary {
     this.filled = false;
     this.filling = null;
     this.refused = 0;
+    this.documents = 0;
+    this.totalLength = 0;
     this.epoch++;
   }
 
@@ -132,7 +160,7 @@ export class PrefixVocabulary {
   private prefixesOf(term: string): string[] {
     const found: string[] = [];
     // The stored document vector already gives "deploy." the bare form "deploy" at half weight.
-    const keep = (candidate: string) => candidate !== term && candidate.startsWith(term) && bareForm(candidate) !== term;
+    const keep = (candidate: string) => (this.df.get(candidate) ?? 0) > 0 && candidate !== term && candidate.startsWith(term) && bareForm(candidate) !== term;
     for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && scanned < MAX_SCAN; i++, scanned++) {
       const candidate = this.sorted[i]!;
       if (!candidate.startsWith(term)) break;
@@ -141,24 +169,31 @@ export class PrefixVocabulary {
     for (const candidate of this.fresh) if (keep(candidate)) found.push(candidate);
     if (found.length <= this.limits.expansionsPerTerm) return found;
     const rarity = (t: string) => this.df.get(t) ?? 0;
-    return found.sort((a, b) => rarity(a) - rarity(b) || (a < b ? -1 : 1)).slice(0, this.limits.expansionsPerTerm);
+    const ranked = found.sort((a, b) => rarity(a) - rarity(b) || (a < b ? -1 : 1));
+    // Common terms can win on short documents despite their lower idf.
+    const common = Math.floor(this.limits.expansionsPerTerm / 4);
+    return [...ranked.slice(0, this.limits.expansionsPerTerm - common), ...(common > 0 ? ranked.slice(-common) : [])];
   }
 
   private async fill(): Promise<void> {
     const epoch = this.epoch;
     await this.ready();
     const counted = new Map<string, number>();
+    let documents = 0;
+    let totalLength = 0;
     let offset: string | undefined;
     do {
       const page = await this.qdrant.call<ScrollPage>("POST", `${this.qdrant.path}/points/scroll`, {
         filter: { must_not: [TOMBSTONE] },
         limit: FILL_PAGE,
         ...(offset ? { offset } : {}),
-        with_payload: ["terms"],
+        with_payload: ["terms", "dl"],
         with_vector: false,
       });
       if (epoch !== this.epoch) return;
       for (const { payload } of page.points) {
+        documents++;
+        totalLength += payload?.dl ?? (Array.isArray(payload?.terms) ? payload.terms.length : 0);
         if (!Array.isArray(payload?.terms)) continue;
         for (const term of new Set(payload.terms)) {
           if (typeof term !== "string") continue;
@@ -170,11 +205,13 @@ export class PrefixVocabulary {
       }
       offset = page.next_page_offset ?? undefined;
     } while (offset);
-    // Terms written during the scroll are in df already; a document seen by both counts twice, which only nudges the order.
+    // ponytail: scrolls are not snapshots; error is bounded by the doc/del operations overlapping this fill and their lengths.
     for (const [term, count] of counted) {
       if (this.df.has(term)) this.df.set(term, Math.max(this.df.get(term)!, count));
       else this.learn(term, count);
     }
+    this.documents = documents;
+    this.totalLength = totalLength;
     this.fold();
     this.filled = true;
     logger.info("am-search prefix vocabulary ready", { terms: this.df.size, refused: this.refused });

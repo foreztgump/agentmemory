@@ -21,10 +21,16 @@ import { DEFAULT_VOCABULARY_LIMITS, PrefixVocabulary, type VocabularyLimits } fr
 import { pointId, type Qdrant } from "./qdrant.js";
 import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
 
-interface ScoredPoint { id: string; score: number; payload?: { doc_id?: string; session_id?: string } }
+interface ScoredPoint { id: string; score: number; payload?: RecordPoint["payload"] }
 interface RecordPoint {
   id: string;
   payload?: { doc_id?: string; session_id?: string; layer?: string; rev?: string; deleted?: boolean; terms?: unknown; dl?: number; lexical_order?: [number, number]; v?: unknown };
+}
+interface StoredPayload {
+  rev?: ContentRev;
+  v?: unknown;
+  deleted?: boolean;
+  document?: { terms: string[]; dl: number };
 }
 
 const HIT_PAYLOAD = ["doc_id", "session_id"];
@@ -37,6 +43,8 @@ const AVGDL_DRIFT = 0.1;
 const REWEIGHT_PAGE = 256;
 const DL_FACET_LIMIT = 100_000;
 const LESSON_TERMS_FILTER_LIMIT = 1024;
+const KEYWORD_CANDIDATE_MULTIPLIER = 4;
+const KEYWORD_CANDIDATE_MARGIN = 500;
 
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
 
@@ -158,6 +166,9 @@ export class SearchEngine {
       if (op.k === "doc" || op.k === "del") writtenFirst.add(op.id);
       else if (op.k === "vec" && !writtenFirst.has(op.id)) lookup.add(op.id);
     }
+    const corpusIds = this.prefixes?.isReady ? [...writtenFirst] : [];
+    const epoch = this.collectionEpoch;
+    for (const id of corpusIds) lookup.add(id);
     await this.ready();
     const stored = await this.storedPayloads([...lookup]);
     const rev = new Map<string, ContentRev | null>();
@@ -187,7 +198,7 @@ export class SearchEngine {
           const bm25 = termsSparse(docTerms, avgdl);
           const payload = {
             doc_id: op.id, session_id: op.sessionId, layer: op.layer, ts: op.ts, rev: op.rev, v: version, dl: docTerms.length, ad: avgdl, terms: docTerms,
-            ...(this.qdrant.config.layout === "lessons" ? { lexical_order: [version, lexicalPosition++] } : {}),
+            lexical_order: [version, lexicalPosition++],
           };
           docPoints.push({ id, vector: { bm25 }, payload: { ...payload, dense: false } });
           docPayloads.push({ set_payload: { payload, filter: { must: [{ has_id: [id] }, notNewerThan(version)], must_not: [TOMBSTONE] } } });
@@ -251,7 +262,6 @@ export class SearchEngine {
     if (operations.length > 0) {
       try {
         await this.qdrant.call("POST", `${this.qdrant.path}/points/batch?wait=true`, { operations });
-        if (this.prefixes) for (const docTerms of terms.values()) this.prefixes.observe(docTerms);
       } finally {
         this.vocabulary = null;
       }
@@ -259,8 +269,14 @@ export class SearchEngine {
     if (terms.size > 0 || ops.some((op) => op.k === "del")) this.corpusDidChange();
     // A vector change applied only if its claim held: the point is live and carries this version.
     // A vector delete on a tombstone or an absent point leaves no vector either way.
-    if (written.length > 0 || vecDeletes.length > 0) {
-      const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes])]);
+    if (written.length > 0 || vecDeletes.length > 0 || corpusIds.length > 0) {
+      const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes, ...corpusIds])]);
+      for (const id of corpusIds) {
+        const current = now.get(id);
+        if (epoch !== this.collectionEpoch || !this.prefixes?.isReady || current?.v !== version) continue;
+        const previous = stored.get(id);
+        this.prefixes.replace(previous?.deleted ? undefined : previous?.document, current.deleted ? undefined : current.document);
+      }
       const lost = [
         ...written.filter((w) => { const p = now.get(w.id); return !(p && !p.deleted && p.rev === w.rev && p.v === version); }).map((w) => w.id),
         ...vecDeletes.filter((id) => { const p = now.get(id); return p !== undefined && !p.deleted && p.v !== version; }),
@@ -288,16 +304,19 @@ export class SearchEngine {
     );
   }
 
-  private async storedPayloads(docIds: string[]): Promise<Map<string, { rev?: ContentRev; v?: unknown; deleted?: boolean }>> {
-    const payloads = new Map<string, { rev?: ContentRev; v?: unknown; deleted?: boolean }>();
+  private async storedPayloads(docIds: string[]): Promise<Map<string, StoredPayload>> {
+    const payloads = new Map<string, StoredPayload>();
     if (docIds.length === 0) return payloads;
     const points = await this.qdrant.call<RecordPoint[]>("POST", `${this.qdrant.path}/points`, {
       ids: docIds.map(pointId),
-      with_payload: ["doc_id", "rev", "v", "deleted"],
+      with_payload: ["doc_id", "rev", "v", "deleted", "terms", "dl"],
       with_vector: false,
     });
     for (const { payload: p } of points) {
-      if (p?.doc_id) payloads.set(p.doc_id, { rev: typeof p.rev === "string" ? (p.rev as ContentRev) : undefined, v: p.v, deleted: p.deleted === true });
+      if (p?.doc_id) payloads.set(p.doc_id, {
+        rev: typeof p.rev === "string" ? (p.rev as ContentRev) : undefined, v: p.v, deleted: p.deleted === true,
+        ...(Array.isArray(p.terms) && p.terms.every((term) => typeof term === "string") && typeof p.dl === "number" ? { document: { terms: p.terms, dl: p.dl } } : {}),
+      });
     }
     return payloads;
   }
@@ -397,18 +416,29 @@ export class SearchEngine {
     }
     const prefixes = this.prefixes;
     prefixes?.fillInBackground();
+    const rescore = prefixes?.isReady ?? false;
     const sparse = querySparse(query, prefixes ? (terms) => prefixes.expand(terms) : undefined);
     if (sparse.indices.length === 0) return [];
     await this.ready();
     if (this.avgdl === null) this.corpusDidChange();
+    const count = clampLimit(limit);
     const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", `${this.qdrant.path}/points/query`, {
       query: sparse,
       using: "bm25",
-      limit: clampLimit(limit),
+      limit: rescore ? Math.min(MAX_LIMIT, Math.max(count * KEYWORD_CANDIDATE_MULTIPLIER, count + KEYWORD_CANDIDATE_MARGIN)) : count,
       filter: layerFilter(isSearchLayer(layer) ? layer : "all"),
-      with_payload: HIT_PAYLOAD,
+      with_payload: rescore ? [...HIT_PAYLOAD, "terms", "dl", "lexical_order"] : HIT_PAYLOAD,
     });
-    return toHits(res.points);
+    if (!rescore || !prefixes?.isReady) return toHits(res.points);
+    const documents: Array<LexicalDocument & { order: [number, number] }> = [];
+    const candidateTerms = new Map<string, number>();
+    for (const { payload } of res.points) {
+      if (!payload?.doc_id || typeof payload.dl !== "number" || !Array.isArray(payload.terms) || !payload.terms.every((term) => typeof term === "string")) continue;
+      documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", terms: payload.terms, dl: payload.dl, order: payload.lexical_order ?? [0, 0] });
+      for (const term of payload.terms) candidateTerms.set(term, 1);
+    }
+    documents.sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || (a.id < b.id ? -1 : Number(a.id > b.id)));
+    return lexicalBm25(documents, expandLexicalTerms(queryTerms(query), candidateTerms), prefixes.frequencies, prefixes.documentCount, prefixes.averageLength, count);
   }
 
   private lessonVocabulary(): Promise<Map<string, number>> {
