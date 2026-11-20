@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   f16round,
   FetchGuard,
+  halfSteps,
   fill,
   MARKER_KEY,
   MigrateError,
@@ -138,6 +139,15 @@ describe("float16 rounding", () => {
     expect(f16round(2 ** -24)).toBe(2 ** -24);
     expect(f16round(1e-8)).toBe(0);
     expect(f16round(-0.1)).toBe(-0.0999755859375);
+  });
+});
+
+describe("half-step distance", () => {
+  it("never counts a NaN or infinite component as a match", () => {
+    expect(halfSteps(0.5, 0.5)).toBe(0);
+    expect(halfSteps(Number.NaN, 0.5)).toBe(Infinity);
+    expect(halfSteps(0.5, Number.NaN)).toBe(Infinity);
+    expect(halfSteps(Infinity, Infinity)).toBe(Infinity);
   });
 });
 
@@ -386,6 +396,8 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     const store = new FakeRedis(fixture());
     store.data.set(MARKER_KEY, new Map([["meta", json({ version: MIGRATION_VERSION + 1, startedAt: "2026-11-01T00:00:00.000Z", avgdl: 30 })]]));
     await expect(fill(store, targets, options)).rejects.toThrow(/another migration version/);
+    store.data.set(MARKER_KEY, new Map([["meta", json({ version: MIGRATION_VERSION, avgdl: 30 })]]));
+    await expect(fill(store, targets, options)).rejects.toThrow(/corrupt/);
   });
 
   it("refuses a collection that already holds documents it did not write", async () => {
