@@ -502,7 +502,7 @@ async function readMeta(store: Redis): Promise<Meta | null> {
   if (raw === null) return null;
   try {
     const meta = JSON.parse(str(raw)) as { version?: unknown; startedAt?: unknown; avgdl?: unknown };
-    if (typeof meta.version === "number" && meta.version === MIGRATION_VERSION && (meta.avgdl === null || typeof meta.avgdl === "number")) {
+    if (typeof meta.version === "number" && meta.version === MIGRATION_VERSION && typeof meta.startedAt === "string" && (meta.avgdl === null || typeof meta.avgdl === "number")) {
       return meta as Meta;
     }
   } catch {
@@ -628,7 +628,8 @@ export function expectedStored(bytes: Buffer): number[] {
 }
 
 /** The units of the last place two half-precision values differ by; 0 means bit-equal. */
-function halfSteps(a: number, b: number): number {
+export function halfSteps(a: number, b: number): number {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return Infinity;
   if (a === b) return 0;
   const exp = Math.max(Math.floor(Math.log2(Math.max(Math.abs(a), Math.abs(b)))), -14);
   return Math.abs(a - b) / 2 ** (exp - 10);
