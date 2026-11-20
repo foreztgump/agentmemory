@@ -40,24 +40,28 @@ export class DiskBackendService implements SearchBackendService {
   }
 
   async whenRankingReady(timeoutMs = RANKING_READY_TIMEOUT_MS, pollMs = RANKING_READY_POLL_MS): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    const deadline = performance.now() + timeoutMs;
+    let lastError: string | undefined;
+    while (performance.now() < deadline) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const stats = await Promise.race([
-          this.parts.client.stats().catch(() => null),
+          this.parts.client.stats().catch((error: unknown) => {
+            lastError = error instanceof Error ? error.message : String(error);
+            return null;
+          }),
           new Promise<null>((resolve) => {
-            timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+            timer = setTimeout(() => resolve(null), Math.max(0, deadline - performance.now()));
           }),
         ]);
         if (stats && stats.rankingReady !== false) return;
-      } catch {} finally {
+      } finally {
         clearTimeout(timer);
       }
-      const remaining = deadline - Date.now();
+      const remaining = deadline - performance.now();
       if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
     }
-    logger.warn("search worker ranking statistics not ready before boot deadline; continuing", { timeoutMs });
+    logger.warn("search worker ranking statistics not ready before boot deadline; continuing", { timeoutMs, ...(lastError ? { lastError } : {}) });
   }
 
   async status(): Promise<SearchBackendStatus> {

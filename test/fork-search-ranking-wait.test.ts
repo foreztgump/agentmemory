@@ -39,6 +39,7 @@ describe("ranking readiness failures", () => {
     await pending;
     expect(calls.mock.calls.length).toBeGreaterThan(1);
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![1]).toMatchObject({ lastError: "worker unavailable" });
     expect(vi.getTimerCount()).toBe(0);
   });
 

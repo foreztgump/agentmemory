@@ -80,6 +80,7 @@ export interface SearchBackendService {
   /** Idempotent. Schedules reconcile and the re-embed loop in the background; never waits for them. */
   start(hooks: ServiceHooks): void;
   stop(): Promise<void>;
+  /** Resolves once keyword ranking is exact, or at the deadline with a warning; it never rejects. */
   whenRankingReady?(timeoutMs?: number, pollMs?: number): Promise<void>;
   /** Probes the backend (bounded) and reads cached counters. */
   status(): Promise<SearchBackendStatus>;
