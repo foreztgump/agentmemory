@@ -14,7 +14,9 @@ export const SEARCH_FN = {
   health: "search::health",
   lookup: "search::lookup",
   maxVersion: "search::max-version",
+  scanDocs: "search::scan-docs",
   imageQuery: "search::image-query",
+  scanEntries: "search::scan-entries",
 } as const;
 
 /** One list drives the collection names, the worker's routing and the client binding. */
@@ -117,8 +119,23 @@ export interface ScanMissingResult {
   next?: string;
 }
 
+/** Live documents of one session's observations, or of every memory when sessionId is absent. */
+export interface ScanDocsRequest extends CollectionScoped { sessionId?: string; cursor?: string; limit: number }
+export interface DocStub { id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }
+export interface ScanDocsResult { items: DocStub[]; next?: string }
+
+/** Every live entry of a collection, as id and revision; the lessons and images collections serve it. */
+export interface ScanEntriesRequest extends CollectionScoped { cursor?: string; limit: number }
+export interface EntryStub { id: string; rev: string }
+export interface ScanEntriesResult { items: EntryStub[]; next?: string }
+
+/** Revision of an image entry: the metadata its record and its payload share. A re-embed sets a new updatedAt. */
+export function imageRev(image: { sessionId?: string; observationId?: string; updatedAt?: string }): string {
+  return createHash("sha256").update(JSON.stringify([image.sessionId ?? "", image.observationId ?? null, image.updatedAt ?? ""])).digest("hex").slice(0, 16);
+}
+
 export interface LookupRequest extends CollectionScoped { ids: string[] }
-export interface LookupResult { items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }> }
+export interface LookupResult { items: DocStub[] }
 
 export interface ClearRequest extends CollectionScoped { scope: ClearScope }
 export interface HealthResult { ok: boolean; collection: string; dimensions: number; status: string; error?: string }

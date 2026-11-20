@@ -2,6 +2,7 @@ import type { IndexLegStatus, IndexPersistenceStatus } from "../state/index-pers
 import type { VectorBackfillState } from "./search.js";
 import { describeGraphCompactBoot, type GraphCompactBootStatus } from "./graph-compact-boot.js";
 import type { CaptureStatus } from "./capture.js";
+import { searchBackendProblems, type SearchBackendStatus } from "../fork/search/backend-status.js";
 import type { GraphIndexMigrationStatus } from "../state/graph-index-migration.js";
 
 export type StatusLevel = "ok" | "info" | "warn" | "error";
@@ -87,6 +88,8 @@ export interface StatusInputs {
   stateStore?: { ok: boolean; latencyMs?: number } | null;
   capture?: CaptureStatus | null;
   observeDedup?: ObserveDedupStatus | null;
+  searchBackend?: SearchBackendStatus | null;
+  searchBackendEnabled?: boolean;
 }
 
 export interface ObserveDedupStatus {
@@ -132,6 +135,7 @@ export interface StatusReport {
   functions: Array<FunctionMetricInput & { failureRate: number; offWithoutLlm: boolean }>;
   flags: Array<StatusFlag & { inactiveReason?: string }>;
   problems: StatusProblem[];
+  searchBackend?: SearchBackendStatus;
 }
 
 const FAILURE_RATE_THRESHOLD = 0.2;
@@ -322,7 +326,8 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
   }
 
   const missingObservations = input.index.missingObservations;
-  if (!input.index.keywordRebuildRunning && missingObservations !== null && missingObservations > 0) {
+  // A search backend service reports its own missing documents (searchBackendProblems).
+  if (!input.searchBackend?.missing && !input.index.keywordRebuildRunning && missingObservations !== null && missingObservations > 0) {
     problems.push({
       level: "warn",
       code: "index-missing-observations",
@@ -337,12 +342,13 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
       message: "The keyword index is still rebuilding from stored data, so the check for observations missing from search waits until it finishes.",
       fix: "No action needed. The check runs on the next health update after the rebuild.",
     });
-  } else if (missingObservations === null) {
+  } else if (missingObservations === null && !input.searchBackend) {
+    const backendTimedOut = Boolean(input.searchBackendEnabled);
     problems.push({
       level: "info",
       code: "index-check-unavailable",
-      message: "The session store did not answer in time, so the search index was not checked for missing observations.",
-      fix: "The check runs again on the next health update. If it keeps timing out, the store is overloaded: check the server log.",
+      message: `The ${backendTimedOut ? "search backend's status" : "session store"} did not answer in time, so the search index was not checked for missing observations.`,
+      fix: `The check runs again on the next health update. If it keeps timing out, ${backendTimedOut ? "check the search backend and server log." : "the store is overloaded: check the server log."}`,
     });
   }
 
@@ -503,6 +509,8 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
     });
   }
 
+  problems.push(...searchBackendProblems(input.searchBackend));
+
   const status = problems.reduce<StatusLevel>(
     (worst, p) => (LEVEL_RANK[p.level] > LEVEL_RANK[worst] ? p.level : worst),
     "ok",
@@ -537,6 +545,7 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
     graphIndex,
     capture: input.capture ?? null,
     observeDedup: input.observeDedup ?? null,
+    ...(input.searchBackend ? { searchBackend: input.searchBackend } : {}),
     functions,
     flags: input.flags.map((flag) =>
       flag.enabled && flag.needsLlm && noLlm
