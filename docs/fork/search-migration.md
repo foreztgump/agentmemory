@@ -103,6 +103,58 @@ Verify checks every lesson and every image, not a sample, because both are small
 - `images`: the count of valid rows against the live points, with the refused and unreadable counts.
 - `image vectors`: each image's unit vector, within 1e-6 per component, and its session, observation and time. The index checksum counts a component within that tolerance as the store's value, because Qdrant's float32 normalisation cannot be reproduced bit for bit. The two checksums are equal exactly when every component and field matches.
 
+## Qdrant memory during a fill (TEE-1201)
+
+A fill from empty, by `search-migrate fill` or by reconcile on an empty index, used to take Qdrant past the stack's 1 GB limit. Steady state is far lower (417 MiB during a backup, TEE-1170).
+
+**Cause.** Qdrant's optimizer. While points arrive it keeps merging segments and building their indexes, and each build holds anonymous memory in proportion to the segment it builds. With the earlier settings, one build per core ran at once and the merges grew toward 2 segments of half the collection each. A writer faster than the optimizer also leaves unoptimized points in RAM, about 6.7 KB each with their vector. Payload indexes on disk changed nothing (767 against 783 MiB).
+
+**Settings** (`Qdrant.create`, both text collections):
+
+| Setting | Value | What it bounds |
+|---|---|---|
+| `max_optimization_threads` | 1 | Builds at once |
+| `max_segment_size` | 300,000 KB | A build of documents with vectors: about 100k documents |
+| `default_segment_number` | 4 (was 2) | Merges of documents with no vector (reconcile), which the size cap barely counts: about 0.3 KB each against 2.3 KB with a vector |
+
+`search-migrate fill` also waits for the optimizer every 20,000 documents (`OPTIMIZER_GATE_DOCS`); buddy's fill waits 9 times and takes about 10% longer. Reconcile needs no gate: its outbox paces it.
+
+**Measured** (Qdrant 1.20.2, swap off, `bench/fork/qdrant/fill-memory.ts`; anon is the cgroup's anonymous memory, since `memory.peak` also counts page cache, which fills to the limit on every run):
+
+| Fill | Settings | Limit | Anon peak | Result |
+|---|---|---|---|---|
+| Load, 200k synthetic | before | 4 GB | 1,744 MiB | |
+| Load, 200k synthetic | before | 1 GB | | OOM-killed at 130,800 |
+| Load, 200k synthetic | 1 thread | 1 GB | 667 MiB | |
+| Load, 200k synthetic | deferred indexing (`indexing_threshold` 0, then back) | 1 GB | 799 MiB | |
+| Load, 1M synthetic | before | 4 GB | 2,653 MiB | |
+| Load, 1M synthetic | 1 thread | 1 GB | | OOM-killed at 369,200 |
+| Load, 1M synthetic | 1 thread, size cap | 1 GB | | OOM-killed at 874,600 |
+| Load, 200k / 500k synthetic | final, with the gate | 1 GB | 528 / 750 MiB | |
+| Load, 1M synthetic | final, with the gate | 1 GB | | OOM-killed at 917,800 |
+| Apply (reconcile's shape), 200k synthetic | 1 thread, size cap, 2 segments | 4 GB | 783 MiB | |
+| Apply, 350k synthetic | 1 thread, size cap, 2 segments | 1 GB | | OOM-killed at 276,480 |
+| Apply, 200k synthetic | final | 1 GB | 537 MiB | |
+| Apply, 600k synthetic | final | 1 GB | | OOM-killed at 578,816 |
+| Load, 1M synthetic | final, with the gate | 1.25 GB | 1,024 MiB | |
+| Apply, 800k synthetic | final | 1.25 GB | | OOM-killed at 724,480 |
+| Buddy, `search-migrate fill` | before | 1.5 / 2 GB | 1.98 GiB | OOM-killed at 1.5 GB (TEE-1170) |
+| Buddy, `search-migrate fill` | final | 1 GB | 616 MiB | 208 s, `VERIFY OK`, recall@10 1.000 |
+| Buddy, reconcile from empty | final | 1 GB | 637 MiB | 229,476 documents in 21 minutes |
+
+At steady state 1M documents hold 606 MiB anon after a restart. **Sizing:** reconcile is the tighter path. 1 GB holds a fill up to about 500k documents and 1.25 GB up to about 650k, with a margin under the OOM points above. Raise `QDRANT_MEM_LIMIT` before a stack passes that; a 1.25 GB Qdrant keeps buddy's stack near 3.1 GB, under the 3.5 GB budget.
+
+**Buddy at the stack's limits** (Kvrocks 1280m, agentmemory 2560m, Qdrant 1g), summed cgroup peaks: the migration 2,803 MiB (client, Kvrocks, Qdrant; agentmemory is stopped), reconcile 2,816 MiB (agentmemory, Kvrocks, Qdrant). Both are under the 3.5 GB stack budget. The segment count at buddy's size is 4, where it was 2 to 3.
+
+**Guards.** On a fresh 1 GB Qdrant each (`docker run -d --name fill-qdrant -m 1g --memory-swap 1g -p 127.0.0.1:16401:6333 qdrant/qdrant:v1.20.2`):
+
+```
+node --import tsx bench/fork/qdrant/fill-memory.ts --count 200000 --container fill-qdrant --ceiling-mib 610
+node --import tsx bench/fork/qdrant/fill-memory.ts --path apply --count 200000 --container fill-qdrant --ceiling-mib 620
+```
+
+Each exits 1 when Qdrant is OOM-killed or its anon peak passes the ceiling. `test/fork-qdrant-fill-config.test.ts` checks that the worker creates its collections with these settings.
+
 ## Cutover order (for TEE-1172)
 
 The order makes the first disk-mode start find every stored vector already in Qdrant, so re-embedding (TEE-1169) only spends Voyage quota on documents that really have no vector:

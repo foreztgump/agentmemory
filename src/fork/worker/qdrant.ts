@@ -21,12 +21,12 @@ const TEXT_INDEXES = [
 ] as const;
 
 // A fill from empty merges and indexes ever larger segments, and each build holds memory in proportion to
-// its segment: with Qdrant's defaults (one build per core, 2 segments) a fill passed 1 GB at 130k documents.
+// its segment: with one build per core and 2 target segments, a fill passed 1 GB at 130k documents.
 // One build at a time bounds how many run at once. max_segment_size (in KB of vectors, about 100k documents
 // with their 1024-dim vectors) bounds a build in the migration's fill. A reconcile from empty writes documents
-// with no vector, which that cap barely counts, so 4 target segments bound its merges instead. Measured at a
-// 1 GB limit: the migration's fill to 500k documents, reconcile's to 578k (docs/fork/search-migration.md,
-// "Qdrant memory during a fill").
+// with no vector, which that cap barely counts, so 4 target segments bound its merges instead. At a 1 GB
+// limit the migration's fill holds to about 900k documents and reconcile's to about 570k
+// (docs/fork/search-migration.md, "Qdrant memory during a fill").
 const OPTIMIZERS = { default_segment_number: 4, max_optimization_threads: 1, max_segment_size: 300_000 } as const;
 
 const IMAGE_INDEXES = [

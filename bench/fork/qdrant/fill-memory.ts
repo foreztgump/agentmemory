@@ -12,7 +12,9 @@
 // The guard (docs/fork/search-migration.md, "Qdrant memory during a fill"), on a
 // fresh Qdrant 1.20.2 with a 1g limit and swap off:
 //   docker run -d --name fill-qdrant -m 1g --memory-swap 1g -p 127.0.0.1:16401:6333 qdrant/qdrant:v1.20.2
-//   node --import tsx bench/fork/qdrant/fill-memory.ts --count 200000 --container fill-qdrant --ceiling-mib 760
+//   node --import tsx bench/fork/qdrant/fill-memory.ts --count 200000 --container fill-qdrant --ceiling-mib 610
+//   node --import tsx bench/fork/qdrant/fill-memory.ts --path apply --count 200000 --container fill-qdrant --ceiling-mib 620
+// (a fresh container for each run).
 //
 // Prints one JSON line. Exits 1 when Qdrant was OOM-killed, died, or its anon
 // peak passed --ceiling-mib. The ceiling is on anon memory, sampled, because
