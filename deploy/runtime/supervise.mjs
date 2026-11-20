@@ -63,7 +63,11 @@ const followNewLogs = () => {
 };
 if (stateDir) {
   // Lines already in the files came from an earlier container start.
-  for (const file of workerLogFiles()) followLog(file, statSync(file).size);
+  for (const file of workerLogFiles()) {
+    // A file rotated away between the listing and this read is picked up by the scan below.
+    const stat = statSync(file, { throwIfNoEntry: false });
+    if (stat) followLog(file, stat.size);
+  }
   setInterval(followNewLogs, 1000).unref();
 }
 process.on("exit", () => {

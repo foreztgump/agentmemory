@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,6 +150,20 @@ describe("deploy supervisor", () => {
       rmSync(stateDir, { recursive: true, force: true });
     }
   }, 15000);
+
+  it("starts compose when a listed worker log is gone before it can be read", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "supervise-logs-"));
+    const logs = join(stateDir, "data-1234", "agentmemory", "logs");
+    mkdirSync(logs, { recursive: true });
+    symlinkSync(join(logs, "rotated-away"), join(logs, "agentmemory.log"));
+    try {
+      const result = await run("process.exit(0)", { AGENTMEMORY_READY_TIMEOUT_MS: "60000", III_COMPOSE_STATE_DIR: stateDir });
+      expect(result.output).not.toContain("ENOENT");
+      expect(result.code).toBe(0);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
 
   it.each(["0x10", "12e3", " 1000", "1000.0"])("rejects the non-decimal ready wait %j, which compose cannot parse", async (value) => {
     const result = await run("process.exit(0)", { AGENTMEMORY_READY_TIMEOUT_MS: value });
