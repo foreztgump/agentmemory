@@ -67,6 +67,10 @@ export function withDimensionGuard(provider: EmbeddingProvider): EmbeddingProvid
   // against concrete classes (e.g. GeminiEmbeddingProvider) keep working.
   const wrapped = Object.create(provider) as EmbeddingProvider;
   wrapped.embed = async (t) => check(await provider.embed(t), "embed");
+  if (provider.embedQuery) {
+    wrapped.embedQuery = async (t) =>
+      check(await provider.embedQuery!(t), "embedQuery");
+  }
   wrapped.embedBatch = async (ts) => {
     const out = await provider.embedBatch(ts);
     out.forEach((v, i) => check(v, `embedBatch[${i}]`));
