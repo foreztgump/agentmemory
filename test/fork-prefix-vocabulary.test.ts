@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { PrefixVocabulary, type VocabularyLimits } from "../src/fork/worker/prefix-vocabulary.js";
 import type { Qdrant } from "../src/fork/worker/qdrant.js";
+import { querySparse, termsSparse } from "../src/fork/worker/bm25-sparse.js";
+import { expandLexicalTerms, lexicalBm25 } from "../src/fork/worker/lexical-bm25.js";
+import { queryTerms } from "../src/state/term-extraction.js";
 
 type Page = { points: Array<{ payload: { terms: unknown } }>; next_page_offset: string | null };
 
@@ -33,6 +36,46 @@ const expanded = (vocab: PrefixVocabulary, term: string, weight = 1) => vocab.ex
 const terms = (vocab: PrefixVocabulary, term: string) => expanded(vocab, term).map((t) => t.term).sort();
 
 describe("PrefixVocabulary", () => {
+  it("bounds exact scores across prefix sums, aliases, overlapping queries and mean drift", () => {
+    const docs = [["deploy", "deployment", "deploy."], ["deployment", "deployment", "deployer"], ["deploy."], ["other", "other"]];
+    const { vocab } = vocabulary([]);
+    for (const terms of docs) vocab.observe(terms);
+    vocab.noteIndexedAverageLength(1);
+    for (const text of ["deploy", "dep", "deploy deployment"]) {
+      const query = queryTerms(text);
+      const sparse = querySparse(text, (terms) => vocab.expand(terms, true));
+      const bound = vocab.scoreUpperBound(query, sparse);
+      const frequencies = new Map<number, number>();
+      const vectors = docs.map((terms) => termsSparse(terms, 1));
+      for (const vector of vectors) for (const id of vector.indices) frequencies.set(id, (frequencies.get(id) ?? 0) + 1);
+      const hits = lexicalBm25(docs.map((terms, i) => ({ id: String(i), sessionId: "s", terms, dl: terms.length })), expandLexicalTerms(query, vocab.frequencies), vocab.frequencies, docs.length, vocab.averageLength, 10);
+      for (const hit of hits) {
+        const vector = vectors[Number(hit.id)]!;
+        const raw = sparse.indices.reduce((sum, id, i) => {
+          const df = frequencies.get(id) ?? 0;
+          const idf = Math.log((docs.length - df + 0.5) / (df + 0.5) + 1);
+          const index = vector.indices.indexOf(id);
+          return sum + (index < 0 ? 0 : vector.values[index]!) * sparse.values[i]! * idf;
+        }, 0);
+        expect(raw * bound).toBeGreaterThanOrEqual(hit.score);
+      }
+    }
+    expect(vocab.scoreUpperBound(queryTerms("dep"), { indices: [], values: [] })).toBe(Infinity);
+    vocab.clear();
+    expect(vocab.scoreUpperBound([], { indices: [], values: [] })).toBe(Infinity);
+  });
+
+  it("covers every known prefix for pruning while retaining the default expansion cap", () => {
+    const { vocab } = vocabulary([], { expansionsPerTerm: 2 });
+    for (const term of ["redis0", "redis1", "redis2", "redis."]) vocab.observe([term]);
+    vocab.noteIndexedAverageLength(1);
+    expect(vocab.expand([{ term: "redis", weight: 1 }])).toHaveLength(2);
+    expect(vocab.expand([{ term: "redis", weight: 1 }], true)).toHaveLength(4);
+    const query = queryTerms("redis");
+    expect(vocab.scoreUpperBound(query, querySparse("redis", (terms) => vocab.expand(terms)))).toBe(Infinity);
+    expect(Number.isFinite(vocab.scoreUpperBound(query, querySparse("redis", (terms) => vocab.expand(terms, true))))).toBe(true);
+  });
+
   it("expands a query term into the longer terms it prefixes, at half its weight, after one scroll", async () => {
     const { vocab, calls } = vocabulary([["deploy", "deployment"], ["deployer", "other"], ["dep"], ["deploy."]]);
     expect(expanded(vocab, "deploy")).toEqual([]);

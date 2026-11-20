@@ -1,6 +1,6 @@
 import type { WeightedTerm } from "../../state/term-extraction.js";
 import { logger } from "../../logger.js";
-import { bareForm, PREFIX_WEIGHT } from "./bm25-sparse.js";
+import { bareForm, PREFIX_WEIGHT, termId, type Sparse } from "./bm25-sparse.js";
 import { lowerBound, storedDocument } from "./lexical-bm25.js";
 import type { Qdrant } from "./qdrant.js";
 import { TOMBSTONE } from "./versioned.js";
@@ -26,12 +26,14 @@ const MAX_SCAN = 8192;
 const FILL_PAGE = 1000;
 
 interface ScrollPage {
-  points: Array<{ payload?: { terms?: unknown; dl?: number } }>;
+  points: Array<{ payload?: { terms?: unknown; dl?: number; ad?: number } }>;
   next_page_offset?: string | null;
 }
 
 export class PrefixVocabulary {
   private df = new Map<string, number>();
+  private indexedDf = new Map<number, number>();
+  private minimumAverageLength = Infinity;
   private sorted: string[] = [];
   private fresh: string[] = [];
   private filling: Promise<void> | null = null;
@@ -60,6 +62,11 @@ export class PrefixVocabulary {
     return this.filled;
   }
 
+  /** A fill has started, so a write that lands now is not one the fill's scroll is sure to see. */
+  get counting(): boolean {
+    return this.filled || this.filling !== null;
+  }
+
   get frequencies(): ReadonlyMap<string, number> {
     return this.df;
   }
@@ -72,6 +79,39 @@ export class PrefixVocabulary {
     return this.documents > 0 ? this.totalLength / this.documents : 0;
   }
 
+  noteIndexedAverageLength(averageLength: number): void {
+    this.minimumAverageLength = Math.min(this.minimumAverageLength, averageLength > 0 ? averageLength : 0);
+  }
+
+  scoreUpperBound(query: readonly WeightedTerm[], sparse: Sparse): number {
+    if (this.refused > 0 || !(this.minimumAverageLength > 0) || !Number.isFinite(this.minimumAverageLength)) return Infinity;
+    const weights = new Map(sparse.indices.map((id, i) => [id, sparse.values[i]!]));
+    const coefficients = new Map<string, number>();
+    const add = (term: string, weight: number) => coefficients.set(term, (coefficients.get(term) ?? 0) + weight);
+    for (const { term, weight } of query) {
+      if ((this.df.get(term) ?? 0) > 0) add(term, weight);
+      for (let i = lowerBound(this.sorted, term); i < this.sorted.length && this.sorted[i]!.startsWith(term); i++) {
+        const prefix = this.sorted[i]!;
+        if (prefix !== term && (this.df.get(prefix) ?? 0) > 0) add(prefix, weight * PREFIX_WEIGHT);
+      }
+      for (const prefix of this.fresh) {
+        if (prefix !== term && prefix.startsWith(term) && (this.df.get(prefix) ?? 0) > 0) add(prefix, weight * PREFIX_WEIGHT);
+      }
+    }
+    let ratio = 0;
+    for (const [term, coefficient] of coefficients) {
+      const id = termId(term);
+      const weight = weights.get(id);
+      if (!weight) return Infinity;
+      const df = this.df.get(term)!;
+      const indexedDf = Math.min(this.documents, this.indexedDf.get(id) ?? this.documents);
+      const idf = Math.log((this.documents - df + 0.5) / (df + 0.5) + 1);
+      const indexedIdf = Math.log((this.documents - indexedDf + 0.5) / (indexedDf + 0.5) + 1);
+      ratio = Math.max(ratio, coefficient * idf / (weight * indexedIdf));
+    }
+    return ratio * Math.max(1, this.averageLength / this.minimumAverageLength) * (1 + 1e-5);
+  }
+
   observe(terms: readonly string[]): void {
     this.replace(undefined, { terms, dl: terms.length });
   }
@@ -82,7 +122,10 @@ export class PrefixVocabulary {
       this.totalLength -= previous.dl;
       for (const term of new Set(previous.terms)) {
         const count = this.df.get(term);
-        if (count !== undefined) this.df.set(term, Math.max(0, count - 1));
+        if (count !== undefined) {
+          this.df.set(term, Math.max(0, count - 1));
+          if (count > 0) this.indexFrequency(term, -1);
+        }
       }
     }
     if (next) {
@@ -94,10 +137,10 @@ export class PrefixVocabulary {
   }
 
   /** The prefix terms of each query term at half its weight; none until the first fill lands. */
-  expand(terms: readonly WeightedTerm[]): WeightedTerm[] {
+  expand(terms: readonly WeightedTerm[], complete = false): WeightedTerm[] {
     const out: WeightedTerm[] = [];
     for (const { term, weight } of terms) {
-      for (const prefix of this.prefixesOf(term)) out.push({ term: prefix, weight: PREFIX_WEIGHT * weight });
+      for (const prefix of this.prefixesOf(term, complete)) out.push({ term: prefix, weight: PREFIX_WEIGHT * weight });
     }
     return out;
   }
@@ -120,6 +163,8 @@ export class PrefixVocabulary {
   /** The collection was dropped; a running fill is discarded. */
   clear(): void {
     this.df = new Map();
+    this.indexedDf = new Map();
+    this.minimumAverageLength = Infinity;
     this.sorted = [];
     this.fresh = [];
     this.filled = false;
@@ -130,10 +175,18 @@ export class PrefixVocabulary {
     this.epoch++;
   }
 
+  private indexFrequency(term: string, count: number): void {
+    const ids = new Set([termId(term)]);
+    const bare = bareForm(term);
+    if (bare !== term && bare.length >= 2) ids.add(termId(bare));
+    for (const id of ids) this.indexedDf.set(id, (this.indexedDf.get(id) ?? 0) + count);
+  }
+
   private learn(term: string, count: number): void {
     const known = this.df.get(term);
     if (known !== undefined) {
       this.df.set(term, known + count);
+      this.indexFrequency(term, count);
       return;
     }
     if (this.df.size >= this.limits.maxTerms) {
@@ -141,6 +194,7 @@ export class PrefixVocabulary {
       return;
     }
     this.df.set(term, count);
+    this.indexFrequency(term, count);
     this.fresh.push(term);
   }
 
@@ -157,17 +211,17 @@ export class PrefixVocabulary {
     this.fresh = [];
   }
 
-  private prefixesOf(term: string): string[] {
+  private prefixesOf(term: string, complete = false): string[] {
     const found: string[] = [];
     // The stored document vector already gives "deploy." the bare form "deploy" at half weight.
-    const keep = (candidate: string) => (this.df.get(candidate) ?? 0) > 0 && candidate !== term && candidate.startsWith(term) && bareForm(candidate) !== term;
-    for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && scanned < MAX_SCAN; i++, scanned++) {
+    const keep = (candidate: string) => (this.df.get(candidate) ?? 0) > 0 && candidate !== term && candidate.startsWith(term) && (complete || bareForm(candidate) !== term);
+    for (let i = lowerBound(this.sorted, term), scanned = 0; i < this.sorted.length && (complete || scanned < MAX_SCAN); i++, scanned++) {
       const candidate = this.sorted[i]!;
       if (!candidate.startsWith(term)) break;
       if (keep(candidate)) found.push(candidate);
     }
     for (const candidate of this.fresh) if (keep(candidate)) found.push(candidate);
-    if (found.length <= this.limits.expansionsPerTerm) return found;
+    if (complete || found.length <= this.limits.expansionsPerTerm) return found;
     const rarity = (t: string) => this.df.get(t) ?? 0;
     const ranked = found.sort((a, b) => rarity(a) - rarity(b) || (a < b ? -1 : 1));
     // Common terms can win on short documents despite their lower idf.
@@ -187,7 +241,7 @@ export class PrefixVocabulary {
         filter: { must_not: [TOMBSTONE] },
         limit: FILL_PAGE,
         ...(offset ? { offset } : {}),
-        with_payload: ["terms", "dl"],
+        with_payload: ["terms", "dl", "ad"],
         with_vector: false,
       });
       if (epoch !== this.epoch) return;
@@ -195,6 +249,7 @@ export class PrefixVocabulary {
         // The engine's stored-document read too, so a later replace or delete subtracts what was added here.
         const stored = storedDocument(payload);
         if (!stored) continue;
+        this.noteIndexedAverageLength(payload?.ad ?? 0);
         documents++;
         totalLength += stored.dl;
         for (const term of new Set(stored.terms)) {
@@ -208,11 +263,16 @@ export class PrefixVocabulary {
     } while (offset);
     // ponytail: scrolls are not snapshots; error is bounded by the doc/del operations overlapping this fill and their lengths.
     for (const [term, count] of counted) {
-      if (this.df.has(term)) this.df.set(term, Math.max(this.df.get(term)!, count));
+      if (this.df.has(term)) {
+        const previous = this.df.get(term)!;
+        this.df.set(term, Math.max(previous, count));
+        this.indexFrequency(term, Math.max(0, count - previous));
+      }
       else this.learn(term, count);
     }
-    this.documents = documents;
-    this.totalLength = totalLength;
+    // Writes that landed during the scroll were counted as they applied, so the scroll's counts add to theirs.
+    this.documents += documents;
+    this.totalLength += totalLength;
     this.fold();
     this.filled = true;
     logger.info("am-search prefix vocabulary ready", { terms: this.df.size, refused: this.refused });

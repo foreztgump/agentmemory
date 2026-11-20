@@ -166,7 +166,7 @@ export class SearchEngine {
       if (op.k === "doc" || op.k === "del") writtenFirst.add(op.id);
       else if (op.k === "vec" && !writtenFirst.has(op.id)) lookup.add(op.id);
     }
-    const corpusIds = this.prefixes?.isReady ? [...writtenFirst] : [];
+    const corpusIds = this.prefixes ? [...writtenFirst] : [];
     const epoch = this.collectionEpoch;
     for (const id of corpusIds) lookup.add(id);
     await this.ready();
@@ -179,6 +179,7 @@ export class SearchEngine {
     // operation, not per point. Every id's document change still precedes its
     // vector change, and every group is conditional per point.
     const claimedNow = { key: "v", match: { value: version } };
+    if (terms.size > 0) this.prefixes?.noteIndexedAverageLength(avgdl);
     const docPoints: unknown[] = [];
     const docPayloads: unknown[] = [];
     const docWeights: unknown[] = [];
@@ -273,7 +274,7 @@ export class SearchEngine {
       const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes, ...corpusIds])]);
       for (const id of corpusIds) {
         const current = now.get(id);
-        if (epoch !== this.collectionEpoch || !this.prefixes?.isReady || current?.v !== version) continue;
+        if (epoch !== this.collectionEpoch || !this.prefixes?.counting || current?.v !== version) continue;
         const previous = stored.get(id);
         this.prefixes.replace(previous?.deleted ? undefined : previous?.document, current.deleted ? undefined : current.document);
       }
@@ -380,6 +381,7 @@ export class SearchEngine {
   }
 
   private async reweight(avgdl: number): Promise<void> {
+    this.prefixes?.noteIndexedAverageLength(avgdl);
     const epoch = this.collectionEpoch;
     const filter = {
       must_not: [{ is_empty: { key: "terms" } }, { key: "ad", range: { gte: avgdl * (1 - AVGDL_DRIFT), lte: avgdl * (1 + AVGDL_DRIFT) } }],
@@ -417,30 +419,49 @@ export class SearchEngine {
     }
     const prefixes = this.prefixes;
     prefixes?.fillInBackground();
-    const rescore = prefixes?.isReady ?? false;
-    const sparse = querySparse(query, prefixes ? (terms) => prefixes.expand(terms) : undefined);
+    const rescore = (prefixes?.isReady ?? false) && prefixes!.documentCount > 0;
+    const sparse = querySparse(query, prefixes ? (terms) => prefixes.expand(terms, rescore) : undefined);
     if (sparse.indices.length === 0) return [];
     await this.ready();
     if (this.avgdl === null) this.corpusDidChange();
     const count = clampLimit(limit);
-    const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", `${this.qdrant.path}/points/query`, {
-      query: sparse,
-      using: "bm25",
-      limit: rescore ? Math.min(MAX_LIMIT, Math.max(count * KEYWORD_CANDIDATE_MULTIPLIER, count + KEYWORD_CANDIDATE_MARGIN)) : count,
-      filter: layerFilter(isSearchLayer(layer) ? layer : "all"),
+    const filter = layerFilter(isSearchLayer(layer) ? layer : "all");
+    const terms = queryTerms(query);
+    const factor = rescore ? prefixes!.scoreUpperBound(terms, sparse) : Infinity;
+    const depth = Math.min(MAX_LIMIT, Math.max(count * KEYWORD_CANDIDATE_MULTIPLIER, count + KEYWORD_CANDIDATE_MARGIN));
+    const shallow = Number.isFinite(factor) ? Math.min(depth, count + 16) : depth;
+    const res = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", this.qdrant.path + "/points/query", {
+      query: sparse, using: "bm25", limit: rescore ? shallow : count, filter,
       with_payload: rescore ? [...HIT_PAYLOAD, "terms", "dl", "lexical_order"] : HIT_PAYLOAD,
     });
     if (!rescore || !prefixes?.isReady) return toHits(res.points);
     const documents: Array<LexicalDocument & { order: [number, number] }> = [];
     const candidateTerms = new Map<string, number>();
-    for (const { payload } of res.points) {
-      const stored = storedDocument(payload);
-      if (!payload?.doc_id || !stored) continue;
-      documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", ...stored, order: payload.lexical_order ?? [0, 0] });
-      for (const term of stored.terms) candidateTerms.set(term, 1);
+    const add = (points: RecordPoint[]) => {
+      for (const { payload } of points) {
+        const stored = storedDocument(payload);
+        if (!payload?.doc_id || payload.deleted || !stored) continue;
+        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", ...stored, order: payload.lexical_order ?? [0, 0] });
+        for (const term of stored.terms) candidateTerms.set(term, 1);
+      }
+    };
+    const score = () => {
+      documents.sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || (a.id < b.id ? -1 : Number(a.id > b.id)));
+      return lexicalBm25(documents, expandLexicalTerms(terms, new Map(candidateTerms)), prefixes.frequencies, prefixes.documentCount, prefixes.averageLength, count);
+    };
+    add(res.points);
+    let hits = score();
+    if (shallow < depth && res.points.length === shallow && (hits.length < count || res.points.at(-1)!.score * factor >= hits[count - 1]!.score)) {
+      const deep = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", this.qdrant.path + "/points/query", {
+        query: sparse, using: "bm25", limit: depth, filter,
+        ...(hits.length >= count ? { score_threshold: hits[count - 1]!.score / factor } : {}),
+        with_payload: [...HIT_PAYLOAD, "terms", "dl", "lexical_order"],
+      });
+      const seen = new Set(res.points.map(({ id }) => id));
+      add(deep.points.filter(({ id }) => !seen.has(id)));
+      hits = score();
     }
-    documents.sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || (a.id < b.id ? -1 : Number(a.id > b.id)));
-    return lexicalBm25(documents, expandLexicalTerms(queryTerms(query), candidateTerms), prefixes.frequencies, prefixes.documentCount, prefixes.averageLength, count);
+    return hits;
   }
 
   private lessonVocabulary(): Promise<Map<string, number>> {
@@ -529,6 +550,8 @@ export class SearchEngine {
 
   async stats(): Promise<StatsResult> {
     await this.ready();
+    const rankingReady = this.prefixes?.isReady ?? true;
+    this.prefixes?.fillInBackground();
     const byLayer = (value: SearchResultLayer) => ({ must: [{ key: "layer", match: { value } }] });
     const [docs, vectors, memories, lessons, missingVectors] = await Promise.all([
       this.qdrant.count(LIVE_DOCS),
@@ -537,7 +560,7 @@ export class SearchEngine {
       this.qdrant.count(byLayer("lesson")),
       this.qdrant.count(MISSING_VECTOR_FILTER),
     ]);
-    return { docs, vectors, memories, lessons, missingVectors, rankingReady: this.prefixes?.isReady ?? true };
+    return { docs, vectors, memories, lessons, missingVectors, rankingReady };
   }
 
   async sessionCounts(): Promise<Array<[string, number]>> {

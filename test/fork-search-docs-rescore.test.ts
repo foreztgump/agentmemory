@@ -85,3 +85,41 @@ describe.skipIf(!QDRANT_URL)("docs rescoring after vocabulary fill", () => {
     expect(await restarted.keyword("redis", 10, "all")).toEqual(await engine.keyword("redis", 10, "all"));
   }, 60_000);
 });
+
+describe.skipIf(!QDRANT_URL)("a write that lands while the vocabulary fill scrolls", () => {
+  it("is counted, so the exact re-score still finds it", async () => {
+    const qdrant = qdrantFor(`docs_fill_race_${process.pid}_${Math.floor(Math.random() * 1e9)}`);
+    const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
+    try {
+      await engine.stats();
+      await engine.settled();
+      await qdrant.drop();
+      engine.prefixes!.clear();
+      await qdrant.ensure();
+      let release!: () => void;
+      const open = new Promise<void>((resolve) => { release = resolve; });
+      let reached!: () => void;
+      const held = new Promise<void>((resolve) => { reached = resolve; });
+      const call = qdrant.call.bind(qdrant);
+      let holding = true;
+      qdrant.call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+        const result = await call<T>(method, path, body);
+        if (holding && path.endsWith("/points/scroll")) {
+          holding = false;
+          reached();
+          await open;
+        }
+        return result;
+      };
+      engine.prefixes!.fillInBackground();
+      await held;
+      expect((await engine.apply([docOp(observation("obs_race", "racecontent"))])).failed).toEqual([]);
+      release();
+      await engine.settled();
+      expect(engine.prefixes!.documentCount).toBe(1);
+      expect((await engine.keyword("racecontent", 10, "all")).map((h) => h.id)).toEqual(["obs_race"]);
+    } finally {
+      await qdrant.drop();
+    }
+  }, 60_000);
+});
