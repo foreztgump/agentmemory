@@ -118,6 +118,28 @@ export class PrefixVocabulary {
     return ratio * Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK;
   }
 
+  documentScoreUpperBound(query: readonly WeightedTerm[]): (document: Sparse) => number {
+    const coefficients = query.map((exact) => {
+      const weights = new Map<number, number>();
+      for (const { term, weight } of [exact, ...this.expand([exact], true)]) {
+        const df = this.df.get(term) ?? 0;
+        if (df <= 0) continue;
+        const id = termId(term);
+        const coefficient = weight * Math.log((this.documents - df + 0.5) / (df + 0.5) + 1);
+        weights.set(id, Math.max(weights.get(id) ?? 0, coefficient));
+      }
+      return weights;
+    });
+    const drift = Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK;
+    return (document) => coefficients.reduce((sum, weights) => {
+      let best = 0;
+      for (let i = 0; i < document.indices.length; i++) {
+        best = Math.max(best, (weights.get(document.indices[i]!) ?? 0) * document.values[i]!);
+      }
+      return sum + best;
+    }, 0) * drift;
+  }
+
   observe(terms: readonly string[]): void {
     this.replace(undefined, { terms, dl: terms.length });
   }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PrefixVocabulary, type VocabularyLimits } from "../src/fork/worker/prefix-vocabulary.js";
 import type { Qdrant } from "../src/fork/worker/qdrant.js";
-import { querySparse, termsSparse } from "../src/fork/worker/bm25-sparse.js";
+import { querySparse, termId, termsSparse } from "../src/fork/worker/bm25-sparse.js";
 import { expandLexicalTerms, lexicalBm25 } from "../src/fork/worker/lexical-bm25.js";
 import { queryTerms } from "../src/state/term-extraction.js";
 
@@ -45,6 +45,7 @@ describe("PrefixVocabulary", () => {
       const query = queryTerms(text);
       const sparse = querySparse(text, (terms) => vocab.expand(terms, true));
       const bound = vocab.scoreUpperBound(query, sparse);
+      const documentBound = vocab.documentScoreUpperBound(query);
       const frequencies = new Map<number, number>();
       const vectors = docs.map((terms) => termsSparse(terms, 1));
       for (const vector of vectors) for (const id of vector.indices) frequencies.set(id, (frequencies.get(id) ?? 0) + 1);
@@ -58,11 +59,33 @@ describe("PrefixVocabulary", () => {
           return sum + (index < 0 ? 0 : vector.values[index]!) * sparse.values[i]! * idf;
         }, 0);
         expect(raw * bound).toBeGreaterThanOrEqual(hit.score);
+        expect(documentBound(vector)).toBeGreaterThanOrEqual(hit.score);
       }
     }
     expect(vocab.scoreUpperBound(queryTerms("dep"), { indices: [], values: [] })).toBe(Infinity);
     vocab.clear();
     expect(vocab.scoreUpperBound([], { indices: [], values: [] })).toBe(Infinity);
+  });
+
+  it("bounds prefix maxima separately for each overlapping query term", () => {
+    const docs = [["redisproxy", "rediscache", "redisserver"], ["redis", "redisproxy"], ["redis."], ["other"]];
+    const { vocab } = vocabulary([]);
+    for (const terms of docs) vocab.observe(terms);
+    vocab.noteIndexedAverageLength(vocab.averageLength);
+    for (const text of ["red", "redis", "red redisproxy"]) {
+      const query = queryTerms(text);
+      const bound = vocab.documentScoreUpperBound(query);
+      const hits = lexicalBm25(docs.map((terms, i) => ({ id: String(i), sessionId: "s", terms, dl: terms.length })), expandLexicalTerms(query, vocab.frequencies), vocab.frequencies, docs.length, vocab.averageLength, 10);
+      for (const hit of hits) expect(bound(termsSparse(docs[Number(hit.id)]!, vocab.averageLength))).toBeGreaterThanOrEqual(hit.score);
+      const vector = termsSparse(docs[0]!, vocab.averageLength);
+      const sparse = querySparse(text, (terms) => vocab.expand(terms, true));
+      if (text === "red") {
+        const idfs = new Map([...vocab.frequencies].map(([term, df]) => [termId(term), Math.log((docs.length - df + 0.5) / (df + 0.5) + 1)]));
+        const weights = new Map(sparse.indices.map((id, i) => [id, sparse.values[i]!]));
+        const raw = vector.indices.reduce((sum, id, i) => sum + (weights.get(id) ?? 0) * (idfs.get(id) ?? 0) * vector.values[i]!, 0);
+        expect(bound(vector)).toBeLessThan(vocab.scoreUpperBound(query, sparse) * raw);
+      }
+    }
   });
 
   it("covers every known prefix for pruning while retaining the default expansion cap", () => {

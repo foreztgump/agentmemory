@@ -15,13 +15,13 @@ import {
   type ScanMissingResult,
   type StatsResult,
 } from "../search/protocol.js";
-import { querySparse, termsSparse } from "./bm25-sparse.js";
+import { querySparse, termsSparse, type Sparse } from "./bm25-sparse.js";
 import { expandLexicalTerms, lexicalBm25, storedDocument, type LexicalDocument } from "./lexical-bm25.js";
 import { DEFAULT_VOCABULARY_LIMITS, PrefixVocabulary, type VocabularyLimits } from "./prefix-vocabulary.js";
 import { pointId, type Qdrant } from "./qdrant.js";
 import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
 
-interface ScoredPoint { id: string; score: number; payload?: RecordPoint["payload"] }
+interface ScoredPoint { id: string; score: number; payload?: RecordPoint["payload"]; vector?: { bm25?: Sparse } }
 interface RecordPoint {
   id: string;
   payload?: { doc_id?: string; session_id?: string; layer?: string; rev?: string; deleted?: boolean; terms?: unknown; dl?: number; lexical_order?: [number, number]; v?: unknown };
@@ -47,6 +47,8 @@ const KEYWORD_CANDIDATE_MULTIPLIER = 4;
 const KEYWORD_CANDIDATE_MARGIN = 500;
 /** Candidates read past the limit before the score bound decides whether a deeper read is needed. */
 const KEYWORD_SHALLOW_SLACK = 16;
+const KEYWORD_PAYLOAD_CHUNK = 16;
+const KEYWORD_VECTOR_BOUND_TERMS = 1024;
 
 const LIVE_DOCS = { must: [{ key: "layer", match: { any: LAYERS } }] };
 
@@ -455,14 +457,30 @@ export class SearchEngine {
     add(res.points);
     let hits = score();
     if (shallow < depth && res.points.length === shallow && (hits.length < count || res.points.at(-1)!.score * factor >= hits[count - 1]!.score)) {
+      const useVectorBound = sparse.indices.length > KEYWORD_VECTOR_BOUND_TERMS;
       const deep = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", this.qdrant.path + "/points/query", {
         query: sparse, using: "bm25", limit: depth, filter,
         ...(hits.length >= count ? { score_threshold: hits[count - 1]!.score / factor } : {}),
-        with_payload: [...HIT_PAYLOAD, "terms", "dl", "lexical_order"],
+        with_payload: false,
+        with_vector: useVectorBound ? ["bm25"] : false,
       });
       const seen = new Set(res.points.map(({ id }) => id));
-      add(deep.points.filter(({ id }) => !seen.has(id)));
-      hits = score();
+      const bound = useVectorBound ? prefixes.documentScoreUpperBound(terms) : undefined;
+      const remaining = deep.points.filter(({ id }) => !seen.has(id))
+        .map((point) => ({ id: point.id, bound: Math.min(point.score * factor, point.vector?.bm25 && bound ? bound(point.vector.bm25) : Infinity) }))
+        .sort((a, b) => b.bound - a.bound);
+      for (let offset = 0; offset < remaining.length;) {
+        const threshold = hits.length >= count ? hits[count - 1]!.score : 0;
+        const chunk: string[] = [];
+        while (offset < remaining.length && chunk.length < KEYWORD_PAYLOAD_CHUNK && remaining[offset]!.bound >= threshold) {
+          chunk.push(remaining[offset++]!.id);
+        }
+        if (chunk.length === 0) break;
+        add(await this.qdrant.call<RecordPoint[]>("POST", this.qdrant.path + "/points", {
+          ids: chunk, with_payload: [...HIT_PAYLOAD, "terms", "dl", "lexical_order"], with_vector: false,
+        }));
+        hits = score();
+      }
     }
     return hits;
   }
