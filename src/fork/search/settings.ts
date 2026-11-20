@@ -58,3 +58,30 @@ export function loadSearchWorkerSettings(env: Record<string, string | undefined>
     avgdl: positive(env, "AM_SEARCH_AVGDL", DEFAULT_AVGDL),
   };
 }
+
+export interface MaintenanceSettings {
+  /** Milliseconds between reconcile passes; 0 turns reconcile off. */
+  reconcileIntervalMs: number;
+  /** Sessions compared document by document each pass even when their counts agree; 0 compares counts only. */
+  sweepPerPass: number;
+  /** Embeddings per minute for documents without a vector; 0 turns re-embedding off. */
+  reembedPerMinute: number;
+}
+
+function wholeAtLeastZero(env: Record<string, string | undefined>, name: string, fallback: number): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const value = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(value)) throw new Error(`${name}=${raw} must be a whole number of 0 or more`);
+  return value;
+}
+
+/** Read by the app worker in disk mode; validated at boot. */
+export function loadMaintenanceSettings(env: Record<string, string | undefined>): MaintenanceSettings {
+  return {
+    reconcileIntervalMs: wholeAtLeastZero(env, "AM_SEARCH_RECONCILE_INTERVAL_MS", 60_000),
+    sweepPerPass: wholeAtLeastZero(env, "AM_SEARCH_RECONCILE_SWEEP", 3),
+    // Provider quotas count tokens; 120 a minute is about 13k tokens a minute at ~110 tokens a document.
+    reembedPerMinute: wholeAtLeastZero(env, "AM_SEARCH_REEMBED_PER_MINUTE", 120),
+  };
+}

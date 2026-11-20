@@ -14,6 +14,7 @@ import {
   type MaxVersionResult,
   type Op,
   type OpVersion,
+  type ScanDocsResult,
   type ScanMissingResult,
   type SessionCountsResult,
   type StatsResult,
@@ -33,6 +34,8 @@ export interface SearchWorkerClient {
   stats(): Promise<StatsResult>;
   sessionCounts(): Promise<Array<[string, number]>>;
   scanMissingVectors(cursor: string | undefined, limit: number): Promise<ScanMissingResult>;
+  /** Live observation docs of a session, or live memory docs when sessionId is undefined. */
+  scanDocs(sessionId: string | undefined, cursor: string | undefined, limit: number): Promise<ScanDocsResult>;
   clear(scope: ClearScope): Promise<void>;
   health(): Promise<HealthResult>;
 }
@@ -56,6 +59,7 @@ export function iiiSearchClient(sdk: IIIClient, collection: CollectionId = "docs
     stats: () => call<StatsResult>(SEARCH_FN.stats, {}),
     sessionCounts: async () => (await call<SessionCountsResult>(SEARCH_FN.sessionCounts, {})).counts,
     scanMissingVectors: (cursor, limit) => call<ScanMissingResult>(SEARCH_FN.scanMissingVectors, { cursor, limit }),
+    scanDocs: (sessionId, cursor, limit) => call<ScanDocsResult>(SEARCH_FN.scanDocs, { sessionId, cursor, limit }),
     clear: async (scope) => {
       await call(SEARCH_FN.clear, { scope }, WRITE_TIMEOUT_MS);
     },

@@ -137,8 +137,7 @@ describe.skipIf(!QDRANT_URL)("ocr p2 remember.ts:101: memory_save supersession w
     expect(second.memory.supersedes).toContain(first.memory.id);
   }, 30_000);
 
-  // Deferred to TEE-1169 (degraded status): flips to a failure once that issue fixes it.
-  it.fails("still supersedes a near-duplicate memory when the worker cannot be reached", async () => {
+  it("still supersedes a near-duplicate memory when the worker cannot be reached", async () => {
     const { first, second } = await saveTwice("remember_outage", true);
     expect(second.memory.supersedes).toContain(first.memory.id);
   }, 30_000);

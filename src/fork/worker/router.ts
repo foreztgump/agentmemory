@@ -8,6 +8,7 @@ import {
   type ImageQueryRequest,
   type KeywordRequest,
   type LookupRequest,
+  type ScanDocsRequest,
   type ScanMissingRequest,
   type VectorRequest,
 } from "../search/protocol.js";
@@ -54,6 +55,7 @@ export function createSearchHandlers(engines: WorkerEngines, oversampling: numbe
     [SEARCH_FN.stats]: async (data: CollectionScoped) => text(data, SEARCH_FN.stats).stats(),
     [SEARCH_FN.sessionCounts]: async (data: CollectionScoped) => ({ counts: await text(data, SEARCH_FN.sessionCounts).sessionCounts() }),
     [SEARCH_FN.scanMissingVectors]: async (data: Partial<ScanMissingRequest>) => text(data, SEARCH_FN.scanMissingVectors).scanMissingVectors(data?.cursor, data?.limit),
+    [SEARCH_FN.scanDocs]: async (data: Partial<ScanDocsRequest>) => text(data, SEARCH_FN.scanDocs).scanDocs(data?.sessionId, data?.cursor, data?.limit),
     [SEARCH_FN.clear]: async (data: Partial<ClearRequest>) => {
       await engineFor(data).clear(data?.scope);
       return { ok: true };
