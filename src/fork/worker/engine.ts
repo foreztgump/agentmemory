@@ -537,7 +537,7 @@ export class SearchEngine {
       this.qdrant.count(byLayer("lesson")),
       this.qdrant.count(MISSING_VECTOR_FILTER),
     ]);
-    return { docs, vectors, memories, lessons, missingVectors };
+    return { docs, vectors, memories, lessons, missingVectors, rankingReady: this.prefixes?.isReady ?? true };
   }
 
   async sessionCounts(): Promise<Array<[string, number]>> {

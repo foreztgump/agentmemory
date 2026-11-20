@@ -63,6 +63,7 @@ export interface SearchBackendService {
   /** Idempotent. Schedules reconcile and the re-embed loop in the background; never waits for them. */
   start(hooks: ServiceHooks): void;
   stop(): Promise<void>;
+  whenRankingReady?(timeoutMs?: number, pollMs?: number): Promise<void>;
   /** Probes the backend (bounded) and reads cached counters. */
   status(): Promise<SearchBackendStatus>;
   degradedNotice(): DegradedNotice | null;

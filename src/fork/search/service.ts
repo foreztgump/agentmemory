@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { DegradedNotice, SearchBackendService, SearchBackendStatus, ServiceHooks } from "./backend-status.js";
 import type { SearchWorkerClient } from "./client.js";
 import type { BackendHealth } from "./health.js";
@@ -8,6 +9,8 @@ import type { StatsCache } from "./remote-index.js";
 
 /** Below the status route's own 5 s deadline, so a hung worker reads as degraded rather than as a missing block. */
 const PROBE_MS = 3000;
+const RANKING_READY_TIMEOUT_MS = 120_000;
+const RANKING_READY_POLL_MS = 500;
 
 export class DiskBackendService implements SearchBackendService {
   private hooks: ServiceHooks | null = null;
@@ -34,6 +37,27 @@ export class DiskBackendService implements SearchBackendService {
   async stop(): Promise<void> {
     this.parts.reconciler.stop();
     this.parts.reembed.stop();
+  }
+
+  async whenRankingReady(timeoutMs = RANKING_READY_TIMEOUT_MS, pollMs = RANKING_READY_POLL_MS): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const stats = await Promise.race([
+          this.parts.client.stats(),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+          }),
+        ]);
+        if (stats && stats.rankingReady !== false) return;
+      } catch {} finally {
+        clearTimeout(timer);
+      }
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+    }
+    logger.warn("search worker ranking statistics not ready before boot deadline; continuing", { timeoutMs });
   }
 
   async status(): Promise<SearchBackendStatus> {

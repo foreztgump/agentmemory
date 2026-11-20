@@ -101,6 +101,7 @@ export interface StatsResult {
   lessons: number;
   /** Observations and memories without a dense vector. */
   missingVectors: number;
+  rankingReady?: boolean;
 }
 
 export interface SessionCountsResult { counts: Array<[string, number]> }
