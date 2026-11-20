@@ -1,8 +1,9 @@
 import type { RunId } from "./types.js";
 
 /**
- * Every retention scope, declared once. `src/state/schema.ts` re-exports these under `KV` and
- * `src/fork/kv/scope-classes.ts` classifies each (AGENTS.md: new KV scopes).
+ * Every retention scope, declared once. Slice 1 re-exports these under `KV` in `src/state/schema.ts` and
+ * classifies each in `src/fork/kv/scope-classes.ts` (AGENTS.md: new KV scopes). This sketch commit does
+ * not register them yet: nothing reads or writes them until slice 1.
  *
  *   vault(runId)  paged-only       key = item id, value = VaultEntry; deleted whole when the run empties
  *   items         point-read-only  key = item id, value = ItemLocator (which run holds it)

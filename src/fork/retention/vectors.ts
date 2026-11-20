@@ -1,4 +1,5 @@
-import type { VectorStorePort } from "../../state/search-ports.js";
+import type { KeywordIndexPort, VectorStorePort } from "../../state/search-ports.js";
+import type { CompressedObservation } from "../../types.js";
 
 /**
  * Reads stored embeddings back, so trash keeps the vector and restore never re-embeds (R3).
@@ -32,9 +33,9 @@ export function vectorReaderFor(port: VectorStorePort | null): VectorReader {
  * its vector. The R3 test runs with the re-embed loop on and counts zero embedding calls.
  */
 export function reattachDocument(
-  keyword: { add(obs: import("../../types.js").CompressedObservation, layer?: "observation" | "memory"): void },
+  keyword: Pick<KeywordIndexPort, "add">,
   vector: VectorStorePort | null,
-  doc: import("../../types.js").CompressedObservation,
+  doc: CompressedObservation,
   layer: "observation" | "memory",
   storedVector: string | undefined,
 ): { reembedNeeded: boolean } {

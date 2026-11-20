@@ -24,10 +24,10 @@ export interface Satellite {
   readonly appliesTo: readonly ItemRef["kind"][];
   /** Read before the row moves; the result is stored in the entry's `satellites`. */
   snapshot?(deps: RetentionDeps, ref: ItemRef, row: unknown): Promise<Partial<SatelliteSnapshots>>;
-  /** After the row has left its live scope. */
-  detach(deps: RetentionDeps, entry: VaultEntry): Promise<void>;
+  /** After the row has left its live scope. Omitted by satellites with purge-only work (metadata). */
+  detach?(deps: RetentionDeps, entry: VaultEntry): Promise<void>;
   /** After the row is back in its live scope. */
-  attach(deps: RetentionDeps, entry: VaultEntry): Promise<void>;
+  attach?(deps: RetentionDeps, entry: VaultEntry): Promise<void>;
   /** Purge only: clean data keyed by the id that has no restore path. */
   finalize?(deps: RetentionDeps, entry: VaultEntry): Promise<void>;
 }
@@ -54,4 +54,6 @@ export interface Satellite {
  *                   Assignment converges where +1/-1 does not, and repairs drift (L4, R11).
  *  metadata         finalize: delete mem:access, mem:retention score, facets, mem:emb, mem:latent for the id.
  */
+// TODO(slice 4): fill the table. displace, reinstate and purge walk it, so an empty table would make
+//  every detach and attach a silent no-op; slice 4's tests assert each row of the comment above.
 export const SATELLITES: readonly Satellite[] = [];

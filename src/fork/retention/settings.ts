@@ -22,9 +22,11 @@ export type RetentionSettings =
       readonly firstRunObservationShare: number;
       readonly recallCasesPath: string | null;
       readonly intervalMs: number;
-      readonly pageSize: number;
-      readonly pagePauseMs: number;
     };
+
+/** Fixed, not configurable: rows per paged read (the sweep's memory bound, R12) and the pause between pages. */
+export const RETENTION_PAGE_SIZE = 200;
+export const RETENTION_PAGE_PAUSE_MS = 25;
 
 export function parseRetentionSettings(env: Record<string, string | undefined>): RetentionSettings {
   void env;

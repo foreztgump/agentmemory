@@ -1,8 +1,8 @@
 // Retention domain types. Design: docs/fork/retention-design.md; rationale: docs/fork/retention-architecture.md.
 import type { CompressedObservation, Memory, ObservationSource } from "../../types.js";
 
-declare const brand: unique symbol;
-type Brand<T, B extends string> = T & { readonly [brand]: B };
+export declare const brand: unique symbol;
+export type Brand<T, B extends string> = T & { readonly [brand]: B };
 
 export type RunId = Brand<string, "RetentionRunId">;
 
@@ -40,8 +40,7 @@ export type SignalId =
   | "cited-by-graph"
   | "retrieved"
   | "lesson"
-  | "memory-type"
-  | "undigested";
+  | "memory-type";
 
 /** Ages in project-active days (clock.ts). */
 export interface Windows {
@@ -117,10 +116,13 @@ export interface DemoteRecord {
   readonly vector?: string;
 }
 
-/** `mem:retention:items`, key = item id: which run holds it. Makes restore and erase by id one point read. */
+/**
+ * `mem:retention:items`, key = item id: which run holds it. Makes restore and erase by id one point read.
+ * Vault stages only: a demote is found by a point read of `mem:retention:demoted`, keyed by memory id.
+ */
 export interface ItemLocator {
   readonly runId: RunId;
-  readonly stage: Stage;
+  readonly stage: Exclude<Stage, "C">;
   readonly sessionId?: string;
 }
 
@@ -135,10 +137,14 @@ export interface ObservationTombstone {
 export type Phase = "seal" | "plan" | "check-before" | "apply" | "check-after" | "settle" | "done";
 export type Outcome = "running" | "kept" | "restored" | "dry-run" | "refused";
 
-/** Where the streamed plan resumes. The plan is never stored; it is recomputed from the cursor. */
+/**
+ * Where the streamed plan resumes. The plan is never stored; it is recomputed from the cursor.
+ * A sessions unit is one sealed session with its T and O candidates together, so a crash between
+ * them cannot split a session; a memories unit is one page of memories with its S, X and C candidates.
+ */
 export interface Cursor {
-  readonly stage: Stage;
-  /** Last session id (T, O) or memory id (S, X, C) fully handled. */
+  readonly unit: "sessions" | "memories";
+  /** Last session id or memory id fully handled. */
   readonly after: string | null;
 }
 
@@ -165,7 +171,8 @@ export interface RunRow {
   observationCap: number | null;
   /** Entries in this run's vault that are still restorable. Purge visits only runs where this is above zero. */
   held: number;
-  lease: { readonly owner: string; heartbeatAt: string };
+  /** Process that ran the run last; the live lease and its heartbeat are in mem:retention:control only. */
+  ranBy: string;
   restoredBecause?: string;
   closedAt?: string;
 }

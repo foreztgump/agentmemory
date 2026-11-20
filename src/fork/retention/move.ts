@@ -1,6 +1,6 @@
 import type { RetentionDeps } from "./satellites.js";
 import type { Cleared } from "./protect.js";
-import type { Reason, RunId, Stage, VaultEntry } from "./types.js";
+import type { DemoteRecord, RunId, VaultEntry } from "./types.js";
 import type { Vault } from "./vault.js";
 
 /**
@@ -26,8 +26,7 @@ export function displace(deps: RetentionDeps, vault: Vault, runId: RunId, item: 
 /**
  * The inverse of displace for one entry: row back (trash) or `source` back (trim) unless a live row
  * now exists with a different fingerprint (then keep the live row and drop the entry), attach
- * satellites, vault.take. For a demote: clear the mark, reattach from DemoteRecord.vector, delete the record.
- * Never embeds (R3). Idempotent.
+ * satellites, vault.take. Never embeds (R3). Idempotent.
  */
 export function reinstate(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<{ restored: boolean; reembedNeeded: boolean }> {
   void deps;
@@ -36,20 +35,27 @@ export function reinstate(deps: RetentionDeps, vault: Vault, entry: VaultEntry):
   throw new Error("not implemented");
 }
 
+/** Un-demote: clear `retention.demotedAt`, reattach from `record.vector`, delete the record. Never embeds. */
+export function reinstateDemote(deps: RetentionDeps, record: DemoteRecord): Promise<{ restored: boolean; reembedNeeded: boolean }> {
+  void deps;
+  void record;
+  throw new Error("not implemented");
+}
+
 /**
- * Settles a run that crashed mid-apply (R12). For each entry of the run: live row present with the
- * entry's fingerprint -> finish the move (delete row, detach); live row absent -> detach again
- * (idempotent). After this no id is both live and in the vault, and every satellite matches the row.
- * Called first by every sweep that finds its run row unfinished.
+ * Settles a run that crashed mid-apply (R12), per disposition. Called first by every sweep that finds its
+ * run row unfinished.
+ *  trash: live row present with the entry's fingerprint -> finish the move (delete row, detach); live row
+ *    absent -> detach again. After this no trashed id is both live and in the vault.
+ *  trim: finish rewriting the live row's `source` to the truncated shape. The entry stays in the vault
+ *    until purge or restore; for a trim, live row plus vault entry is the normal state.
+ *  demote: the record is written first, then the mark, then the index removals, so re-running the demote
+ *    for every DemoteRecord of the run converges. They are found by a paged pass over
+ *    mem:retention:demoted filtered by runId (small: memories only).
  */
 export function recoverRun(deps: RetentionDeps, vault: Vault, runId: RunId): Promise<{ finished: number; detachedAgain: number }> {
   void deps;
   void vault;
   void runId;
   throw new Error("not implemented");
-}
-
-export interface MoveRequest {
-  readonly stage: Stage;
-  readonly reason: Reason;
 }
