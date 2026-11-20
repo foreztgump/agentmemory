@@ -108,7 +108,7 @@ export class CollectionReconciler {
     this.state = { ...this.state, state: "running", startedAt: new Date(started).toISOString(), error: null };
     try {
       await outbox.drainFor(1000);
-      let diff = await this.compare(kv);
+      const diff = await this.compare(kv);
       const checked = diff.checked;
       const repair = [...diff.missing, ...diff.stale, ...diff.leaked];
       let sent = 0;
@@ -124,7 +124,7 @@ export class CollectionReconciler {
         this.state = { ...this.state, state: "paused-degraded", checked, added, deleted };
         return;
       }
-      if (repair.length > 0) diff = await this.compare(kv);
+      if (repair.length > 0) await this.compare(kv);
       const finished = Date.now();
       this.state = { state: off ? "off" : "idle", startedAt: this.state.startedAt, finishedAt: new Date(finished).toISOString(), durationMs: finished - started, checked, added, deleted, error: null };
       if (repair.length > 0) logger.info(`search ${this.name} collection reconciled`, { added, deleted, missing: this.found?.missing, extra: this.found?.extra });
