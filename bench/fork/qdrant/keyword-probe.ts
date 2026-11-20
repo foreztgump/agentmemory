@@ -78,12 +78,12 @@ const exactOf = new Map<string, ReturnType<typeof lexicalBm25>>();
 for (const c of cases) exactOf.set(c.id, lexicalBm25(documents, expanded.get(c.id)!, df, N, avgdl, 100_000));
 
 // Qdrant's own order for the engine's sparse query, before any re-scoring in the worker.
-async function rawQdrant(query: string): Promise<string[]> {
+async function rawQdrant(query: string, depth = DEPTH): Promise<string[]> {
   const prefixes = engine.prefixes;
   const sparse = querySparse(query, prefixes ? (terms) => prefixes.expand(terms) : undefined);
   if (sparse.indices.length === 0) return [];
   const res = await qdrant.call<{ points: Array<{ payload?: { doc_id?: string } }> }>("POST", `${qdrant.path}/points/query`, {
-    query: sparse, using: "bm25", limit: DEPTH, filter: { must_not: [{ key: "deleted", match: { value: true } }] }, with_payload: ["doc_id"],
+    query: sparse, using: "bm25", limit: depth, filter: { must_not: [{ key: "deleted", match: { value: true } }] }, with_payload: ["doc_id"],
   });
   return res.points.flatMap((p) => (p.payload?.doc_id ? [p.payload.doc_id] : []));
 }
@@ -95,6 +95,8 @@ const firstRank = (ids: string[], expected: string[]) => {
 const runs: Array<Record<string, number | null>> = [];
 const perCase: unknown[] = [];
 let rawMrr = 0, rawRecall = 0;
+// How deep in Qdrant's own order the exact top k sit: the candidate depth a re-score needs.
+const needed: Record<number, number[]> = { 10: [], 40: [] };
 let exactMrr = 0, exactRecall = 0, diskMrr = 0, diskRecall = 0, sameTop10 = 0, sameTop10Set = 0, tiedTop10 = 0;
 for (let r = 0; r < Number(args.repeat); r++) {
   const ranks: Record<string, number | null> = {};
@@ -102,7 +104,10 @@ for (let r = 0; r < Number(args.repeat); r++) {
     const disk = await engine.keyword(c.query, DEPTH, "all");
     ranks[c.id] = firstRank(disk.map((h) => h.id), c.expected);
     if (r > 0) continue;
-    const rr = firstRank(await rawQdrant(c.query), c.expected);
+    const raw = await rawQdrant(c.query, 1000);
+    const rawPos = new Map(raw.map((id, i) => [id, i + 1]));
+    for (const k of [10, 40]) needed[k]!.push(Math.max(0, ...exactOf.get(c.id)!.slice(0, k).map((h) => rawPos.get(h.id) ?? 1001)));
+    const rr = firstRank(raw, c.expected);
     rawMrr += rr ? 1 / rr : 0; rawRecall += rr ? 1 : 0;
     const exactAll = exactOf.get(c.id)!;
     const exactScore = new Map(exactAll.map((h) => [h.id, h.score]));
@@ -144,6 +149,11 @@ console.log(JSON.stringify({
     rawQdrant: { recallAt10: +(rawRecall / n).toFixed(4), mrr: +(rawMrr / n).toFixed(4) },
     sameTop10: sameTop10 / n, sameTop10Set: sameTop10Set / n, casesWithTiesInExactTop10: tiedTop10,
   },
+  candidateDepthNeeded: Object.fromEntries(Object.entries(needed).map(([k, v]) => {
+    const sorted = [...v].sort((a, b) => a - b);
+    const at = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+    return [`top${k}`, { p50: at(0.5), p90: at(0.9), p95: at(0.95), max: sorted[sorted.length - 1] }];
+  })),
   unstableAcrossRepeats: unstable,
   diskRanks: runs[0],
   differing: perCase,
