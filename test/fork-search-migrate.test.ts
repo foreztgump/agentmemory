@@ -22,7 +22,9 @@ import { vectorBucketScope } from "../src/state/index-persistence.js";
 import { float32ToBase64 } from "../src/state/vector-index.js";
 import type { CompressedObservation, Lesson } from "../src/types.js";
 import { FakeRedis, type Store } from "./helpers/fake-redis.js";
-import { DIMS, QDRANT_URL, qdrantFor } from "./helpers/search-engine.js";
+import { DIMS, engineClient, imageEngineClient, QDRANT_URL, qdrantFor } from "./helpers/search-engine.js";
+import { mockKV } from "./helpers/mocks.js";
+import { createDiskSearchRuntime } from "../src/fork/search/runtime.js";
 
 const vec = (seed: number) => Float32Array.from({ length: DIMS }, (_, i) => Math.cos(seed * 3.1 + i) + 0.01 * seed);
 const json = (value: unknown) => Buffer.from(JSON.stringify(value));
@@ -391,4 +393,45 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     await engine.apply([docOp(obs("obs_9", "ses_1", "written by the app"), "observation")], nextOpVersion());
     await expect(fill(new FakeRedis(fixture()), targets, options)).rejects.toThrow(/allow-nonempty/);
   });
+
+  it("loses no document and keeps every stored vector when the app's reconcile runs between a killed fill and its resume", async () => {
+    const { qdrant, engine, targets } = await setup("reconcile");
+    const store = new FakeRedis(fixture());
+    let calls = 0;
+    const dying = Object.create(engine) as SearchEngine;
+    dying.load = (items, version, avgdl) => (++calls === 2 ? Promise.reject(new Error("killed")) : engine.load(items, version, avgdl));
+    await expect(fill(store, { ...targets, docs: { qdrant, engine: dying } }, options)).rejects.toThrow("killed");
+
+    const runtime = createDiskSearchRuntime(engineClient(engine), false, DIMS, {
+      lessons: engineClient(targets.lessons.engine),
+      images: imageEngineClient(targets.images.engine),
+    }, { reconcileIntervalMs: 0, sweepPerPass: 3, reembedPerMinute: 0 });
+    try {
+      runtime.reconciler.start(stateOf(store) as never);
+      await runtime.reconciler.runPass();
+      const resumed = await fill(store, targets, options);
+      expect(resumed.skipped).toBeGreaterThan(0);
+      const checked = await verifyAll(store, targets);
+      expect(checked.ok, checked.lines.join("\n")).toBe(true);
+      await runtime.reconciler.runPass();
+      expect(runtime.reconciler.report()).toMatchObject({ added: 0, deleted: 0 });
+      expect((await verifyAll(store, targets)).ok).toBe(true);
+    } finally {
+      await runtime.service.stop();
+      runtime.stats.stop();
+      for (const outbox of runtime.outboxes) await outbox.stop(100);
+    }
+  });
 });
+
+/** The app's view of the migration's store: every `state:` hash as a KV scope of parsed rows. */
+function stateOf(store: FakeRedis) {
+  const kv = mockKV();
+  for (const [key, fields] of store.data) {
+    if (!key.startsWith("state:")) continue;
+    for (const [field, value] of fields) void kv.set(key.slice("state:".length), field, JSON.parse(value.toString()));
+  }
+  return Object.assign(kv, {
+    getMany: async <T>(scope: string, keys: string[]): Promise<Array<T | null>> => keys.map((k) => (kv.store.get(scope)?.get(k) as T) ?? null),
+  });
+}
