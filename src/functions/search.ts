@@ -535,13 +535,19 @@ function isStateNotReadyError(err: unknown): boolean {
   return /function_not_found|Function state::\w+ not found|timed out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|connection (?:closed|reset)/i.test(message)
 }
 
-async function listWithRetry<T>(kv: StateKV, scope: string, label: string, deadline: number): Promise<T[] | null> {
+async function listWithRetry<T>(
+  kv: StateKV,
+  scope: string,
+  label: string,
+  deadline: number,
+  read: () => Promise<T[]> = () => collectAll<T>(kv, scope),
+): Promise<T[] | null> {
   let lastErr: unknown
   let attempts = 0
   while (attempts < LIST_RETRY_ATTEMPTS) {
     attempts++
     try {
-      return await collectAll<T>(kv, scope)
+      return await read()
     } catch (err) {
       lastErr = err
       if (!isStateNotReadyError(err)) break
@@ -642,16 +648,20 @@ async function runKeywordRebuild(
     return { documents, vectorJobs, fullBackfillPending, historicalVectorGaps }
   }
   const failedSessions: string[] = []
+  const observationsDeadline = performance.now() + LIST_RETRY_BUDGET_MS
   for (let batch = 0; batch < sessions.length; batch += 10) {
     const chunk = sessions.slice(batch, batch + 10)
     const results = await Promise.all(
       chunk.map(async (s) => {
-        try {
-          return await kv.list<CompressedObservation>(KV.observations(s.id))
-        } catch {
-          failedSessions.push(s.id)
-          return [] as CompressedObservation[]
-        }
+        const observations = await listWithRetry<CompressedObservation>(
+          kv,
+          KV.observations(s.id),
+          'rebuildKeywordIndex: observations',
+          observationsDeadline,
+          () => kv.list<CompressedObservation>(KV.observations(s.id)),
+        )
+        if (observations === null) failedSessions.push(s.id)
+        return observations ?? []
       })
     )
     for (const obs of results.flat()) {
