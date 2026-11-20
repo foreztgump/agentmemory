@@ -268,7 +268,9 @@ services:
 
   # Keyword index and vectors for AM_SEARCH_BACKEND=disk. Not published: only
   # agentmemory reaches it, on the stack's network. 1 GB holds about 1M documents
-  # (docs/fork/spikes/qdrant.md); raise QDRANT_MEM_LIMIT toward 2.5g near 3M.
+  # at rest (docs/fork/spikes/qdrant.md), but a fill from empty only to about 500k
+  # (docs/fork/search-migration.md); raise QDRANT_MEM_LIMIT before a stack passes
+  # that, and toward 2.5g near 3M.
   qdrant:
     image: qdrant/qdrant:v1.20.2
     restart: unless-stopped

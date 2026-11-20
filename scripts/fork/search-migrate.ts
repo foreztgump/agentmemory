@@ -485,12 +485,47 @@ export interface FillOptions {
   dimensions: number;
   allowNonempty: boolean;
   log: (line: string) => void;
+  /** Documents written between waits for an idle optimizer (default OPTIMIZER_CHECK_DOCS). */
+  optimizerCheckDocs?: number;
+}
+
+/**
+ * Points written while Qdrant's one optimizer thread is busy wait in RAM until
+ * that optimization ends: buddy's fill on a quiet host reached 921 MiB of a
+ * 1 GiB limit that way, and a synthetic fill was OOM-killed. Every
+ * OPTIMIZER_CHECK_DOCS the fill waits until the optimizer is idle.
+ */
+export const OPTIMIZER_CHECK_DOCS = 10_000;
+const OPTIMIZER_WAIT_MS = 15 * 60_000;
+
+type StatusQdrant = Pick<Qdrant, "call" | "path" | "config">;
+
+/**
+ * Waits until the collection is not optimizing (yellow) on two polls in a
+ * row: it can read green for a moment after a write, before the optimizer
+ * picks the write up. Returns whether it found the optimizer busy.
+ */
+export async function waitForOptimizer(qdrant: StatusQdrant, pollMs = 500): Promise<boolean> {
+  const deadline = Date.now() + OPTIMIZER_WAIT_MS;
+  let idle = 0;
+  let busy = false;
+  for (;;) {
+    const { status } = await qdrant.call<{ status: string }>("GET", qdrant.path);
+    idle = status === "yellow" ? 0 : idle + 1;
+    busy ||= status === "yellow";
+    if (idle === 2) break;
+    if (Date.now() > deadline) throw new MigrateError(`Qdrant was still optimizing ${qdrant.config.collection} after ${OPTIMIZER_WAIT_MS / 60_000} minutes; rerun fill to resume`, 3);
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return busy;
 }
 
 export interface FillResult {
   version: OpVersion;
   plan: PlanReport;
   units: number;
+  /** Times the fill waited for Qdrant's optimizer to catch up. */
+  optimizerWaits: number;
   skipped: number;
   written: UnitResult;
 }
@@ -542,6 +577,9 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
     for (const key of Object.keys(written) as Array<keyof UnitResult>) written[key] += result[key];
   };
   let finished = 0;
+  const gate = options.optimizerCheckDocs ?? OPTIMIZER_CHECK_DOCS;
+  let sinceGate = 0;
+  let optimizerWaits = 0;
   for (const unit of units) {
     if (done.has(unit.name)) continue;
     const result = emptyResult();
@@ -553,11 +591,17 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
       result.docs += docs.length;
       result.vectors += [...vectors.keys()].filter((id) => !kept.has(id)).length + await adoptVectors(targets.docs, docs, kept, vectors);
       result.fenced += kept.size;
+      sinceGate += docs.length;
+      if (sinceGate >= gate) {
+        sinceGate = 0;
+        if (await waitForOptimizer(qdrant)) optimizerWaits++;
+      }
     }
     await store.call("HSET", MARKER_KEY, UNIT_PREFIX + unit.name, JSON.stringify(result));
     add(result);
     if (++finished % 50 === 0) options.log(`${finished} units this run, ${written.docs} docs, ${written.vectors} vectors`);
   }
+  if (await waitForOptimizer(qdrant)) optimizerWaits++;
   let skipped = done.size;
   for (const [name, run] of [
     [LESSONS_UNIT, () => fillLessons(store, targets.lessons, meta.version, options.page)],
@@ -572,7 +616,7 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
     options.log(`${name} ${JSON.stringify(result)}`);
     add(result);
   }
-  return { version: meta.version, plan: plan.report, units: units.length + 2, skipped, written };
+  return { version: meta.version, plan: plan.report, units: units.length + 2, skipped, written, optimizerWaits };
 }
 
 /**
@@ -924,7 +968,7 @@ async function main(): Promise<number> {
     }
     if (command === "fill") {
       const r = await fill(store, targets, { page, dimensions, allowNonempty: args["allow-nonempty"], log });
-      log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them, ${r.written.unparsable} records unreadable, ${r.written.refused} image vectors refused; ${((Date.now() - started) / 1000).toFixed(1)} s`);
+      log(`fill wrote ${r.units - r.skipped} units (${r.skipped} already done): ${r.written.docs} docs, ${r.written.vectors} vectors, ${r.written.fenced} documents left as a newer live write had them, ${r.written.unparsable} records unreadable, ${r.written.refused} image vectors refused, ${r.optimizerWaits} waits for the optimizer; ${((Date.now() - started) / 1000).toFixed(1)} s`);
       const settling = Date.now();
       await targets.docs.engine.settled();
       log(`keyword weights settled in ${((Date.now() - settling) / 1000).toFixed(1)} s`);

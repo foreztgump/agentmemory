@@ -72,7 +72,7 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 
 ## Filling the disk search index
 
-[search-migration.md](search-migration.md) describes the migration that fills Qdrant from a memory-mode stack's records and persisted vectors with no embedding calls (TEE-1168): `scripts/fork/search-migrate.ts`, its verify, the measured results on buddy's snapshot and the cutover order.
+[search-migration.md](search-migration.md) describes the migration that fills Qdrant from a memory-mode stack's records and persisted vectors with no embedding calls (TEE-1168): `scripts/fork/search-migrate.ts`, its verify, the measured results on buddy's snapshot, Qdrant's memory during a fill (TEE-1201) and the cutover order.
 
 ## Baseline and benchmarks
 
