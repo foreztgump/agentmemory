@@ -290,6 +290,25 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     expect((await targets.images.engine.query(float32ToBase64(Float32Array.from(imageVec(2))), 5, "ses_1")).hits.map((h) => h.id)).toEqual(["img/a.png"]);
   });
 
+  it("breaks keyword ties in the same order as a collection the app wrote", async () => {
+    const tied = ["obs_t3", "obs_t1", "obs_t2", "obs_t0"].map((id) => obs(id, "ses_t", "identical tied narrative"));
+    const store = new FakeRedis(new Map([
+      ["state:mem:sessions", hash({ ses_t: { id: "ses_t" } })],
+      ["state:mem:obs:ses_t", hash(Object.fromEntries(tied.map((o) => [o.id, o])))],
+    ]));
+    const { engine: migrated, targets } = await setup("ties");
+    await fill(store, targets, options);
+    const app = (await setup("ties_app")).engine;
+    for (const o of tied) await app.apply([docOp(o, "observation")]);
+    const ranked = async (engine: SearchEngine) => {
+      await engine.keyword("tied", 10, "all");
+      await engine.settled();
+      return (await engine.keyword("tied narrative", 10, "all")).map((h) => h.id);
+    };
+    expect(await ranked(app)).toEqual(tied.map((o) => o.id));
+    expect(await ranked(migrated)).toEqual(await ranked(app));
+  });
+
   it("converges with no duplicates after being killed during a write and after a unit", async () => {
     const { qdrant, engine, targets } = await setup("resume");
     const store = new FakeRedis(fixture());
