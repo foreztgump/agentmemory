@@ -11,7 +11,9 @@
 //   node --import tsx bench/fork/qdrant/fill-memory.ts --count 200000 --container fill-qdrant --ceiling-mib 760
 //
 // Prints one JSON line. Exits 1 when Qdrant was OOM-killed, died, or its anon
-// peak passed --ceiling-mib.
+// peak passed --ceiling-mib. The ceiling is on anon memory, sampled, because
+// memory.peak also counts page cache, which the cgroup reclaims at its limit
+// and which reaches the limit on every fill.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -48,6 +50,10 @@ if (!Number.isInteger(count) || count <= 0) throw new Error("--count N is requir
 if (!args.container) throw new Error("--container is required: the Qdrant container whose cgroup is sampled");
 if (!Number.isInteger(page) || page <= 0) throw new Error("--page must be a positive integer");
 if (ceiling !== null && !(ceiling > 0)) throw new Error("--ceiling-mib must be a positive number");
+const settleTimeoutS = Number(args["settle-timeout-s"]);
+if (!(settleTimeoutS > 0)) throw new Error("--settle-timeout-s must be a positive number");
+/** Buddy's mean term count, which search-migrate fill weights its documents with. */
+const AVGDL = 35.8;
 
 const cgroupDir = (() => {
   const id = execFileSync("docker", ["inspect", "-f", "{{.Id}}", args.container!], { encoding: "utf8" }).trim();
@@ -61,7 +67,7 @@ const limitMiB = (() => {
   const max = readFileSync(`${cgroupDir}/memory.max`, "utf8").trim();
   return max === "max" ? null : Math.round(Number(max) / MiB);
 })();
-interface Sample { current: number; anon: number; file: number; oomKills: number }
+interface Sample { current: number; anon: number; oomKills: number }
 function sample(): Sample | null {
   try {
     const stat = readFileSync(`${cgroupDir}/memory.stat`, "utf8");
@@ -69,7 +75,6 @@ function sample(): Sample | null {
     return {
       current: Number(readFileSync(`${cgroupDir}/memory.current`, "utf8")),
       anon: field(stat, "anon"),
-      file: field(stat, "file"),
       oomKills: field(readFileSync(`${cgroupDir}/memory.events`, "utf8"), "oom_kill"),
     };
   } catch {
@@ -80,12 +85,14 @@ function sample(): Sample | null {
 const peaks = { current: 0, anon: 0, anonDuringLoad: 0, oomKills: 0 };
 let loading = true;
 let gone = false;
+let missed = 0;
 const timer = setInterval(() => {
   const s = sample();
   if (!s) {
-    gone = true;
+    gone = ++missed >= 2;
     return;
   }
+  missed = 0;
   peaks.current = Math.max(peaks.current, s.current);
   peaks.anon = Math.max(peaks.anon, s.anon);
   if (loading) peaks.anonDuringLoad = Math.max(peaks.anonDuringLoad, s.anon);
@@ -94,7 +101,7 @@ const timer = setInterval(() => {
 
 const qdrant = new Qdrant({ url: args.qdrant!, apiKey: args["qdrant-key"], collection: args.collection!, dimensions, oversampling: 6, timeoutMs: 120_000 });
 await qdrant.drop();
-const engine = new SearchEngine(qdrant, 35.8);
+const engine = new SearchEngine(qdrant, AVGDL);
 const patch = async (body: string | undefined) => { if (body) await qdrant.call("PATCH", qdrant.path, JSON.parse(body)); };
 await qdrant.ensure();
 await patch(args.during);
@@ -113,7 +120,7 @@ let written = 0;
 let batch: Array<{ doc: DocOp; f32b64: string }> = [];
 async function flush(): Promise<void> {
   if (batch.length === 0) return;
-  const result = await engine.load(batch, 1, 35.8);
+  const result = await engine.load(batch, 1, AVGDL);
   if (result.failed.length > 0) throw new Error(`load failed: ${JSON.stringify(result.failed[0])}`);
   written += batch.length;
   batch = [];
@@ -139,7 +146,7 @@ loading = false;
 if (!failure && !gone) await patch(args.after).catch((error) => { failure = `after: ${error instanceof Error ? error.message : String(error)}`; });
 
 let info: { status?: string; segments_count?: number; points_count?: number; indexed_vectors_count?: number } = {};
-const settleBy = Date.now() + Number(args["settle-timeout-s"]) * 1000;
+const settleBy = Date.now() + settleTimeoutS * 1000;
 while (!failure && !gone) {
   try {
     info = await qdrant.call("GET", qdrant.path);
