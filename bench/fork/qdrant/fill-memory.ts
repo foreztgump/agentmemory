@@ -2,7 +2,7 @@
 // synthetic documents, then held until the optimizer settles. --path load (the
 // default) writes each document with a 1024-float vector the way search-migrate
 // fill does (SearchEngine.load, one page per upsert, the corpus mean preset,
-// waiting for the optimizer every OPTIMIZER_GATE_DOCS).
+// waiting for an idle optimizer every OPTIMIZER_CHECK_DOCS).
 // --path apply writes documents with no vector the way reconcile does
 // (SearchEngine.apply in outbox batches of 256, from the default mean, so the
 // worker's reweighting passes run as on a live stack). The container's cgroup is sampled from the host every 200 ms.
@@ -12,7 +12,7 @@
 // The guard (docs/fork/search-migration.md, "Qdrant memory during a fill"), on a
 // fresh Qdrant 1.20.2 with a 1g limit and swap off:
 //   docker run -d --name fill-qdrant -m 1g --memory-swap 1g -p 127.0.0.1:16401:6333 qdrant/qdrant:v1.20.2
-//   node --import tsx bench/fork/qdrant/fill-memory.ts --count 200000 --container fill-qdrant --ceiling-mib 610
+//   node --import tsx bench/fork/qdrant/fill-memory.ts --count 200000 --container fill-qdrant --ceiling-mib 900
 //   node --import tsx bench/fork/qdrant/fill-memory.ts --path apply --count 200000 --container fill-qdrant --ceiling-mib 620
 // (a fresh container for each run).
 //
@@ -23,7 +23,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { OPTIMIZER_GATE_DOCS, waitForOptimizer } from "../../../scripts/fork/search-migrate.js";
+import { OPTIMIZER_CHECK_DOCS, waitForOptimizer } from "../../../scripts/fork/search-migrate.js";
 import { contentRev, type DocOp } from "../../../src/fork/search/protocol.js";
 import { DEFAULT_OUTBOX_LIMITS } from "../../../src/fork/search/outbox.js";
 import { DEFAULT_AVGDL } from "../../../src/fork/search/settings.js";
@@ -137,7 +137,7 @@ async function flush(): Promise<void> {
   if (result.failed.length > 0) throw new Error(`${args.path} failed: ${JSON.stringify(result.failed[0])}`);
   written += batch.length;
   sinceGate += batch.length;
-  if (!viaApply && sinceGate >= OPTIMIZER_GATE_DOCS) {
+  if (!viaApply && sinceGate >= OPTIMIZER_CHECK_DOCS) {
     sinceGate = 0;
     await waitForOptimizer(qdrant);
   }

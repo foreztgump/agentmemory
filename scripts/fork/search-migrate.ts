@@ -454,29 +454,39 @@ export interface FillOptions {
   dimensions: number;
   allowNonempty: boolean;
   log: (line: string) => void;
-  /** Documents written between waits for Qdrant's optimizer (default OPTIMIZER_GATE_DOCS). */
-  optimizerGateDocs?: number;
+  /** Documents written between waits for an idle optimizer (default OPTIMIZER_CHECK_DOCS). */
+  optimizerCheckDocs?: number;
 }
 
 /**
- * A writer faster than Qdrant's one optimizer thread leaves the unoptimized
- * points in RAM, about 6.7 KB each with their vector: buddy's fill on a quiet
- * host reached 921 MiB of a 1 GiB limit that way. Waiting for the optimizer
- * every 20,000 documents bounds that backlog near 130 MB.
+ * Points written while Qdrant's one optimizer thread is busy wait in RAM until
+ * that optimization ends: buddy's fill on a quiet host reached 921 MiB of a
+ * 1 GiB limit that way, and a synthetic fill was OOM-killed. Every
+ * OPTIMIZER_CHECK_DOCS the fill waits until the optimizer is idle.
  */
-export const OPTIMIZER_GATE_DOCS = 20_000;
+export const OPTIMIZER_CHECK_DOCS = 10_000;
 const OPTIMIZER_WAIT_MS = 15 * 60_000;
 
-/** Waits while the collection is optimizing; returns whether it waited. */
-export async function waitForOptimizer(qdrant: Pick<Qdrant, "call" | "path" | "config">): Promise<boolean> {
+type StatusQdrant = Pick<Qdrant, "call" | "path" | "config">;
+
+/**
+ * Waits until the collection is not optimizing (yellow) on two polls in a
+ * row: it can read green for a moment after a write, before the optimizer
+ * picks the write up. Returns whether it found the optimizer busy.
+ */
+export async function waitForOptimizer(qdrant: StatusQdrant, pollMs = 500): Promise<boolean> {
   const deadline = Date.now() + OPTIMIZER_WAIT_MS;
-  let waited = false;
-  while ((await qdrant.call<{ status: string }>("GET", qdrant.path)).status === "yellow") {
+  let idle = 0;
+  let busy = false;
+  for (;;) {
+    const { status } = await qdrant.call<{ status: string }>("GET", qdrant.path);
+    idle = status === "yellow" ? 0 : idle + 1;
+    busy ||= status === "yellow";
+    if (idle === 2) break;
     if (Date.now() > deadline) throw new MigrateError(`Qdrant was still optimizing ${qdrant.config.collection} after ${OPTIMIZER_WAIT_MS / 60_000} minutes; rerun fill to resume`, 3);
-    waited = true;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
-  return waited;
+  return busy;
 }
 
 export interface FillResult {
@@ -536,7 +546,7 @@ export async function fill(store: Redis, targets: Targets, options: FillOptions)
     for (const key of Object.keys(written) as Array<keyof UnitResult>) written[key] += result[key];
   };
   let finished = 0;
-  const gate = options.optimizerGateDocs ?? OPTIMIZER_GATE_DOCS;
+  const gate = options.optimizerCheckDocs ?? OPTIMIZER_CHECK_DOCS;
   let sinceGate = 0;
   let optimizerWaits = 0;
   for (const unit of units) {

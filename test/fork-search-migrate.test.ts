@@ -141,29 +141,28 @@ describe("float16 rounding", () => {
 });
 
 describe("optimizer gate", () => {
-  const qdrantReporting = (statuses: string[]) => {
-    const calls: string[] = [];
-    return {
-      calls,
-      qdrant: {
-        path: "/collections/c",
-        config: { collection: "c" },
-        call: async (method: string, path: string) => {
-          calls.push(`${method} ${path}`);
-          return { status: statuses.shift() ?? "green" };
-        },
-      } as unknown as Parameters<typeof waitForOptimizer>[0],
-    };
+  const collection = (statuses: string[]) => {
+    let n = 0;
+    const qdrant = {
+      path: "/collections/c",
+      config: { collection: "c" },
+      call: async () => ({ status: statuses[Math.min(n++, statuses.length - 1)] }),
+    } as unknown as Parameters<typeof waitForOptimizer>[0];
+    return { qdrant, polls: () => n };
   };
 
-  it("waits while Qdrant is optimizing and returns once it is green", async () => {
-    const { qdrant, calls } = qdrantReporting(["yellow", "yellow", "green"]);
-    expect(await waitForOptimizer(qdrant)).toBe(true);
-    expect(calls).toEqual(Array(3).fill("GET /collections/c"));
+  it("waits while Qdrant is optimizing, until two polls in a row find it idle", async () => {
+    const c = collection(["green", "yellow", "yellow", "green", "yellow", "green", "green"]);
+    expect(await waitForOptimizer(c.qdrant, 1)).toBe(true);
+    expect(c.polls()).toBe(7);
   });
 
-  it("does not wait on a green or grey collection", async () => {
-    for (const status of ["green", "grey"]) expect(await waitForOptimizer(qdrantReporting([status]).qdrant)).toBe(false);
+  it("returns at once on an idle collection, green or grey", async () => {
+    for (const status of ["green", "grey"]) {
+      const c = collection([status]);
+      expect(await waitForOptimizer(c.qdrant, 1)).toBe(false);
+      expect(c.polls()).toBe(2);
+    }
   });
 });
 
@@ -226,7 +225,7 @@ describe.skipIf(!QDRANT_URL)("fill and verify on Qdrant", { timeout: 120_000 }, 
     const data = fixture();
     data.get("state:mem:obs:ses_1")!.set("obs_bad", Buffer.from("{not json"));
     const store = new FakeRedis(data);
-    const result = await fill(store, targets, { ...options, optimizerGateDocs: 1 });
+    const result = await fill(store, targets, { ...options, optimizerCheckDocs: 1 });
     // 8 documents + 2 live lessons; 4 stored vectors + 2 images; img/c.png refused.
     expect(result.written).toEqual({ docs: 10, vectors: 6, fenced: 0, unparsable: 1, refused: 1 });
     const checked = await verifyAll(store, targets);
