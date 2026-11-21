@@ -182,6 +182,23 @@ Starting the app in disk mode before step 4 would make TEE-1169's re-embed spend
 
 If the app does run during a fill, for example after a kill and before the resume, nothing is lost. Reconcile writes the missing documents without vectors at a live version, which outranks the migration's version 1. The fill then copies each stored vector onto any such document that still has the same rev and no vector, at that document's own version, so a later live write still wins. `test/fork-search-migrate.test.ts` pins this.
 
+## Production cutovers
+
+Both NR1 stacks moved with the order above, from release `v0.9.33-am.1`: buddy on 2026-11-20 (TEE-1172) and main on 2026-11-21 (TEE-1173). Before the app stopped, a Valkey snapshot was taken (bgsave, then a tar of the volume) to `/root/agentmemory-backups/<stack>-cutover-<date>/`. The copy and fill ran from esbuild bundles of the two scripts, with the old app image's Node, and with a temporary Kvrocks and Qdrant that used a throwaway password and key. Then the temporary containers were removed and the stack was deployed from its deploy branch.
+
+| | buddy | main |
+|---|---|---|
+| Kvrocks copy | 4,094 hashes, 1,318,359 records, 120 s, `VERIFY OK` | 1,938 hashes, 1,703,807 records, 132 s, `VERIFY OK` |
+| Search fill | 275,560 docs, 265,943 vectors, 1,171 s | 253,147 docs, 252,778 vectors, 1,249 s |
+| Search verify | `VERIFY OK`, embedding calls 0 | `VERIFY OK`, embedding calls 0 |
+| Fill peak, Qdrant anonymous memory | 414 MiB, no OOM | 469 MiB, no OOM |
+| Missing vectors re-embedded after the start | 9,530, at 120 a minute | 121 |
+| App down | not recorded | 32 min |
+
+**Restarts after the move.**
+- **The `deleted` index.** Every count and search excludes tombstones with `deleted`, which had no payload index. With payloads on disk, one exact count over 254k points took 37–42 s. After the first restart, the 15 s stats poll and reconcile kept both Qdrants near 2 cores, and reconcile timed out. TEE-1222 adds the index (release `v0.9.33-am.2`), and the same count takes 0.09 s.
+- **Coolify's proxy.** Main's domain returned 502 after its deploy until `coolify-proxy` was restarted. See `deploy/coolify/README.md`, "Deploy, restart and verify".
+
 ## Replica
 
 ```
