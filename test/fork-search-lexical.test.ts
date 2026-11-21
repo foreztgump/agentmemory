@@ -31,6 +31,17 @@ describe("lessons lexical Qdrant requests", () => {
     }
   });
 
+  it.each([true, false])("indexes the tombstone field of an existing=%s collection in every layout", async (exists) => {
+    for (const layout of ["text", "lessons", "image"] as const) {
+      const qdrant = new Qdrant({ url: "http://qdrant.test", collection: "t1222_indexes", dimensions: DIMS, timeoutMs: 1000, oversampling: 6, layout });
+      vi.spyOn(qdrant, "exists").mockResolvedValue(exists);
+      const call = vi.spyOn(qdrant, "call").mockResolvedValue(undefined);
+      await qdrant.ensure();
+      const indexes = call.mock.calls.filter(([, path]) => path.endsWith("/index?wait=true")).map(([, , body]) => body);
+      expect(indexes, layout).toContainEqual({ field_name: TOMBSTONE.key, field_schema: "bool" });
+    }
+  });
+
   it("expands a complete vocabulary, pages candidates and invalidates the cache on apply and both clears", async () => {
     const qdrant = new Qdrant({ url: "http://qdrant.test", collection: "t1167fix_requests", dimensions: DIMS, timeoutMs: 1000, oversampling: 6, layout: "lessons" });
     vi.spyOn(qdrant, "ensure").mockResolvedValue();

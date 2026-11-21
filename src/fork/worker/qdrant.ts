@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { TOMBSTONE } from "./versioned.js";
 
 export interface QdrantConfig {
   url: string;
@@ -10,7 +11,12 @@ export interface QdrantConfig {
   layout?: "text" | "lessons" | "image";
 }
 
+// Payloads live on disk, so a filter on a field with no index reads every point's payload. Every count and
+// search excludes tombstones, and without this index a count over 254k points took 40 s (TEE-1222).
+const TOMBSTONE_INDEX = [TOMBSTONE.key, "bool"] as const;
+
 const TEXT_INDEXES = [
+  TOMBSTONE_INDEX,
   ["layer", "keyword"],
   ["session_id", "keyword"],
   ["ts", "integer"],
@@ -30,6 +36,7 @@ const TEXT_INDEXES = [
 const OPTIMIZERS = { default_segment_number: 4, max_optimization_threads: 1, max_segment_size: 300_000 } as const;
 
 const IMAGE_INDEXES = [
+  TOMBSTONE_INDEX,
   ["session_id", "keyword"],
   ["v", "integer"],
 ] as const;
