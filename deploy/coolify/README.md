@@ -25,11 +25,13 @@ because Coolify reads the variables a stack uses from its own compose file.
 |---|---|
 | `agentmemory` | REST API on `3111`, built from `deploy/Dockerfile`. `iii compose` runs the engine and supervises the `state`, `http` and `agentmemory` workers, restarting a worker that exits. Memory limit `AGENTMEMORY_MEM_LIMIT`. |
 | `kvrocks` | State and stream store (`AGENTMEMORY_STATE_BACKEND=redis`, reached through iii's redis adapter). Records live on disk; RAM is a 384 MB block cache plus memtables. Password `KVROCKS_PASSWORD`, memory limit `KVROCKS_MEM_LIMIT` (default `1280m`). See `docs/fork/kvrocks.md`. |
+| `qdrant` | Keyword and vector search when `AM_SEARCH_BACKEND=disk`: the am-search worker inside the `agentmemory` container keeps the index here instead of in the worker's memory. API key `QDRANT_API_KEY`, memory limit `QDRANT_MEM_LIMIT` (default `1g`). See `docs/fork/search-migration.md`. |
 | `valkey` | The previous store. It starts only with the `valkey-source` profile, as the migration source and the rollback target. Append-only file on, `noeviction`, memory limit `VALKEY_MEM_LIMIT`. |
 
 Volumes:
 
 - `kvrocks-data` holds every memory, session, observation and index. Back up this one.
+- `qdrant-data` holds the search index. It can be rebuilt from `kvrocks-data` (`scripts/fork/search-migrate.ts fill`, with no embedding calls), but back it up too, because a rebuild takes about 20 minutes at 250k documents.
 - `valkey-data` holds the store as it was before the move to Kvrocks. Keep it until the Kvrocks stack has run cleanly.
 - `agentmemory-data` holds `/data/secret`, the generated `worker-compose.runtime.yaml`, the capture spool and the registry workers that compose downloads on first boot. On a stack that was migrated from the file backend it also holds the old `state_store.db`, which is no longer read. The 0.9.31 entrypoint copies a 0.9.30 `/data/.hmac` to `/data/secret` when `AGENTMEMORY_SECRET` is unset.
 
@@ -66,13 +68,15 @@ Behaviour settings in use:
 | `AGENTMEMORY_AUTO_COMPRESS` | `false` | Compression costs one LLM call per tool use. Summaries and consolidation give recall at a fraction of the calls. |
 | `CONSOLIDATION_ENABLED` | `true` | Distils session summaries into semantic facts and procedures. The semantic step waits for at least 5 session summaries. |
 | `AGENTMEMORY_CONSOLIDATION_COOLDOWN_MS`, `CONSOLIDATION_INTERVAL_MS` | `21600000`, `86400000` | Session-end consolidation otherwise runs every 5 min, and repeated runs can write reworded duplicate facts (upstream #1486). |
-| `MAX_OBS_PER_SESSION` | `2000` | Each capture lists the whole session before it checks this cap. At 5000, two sessions passed 4,000 observations and every capture from them timed out at 180 s. Captures past the cap are dead-lettered; end an agent session that reaches it rather than raising it. |
+| `AM_SEARCH_BACKEND` | `disk` | Search runs in Qdrant through the am-search worker. The compose default `memory` keeps the in-process index. Both stacks moved to `disk` on 2026-11-20/21 (TEE-1172, TEE-1173). |
+| `AM_SEARCH_REEMBED_PER_MINUTE` | `120` | Embeds documents that have no vector, at most this many a minute. `0` stops it, which the cutover uses until the migration's vectors are in place. |
+| `MAX_OBS_PER_SESSION` | main `5000`, buddy `2000` | Owner decision D9 (`docs/fork/retention-design.md`). The fork keeps per-session counters (`src/fork/kv/observation-stats.ts`), so a capture no longer lists the session before it checks the cap. Before those counters, at 5000 two sessions passed 4,000 observations and every capture from them timed out at 180 s. Captures past the cap are dead-lettered; `POST /agentmemory/capture/retry` with `{"all":true}` retries them after the cap is raised. Buddy's value is its owner's. |
 | `AGENTMEMORY_FINALIZE_IDLE_MS` | `900000` | A session is finalized and summarized after 15 idle minutes instead of 2, so fewer summary passes (about 14 s each) run. |
 | `AUTO_FORGET_INTERVAL_MS` | `86400000` | Auto-forget lists every observation in the store. Hourly runs deleted nothing on a store under 180 days old. |
 | `AGENTMEMORY_AUDIT_RETENTION_MONTHS` | `1` | The default `0` keeps the audit log forever. A daily sweep drops calendar months older than the previous one. |
-| `AGENTMEMORY_VECTOR_BACKFILL`, `AGENTMEMORY_VECTOR_BACKFILL_MAX` | `all`, `30000` | Embeds documents that lack a vector on each boot. The cap applies per boot, and the default 500 needed dozens of restarts for buddy's 28k gap. |
-| `AGENTMEMORY_MEM_LIMIT` | main `3200m`, buddy `2g` | The worker keeps every vector in memory (about 4 KB per document) and Node caps its heap at about 60 % of the container limit: 830 MB at 1536m, 1.54 GB at 2560m, 1.88 GB at 3200m. Main ran 2.0-2.1 GB RSS at 91k documents. |
-| `VALKEY_MAXMEMORY`, `VALKEY_MEM_LIMIT` | main `5gb`, `6g`; buddy `3gb`, `3584m` | On 2026-10-27 main used 1.02 GB and grew about 50 MB a day; buddy used 0.76 GB and grew about 25 MB a day. Main reaches 5 GB around mid-January 2027. Raise both values together before then. |
+| `AGENTMEMORY_VECTOR_BACKFILL`, `AGENTMEMORY_VECTOR_BACKFILL_MAX` | `all`, `30000` | Memory mode only: embeds documents that lack a vector on each boot. In disk mode they do nothing, and `AM_SEARCH_REEMBED_PER_MINUTE` does this work. |
+| `AGENTMEMORY_MEM_LIMIT` | main `3200m`, buddy `2816m` | In disk mode the vectors live in Qdrant, and the app peaked at 827 MB (main) and 808 MB (buddy) at about 250k documents on 2026-11-21. The limits date from memory mode, where the worker kept every vector in memory (about 4 KB per document) and main ran 2.0-2.1 GB at 91k documents. They are ceilings, so they cost nothing while unused. |
+| `VALKEY_MAXMEMORY`, `VALKEY_MEM_LIMIT` | main `5gb`, `6g`; buddy `3gb`, `3584m` | Unused since the move to Kvrocks: the `valkey` service starts only with the `valkey-source` profile, for a migration or a rollback. |
 | `LESSON_DECAY_ENABLED` | `false` | Decay lowers an unreinforced lesson by 0.05 a week and soft-deletes it at 0.1, so unused lessons disappear in about three months (upstream #1065). |
 
 ## Old and stale memories
@@ -87,6 +91,9 @@ Behaviour settings in use:
 - **Restart** reuses the existing image: `POST /api/v1/applications/<app>/restart`. Use it for variable changes only.
 - Coolify's edge rejects the default curl user agent (error 1010); send a browser `User-Agent`.
 - Coolify runs compose with `--project-directory` at the repository root, so the build context in `docker-compose.yml` is `.`, not `../..`.
+- **A push does not deploy.** Main builds from `deploy/main` and buddy from `deploy/buddy`. On 2026-11-21 a push to either branch started no build, so every release needs the deploy call above. To release: tag `disk` (`docs/fork/README.md`, Release tags), move each deploy branch to the tag, then deploy buddy, check it, and deploy main.
+- **Check Coolify's proxy before you deploy main.** Main is reached through `coolify-proxy` (Traefik), which reads containers from the Docker socket. After the Docker daemon restarted on NR1 (2026-11-13), the proxy kept the old socket file: it served its cached routes and logged `Cannot connect to the Docker daemon`. The first redeploy replaced main's container and the domain returned 502 until `docker restart coolify-proxy`. Before a deploy, `docker logs --since 5m coolify-proxy 2>&1 | grep -c "Cannot connect to the Docker daemon"` must print `0`. Buddy is not affected, because its `cloudflared` bypasses the proxy.
+- **Expect load after a restart.** A restart also restarts Kvrocks and Qdrant with cold caches, and the first reconcile reads every session. With the payload indexes in place (TEE-1222), NR1's load stayed at 4–6 after both stacks restarted.
 
 ```bash
 curl "https://<host>/agentmemory/livez"
@@ -108,7 +115,6 @@ curl -H "Authorization: Bearer $AGENTMEMORY_SECRET" -H "Accept: application/json
 
 These need code changes in agentmemory. The deployment tracks upstream releases rather than patching them.
 
-- `mem::observe` lists every observation in the session for each capture, before it checks `MAX_OBS_PER_SESSION`. Cost grows with session length, and a refused capture costs as much as a stored one.
 - Each session stop lists the whole session and runs the heuristic graph pass even with `GRAPH_EXTRACTION_ENABLED=false`, and writes an audit row naming every observation ID (up to about 120 KB).
 - The Voyage provider embeds search queries with `input_type: "document"`; Voyage recommends `"query"` for queries.
 - Short prompt observations (for example "yes proceed to push") often rank first in semantic search, above relevant lessons and memories.
@@ -142,9 +148,18 @@ Measured on the buddy store (28,037 documents, 508 memories): the file backend h
 
 On 2026-10-27, after the 0.9.31 upgrade: main held 91k documents (86k observations, 4.7k memories) at 2.0-2.1 GB container RSS and 1.02 GB Valkey, capturing about 5,000 observations a day; buddy held 47k documents at 1.2 GB RSS and 0.76 GB Valkey.
 
+On 2026-11-21, after the move to Kvrocks and Qdrant:
+
+| Stack | Documents | Peak memory: app, Kvrocks, Qdrant | Before the move |
+|---|---|---|---|
+| main | 254k | 827 MB, 977 MB, 644 MB | app 2.1 GB of 3.125 GB with 24 OOM restarts, plus Valkey 3.14 GB |
+| buddy | 282k | 808 MB, 909 MB, 1,024 MB | |
+
+Qdrant's peak includes page cache, which the kernel reclaims; its anonymous memory stayed at 285–340 MB. NR1's available memory went from 1.7 GB before the move to 7.3 GB after it. The Kvrocks volumes hold 5.2 GB (main) and 2.0 GB (buddy); the Qdrant volumes 1.1 GB each.
+
 ## Backups
 
-Back up the `kvrocks-data` volume. Copying the live RocksDB directory is not a consistent backup; checkpoint backups are not set up yet. Until they are, the previous Valkey instructions apply to `valkey-data`:
+Back up the `kvrocks-data` and `qdrant-data` volumes (TEE-1170 sets up the NR1 backup job). Copying the live RocksDB directory is not a consistent backup; checkpoint backups are not set up yet. Until they are, the previous Valkey instructions apply to `valkey-data`:
 
 ```bash
 docker run --rm -v <app-uuid>_valkey-data:/data:ro -v "$PWD":/b alpine \
