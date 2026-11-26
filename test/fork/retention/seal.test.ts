@@ -402,6 +402,7 @@ describe.each(MODES)("sealSession (%s)", (mode) => {
 
   it("a session that does not exist is refused and leaves no seal", async () => {
     const { h, kv } = setup();
+    await kv.set(RETENTION_KV.seals, "ses_gone", { sessionId: "ses_gone", trimmed: false });
     expect(await sealSession(kv, "ses_gone", OPTS)).toEqual({ kind: "refused", why: "no-session" });
     expect(h.store.get(RETENTION_KV.seals)?.size ?? 0).toBe(0);
   });
