@@ -223,7 +223,7 @@ Each slice is one PR against `disk`, at most about 800 changed lines, with its t
 | 13 | First production run (owner) | R15 | Owner sets main's env; see the rollout below | none | 12, and the owner's answers below |
 
 Slice notes:
-- Slice 3: `veto.ts` holds a module-level singleton, and a second `setSummarizeVeto` call silently replaces the first. When slice 3 wires the veto, make a second registration log or fail, and add a reset helper so a test cannot leak its veto into another.
+- Slice 3 (done): `setSummarizeVeto` now throws on a second registration, and `resetSummarizeVeto` clears it for tests. See the reconciliation below.
 
 Rollout for slice 13, on main only. Set:
 - `AM_RETENTION=enforce`, with the D1 windows, grace 30 and the recall-cases path;
@@ -254,6 +254,13 @@ Each slice records its accepted deviations here before handing off.
 - `Vault.put` and `Vault.take` do not touch `RunRow.held`; the sweep and purge own that counter, and `runsHolding` reads it. `take` deletes the locator first, and only when it still names the run, so a later run's claim on the same id survives.
 - A trim entry and a later stage O entry for one observation share a key, so each lands in its own run's scope and the locator names the later run. Slice 4 must restore a trim by run, or key the locator by stage.
 - R14 (open risk 8): the fork's capture path reads `ObservationStats`, not the session. In-process timing with the cap at 5000: median 0.64 to 0.86 ms per `mem::observe` from 100 to 4,900 rows, against 1.3 ms to 26 ms for the upstream path that lists the session. The config change to 5000 on the stacks is still the owner's step in slice 13.
+
+**Slice 3 (seal, clock, veto).**
+- `SealRefusal` gains `"no-session"`, for a session deleted between listing and sealing. `sealSession` returns it and leaves no seal.
+- `judgeSeal` keeps an existing seal that still matches (same fingerprint and row count) as the same object, so sealing twice keeps the first `sealedAt`. `sealSession` deletes a seal on any refusal and writes only a new or changed one. `graphExtracted` is written `false`: nothing records that graph extraction ran, and nothing reads the flag yet.
+- `readSessionFacts` takes `allCompressed` from `needsCompression` (compression-state.ts): a pending or failed row, or a raw row with no title, counts as awaiting. It reads the rows twice, once for order and timestamps, once to hash in order. A row that changed or vanished between the passes gives an empty `summaryFingerprint`, which matches no summary.
+- `loadActiveClock` unions the days from the sessions pass with the stored `mem:retention:active-days`, so a deleted session's day stays active. A project with no session left reads as empty (age 0), the safe side.
+- The veto is `trimmedSealVeto(kv)`, one point read of the seal. `registerRetention` registers it in every mode and a second `registerRetention` in one process throws. `mem::summarize` falls through to its normal path when the veto holds but no summary is stored.
 
 ## Next implementation step
 

@@ -25,6 +25,7 @@ import { logger } from "../logger.js";
 import { scrubRecord } from "./privacy.js";
 import { registerSummaryRecoveryFunction } from "./summary-recovery.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
+import { summaryRebuildVetoed } from "../fork/retention/veto.js";
 import { getSummaryTimeoutMs, summaryFingerprint, summaryObservations } from "./summary-state.js";
 
 // Per-chunk observation budget when a session is too large to fit in one
@@ -267,6 +268,10 @@ export function registerSummarizeFunction(
         return { success: false, error: "sessionId is required" };
       }
       const sessionId = data.sessionId.trim();
+      if (await summaryRebuildVetoed(sessionId)) {
+        const kept = await kv.get<SessionSummary>(KV.summaries, sessionId);
+        if (kept) return { success: true, unchanged: true, summary: kept };
+      }
 
       const session = await kv.get<Session>(KV.sessions, sessionId);
       if (!session) {
