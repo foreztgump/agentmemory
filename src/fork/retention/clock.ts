@@ -39,7 +39,7 @@ export interface ActiveClock {
   cutoffForActiveDays(project: string, days: number): Date;
 }
 
-const MS_PER_DAY = 86_400_000;
+export const MS_PER_DAY = 86_400_000;
 
 const dayOf = (at: Date): number => Math.floor(at.getTime() / MS_PER_DAY);
 

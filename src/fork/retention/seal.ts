@@ -5,6 +5,7 @@ import { withKeyedLock } from "../../state/keyed-mutex.js";
 import { KV } from "../../state/schema.js";
 import type { CompressedObservation, Session, SessionSummary } from "../../types.js";
 import type { SealProof } from "./protect.js";
+import { MS_PER_DAY } from "./clock.js";
 import { RETENTION_KV } from "./scopes.js";
 import { RETENTION_PAGE_SIZE } from "./settings.js";
 import type { SessionSeal } from "./types.js";
@@ -37,8 +38,6 @@ export interface SessionRowFacts {
   readonly allCompressed: boolean;
 }
 
-const ONE_DAY_MS = 86_400_000;
-
 /**
  * Pure. Design 3.1: a session seals when it ended (completed or abandoned), its last observation is more
  * than a day old, the summary covers the rows (`summary.coveredFingerprint` equals `facts.summaryFingerprint`
@@ -47,8 +46,8 @@ const ONE_DAY_MS = 86_400_000;
  * today). A session without a summary never seals, so a stack with no LLM provider never deletes
  * observations (reported as undigested backlog).
  *
- * An existing seal whose fingerprint no longer matches is dropped, unless `trimmed` is set: then the
- * stored summary is the digest of record (D10) and the seal stands. A seal that still matches stands
+ * An existing seal is dropped on any refusal (active, recent capture, out of date, compression pending),
+ * unless `trimmed` is set: then the stored summary is the digest of record (D10) and the seal stands. A seal that still matches stands
  * as it is, so sealing twice keeps the first `sealedAt`. `graphExtracted` is written false: nothing
  * records that graph extraction ran, and nothing reads the flag yet.
  */
@@ -61,7 +60,7 @@ export function judgeSeal(
 ): { kind: "sealed"; proof: SealProof } | { kind: "refused"; why: SealRefusal } {
   if (existing?.trimmed) return { kind: "sealed", proof: { seal: existing } };
   if (session.status === "active") return { kind: "refused", why: "active" };
-  if (facts.lastObservationAt !== null && !(opts.now.getTime() - Date.parse(facts.lastObservationAt) > ONE_DAY_MS)) {
+  if (facts.lastObservationAt !== null && !(opts.now.getTime() - Date.parse(facts.lastObservationAt) > MS_PER_DAY)) {
     return { kind: "refused", why: "recent-capture" };
   }
   if (!summary) return { kind: "refused", why: "no-summary" };
