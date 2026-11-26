@@ -8,6 +8,7 @@ import {
   type ImageQueryRequest,
   type KeywordRequest,
   type LookupRequest,
+  type ReadVectorsRequest,
   type ScanDocsRequest,
   type ScanEntriesRequest,
   type ScanMissingRequest,
@@ -48,6 +49,7 @@ export function createSearchHandlers(engines: WorkerEngines, oversampling: numbe
   return {
     [SEARCH_FN.apply]: async (data: Partial<ApplyRequest>) => engineFor(data).apply(Array.isArray(data?.ops) ? data.ops : [], data?.version),
     [SEARCH_FN.lookup]: async (data: Partial<LookupRequest>) => ({ items: await text(data, SEARCH_FN.lookup).lookup(data?.ids) }),
+    [SEARCH_FN.readVectors]: async (data: Partial<ReadVectorsRequest>) => ({ vectors: await text(data, SEARCH_FN.readVectors).readVectors(data?.ids) }),
     [SEARCH_FN.keyword]: async (data: Partial<KeywordRequest>) =>
       ({ hits: await text(data, SEARCH_FN.keyword).keyword(data?.query, data?.limit, data?.layer) }),
     [SEARCH_FN.vector]: async (data: Partial<VectorRequest>) =>

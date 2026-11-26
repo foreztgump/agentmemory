@@ -2,7 +2,7 @@ import type { CompressedObservation } from "../../types.js";
 import { getSearchResultLayer, type SearchLayer, type SearchResultLayer } from "../../state/search-layer.js";
 import type { KeywordIndexPort, RevisionToken, ScoredId, SearchOpts, VectorStorePort, VectorToken } from "../../state/search-ports.js";
 import { termSourceOf } from "../../state/term-extraction.js";
-import { float32ToBase64 } from "../../state/vector-index.js";
+import { base64ToFloat32, float32ToBase64 } from "../../state/vector-index.js";
 import type { SearchWorkerClient } from "./client.js";
 import type { BackendHealth } from "./health.js";
 import type { DocLedger, SearchOutbox } from "./outbox.js";
@@ -15,6 +15,8 @@ const STATS_REFRESH_MS = 15_000;
 const toScored = (hits: Hit[]): ScoredId[] => hits.map((h) => ({ obsId: h.id, sessionId: h.sessionId, score: h.score }));
 
 const LOOKUP_BATCH = 1000;
+/** A 1024-dimension vector is about 5.5 KB as base64, so a batch of this size answers in about a megabyte. */
+export const READ_VECTORS_BATCH = 200;
 
 const EMPTY_STATS: StatsResult = { docs: 0, vectors: 0, memories: 0, lessons: 0, missingVectors: 0 };
 
@@ -250,6 +252,18 @@ export class RemoteVectorStore implements VectorStorePort {
 
   get(obsId: string): VectorToken | undefined {
     return this.ledger.get(obsId)?.vec;
+  }
+
+  async readVectors(obsIds: readonly string[]): Promise<Map<string, Float32Array>> {
+    const ids = [...new Set(obsIds)];
+    const found = new Map<string, Float32Array>();
+    if (ids.length === 0) return found;
+    if (!this.health.allowRequest()) throw new Error("search backend unavailable");
+    if (this.health.ok) await this.outbox.drainFor(READ_YOUR_WRITES_MS);
+    for (let i = 0; i < ids.length; i += READ_VECTORS_BATCH) {
+      for (const { id, f32b64 } of await this.client.readVectors(ids.slice(i, i + READ_VECTORS_BATCH))) found.set(id, base64ToFloat32(f32b64));
+    }
+    return found;
   }
 
   async search(query: Float32Array, limit = 20, layer: SearchLayer = "all"): Promise<ScoredId[]> {

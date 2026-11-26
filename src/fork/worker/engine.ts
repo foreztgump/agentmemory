@@ -1,4 +1,4 @@
-import { base64ToFloat32 } from "../../state/vector-index.js";
+import { base64ToFloat32, float32ToBase64 } from "../../state/vector-index.js";
 import { isSearchLayer, isSearchResultLayer, type SearchLayer, type SearchResultLayer } from "../../state/search-layer.js";
 import { extractTerms, queryTerms } from "../../state/term-extraction.js";
 import { logger } from "../../logger.js";
@@ -11,6 +11,7 @@ import {
   type LookupResult,
   type Op,
   type OpVersion,
+  type ReadVectorsResult,
   type ScanDocsResult,
   type ScanEntriesResult,
   type ScanMissingResult,
@@ -27,6 +28,7 @@ interface RecordPoint {
   id: string;
   payload?: { doc_id?: string; session_id?: string; layer?: string; rev?: string; deleted?: boolean; terms?: unknown; dl?: number; lexical_order?: [number, number]; v?: unknown };
 }
+interface DenseRecordPoint extends RecordPoint { vector?: { dense?: number[] } | null }
 interface StoredPayload {
   rev?: ContentRev;
   v?: unknown;
@@ -384,6 +386,21 @@ export class SearchEngine {
       p?.doc_id && !p.deleted && isSearchResultLayer(p.layer) && typeof p.rev === "string"
         ? [{ id: p.doc_id, sessionId: p.session_id ?? "", layer: p.layer, rev: p.rev as ContentRev }]
         : [],
+    );
+  }
+
+  /** Dense vectors of live documents among ids, read from their points. */
+  async readVectors(rawIds: unknown): Promise<ReadVectorsResult["vectors"]> {
+    const ids = Array.isArray(rawIds) ? rawIds.filter((id): id is string => typeof id === "string" && id.length > 0).slice(0, MAX_LIMIT) : [];
+    if (ids.length === 0) return [];
+    await this.ready();
+    const points = await this.qdrant.call<DenseRecordPoint[]>("POST", `${this.qdrant.path}/points`, {
+      ids: ids.map(pointId),
+      with_payload: ["doc_id", "deleted"],
+      with_vector: ["dense"],
+    });
+    return points.flatMap(({ payload: p, vector }) =>
+      p?.doc_id && !p.deleted && Array.isArray(vector?.dense) ? [{ id: p.doc_id, f32b64: float32ToBase64(Float32Array.from(vector.dense)) }] : [],
     );
   }
 
