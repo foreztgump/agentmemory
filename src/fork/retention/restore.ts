@@ -1,6 +1,12 @@
-import type { RetentionDeps } from "./satellites.js";
+import { safeAudit } from "../../functions/audit.js";
+import { reinstate, type ReinstateResult } from "./move.js";
 import type { Protector } from "./protect.js";
+import { RunStore } from "./run-store.js";
+import type { RetentionDeps } from "./satellites.js";
+import { itemKey } from "./scopes.js";
+import { RETENTION_PAGE_SIZE } from "./settings.js";
 import type { ItemRef, RunId } from "./types.js";
+import { Vault } from "./vault.js";
 
 export interface RestoreResult {
   readonly restored: number;
@@ -8,25 +14,85 @@ export interface RestoreResult {
   readonly keptLive: number;
   /** Items that had no stored vector; the re-embed loop fills them (expected 0 when vectors were readable). */
   readonly reembedNeeded: number;
+  /** Trim entries whose row is in another run's vault: they stay held, and a restore after that run's gives the source back. */
+  readonly deferred: number;
 }
 
-/** Restores every entry of a run, paged; the run row records why. Audited (R13). Idempotent. */
-export function restoreRun(deps: RetentionDeps, runId: RunId, why: string): Promise<RestoreResult> {
-  void deps;
-  void runId;
-  void why;
-  throw new Error("not implemented");
+const EMPTY: RestoreResult = { restored: 0, keptLive: 0, reembedNeeded: 0, deferred: 0 };
+
+const add = (a: RestoreResult, b: RestoreResult): RestoreResult => ({
+  restored: a.restored + b.restored,
+  keptLive: a.keptLive + b.keptLive,
+  reembedNeeded: a.reembedNeeded + b.reembedNeeded,
+  deferred: a.deferred + b.deferred,
+});
+
+/** An entry that was not restored and not deferred was dropped because its live row had been rewritten. */
+const outcome = (r: ReinstateResult): RestoreResult => ({
+  restored: r.restored ? 1 : 0,
+  keptLive: r.restored || r.deferred ? 0 : 1,
+  reembedNeeded: r.reembedNeeded ? 1 : 0,
+  deferred: r.deferred ? 1 : 0,
+});
+
+/** `RunRow.held` follows the vault: the sweep adds to it, and restore and purge take away. Clamped, since the sweep owns the count. */
+async function release(runs: RunStore, runId: RunId, taken: number, why?: string): Promise<void> {
+  const run = await runs.get(runId);
+  if (run) await runs.save({ ...run, held: Math.max(0, run.held - taken), ...(why === undefined ? {} : { restoredBecause: why }) });
+}
+
+const taken = (result: RestoreResult) => result.restored + result.keptLive;
+
+async function audit(deps: RetentionDeps, ids: readonly string[], details: Record<string, unknown>, result: RestoreResult): Promise<void> {
+  await safeAudit(deps.kv, "retention_restore", "mem::retention-restore", [...ids], { ...details, ...result });
+}
+
+/**
+ * Restores every entry of a run, paged; the run row records why, and the sweep must re-read the row afterwards,
+ * because `held` and `restoredBecause` change here. Audited (R13). Idempotent.
+ *
+ * A trim and a later stage O for one observation share a key. The locator keeps both (see `ItemLocator.under`),
+ * and restore by run restores the entries of that run only: the stage O run first puts the trimmed row back,
+ * and the trim run then gives the source back. A trim entry restored while the row sits in a later run's
+ * vault is deferred, not dropped.
+ */
+export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string): Promise<RestoreResult> {
+  const vault = new Vault(deps.kv);
+  const runs = new RunStore(deps.kv, deps.now);
+  await release(runs, runId, 0, why);
+  let result = EMPTY;
+  for await (const page of vault.pages(runId, RETENTION_PAGE_SIZE)) {
+    for (const entry of page) result = add(result, outcome(await reinstate(deps, vault, entry)));
+  }
+  await release(runs, runId, taken(result));
+  await audit(deps, [runId], { runId, why }, result);
+  return result;
 }
 
 /**
  * Restores single items, located through mem:retention:items by `itemKey(ref)` (one point read each).
- * Includes demotes. Takes refs, not bare ids: observation ids can repeat across imported sessions.
+ * Takes refs, not bare ids: observation ids can repeat across imported sessions. An item with two claims, a trim
+ * and a later stage O, is restored newest first, so one ref gives back the whole row. Demotes: slice 8.
  */
-export function restoreItems(deps: RetentionDeps, refs: readonly ItemRef[], why: string): Promise<RestoreResult> {
-  void deps;
-  void refs;
-  void why;
-  throw new Error("not implemented");
+export async function restoreItems(deps: RetentionDeps, refs: readonly ItemRef[], why: string): Promise<RestoreResult> {
+  const vault = new Vault(deps.kv);
+  const runs = new RunStore(deps.kv, deps.now);
+  let result = EMPTY;
+  for (const ref of refs) {
+    for (let claim = await vault.locate(ref); claim; claim = await vault.locate(ref)) {
+      const entry = await vault.get(claim.runId, ref);
+      if (!entry) {
+        await vault.take(claim.runId, ref);
+        continue;
+      }
+      const one = outcome(await reinstate(deps, vault, entry));
+      result = add(result, one);
+      await release(runs, claim.runId, taken(one));
+      if (one.deferred) break;
+    }
+  }
+  await audit(deps, refs.map(itemKey), { why }, result);
+  return result;
 }
 
 export interface PurgeResult {

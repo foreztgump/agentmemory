@@ -1,8 +1,14 @@
 import type { IIIClient } from "iii-sdk";
+import { captureEventScope, isCaptureKey, markCaptureEventDeleted } from "../../capture/event-record.js";
+import { indexObservationSession, lookupObservationSession, unindexObservationSession } from "../../state/obs-index.js";
 import type { StateKV } from "../../state/kv.js";
+import { KV } from "../../state/schema.js";
 import type { SearchRuntime } from "../../state/search-ports.js";
+import type { Session } from "../../types.js";
+import { sessionObservationTotals } from "../kv/observation-stats.js";
+import { docOfRecord } from "../search/doc-of-record.js";
 import type { ItemRef, SatelliteSnapshots, VaultEntry } from "./types.js";
-import type { VectorReader } from "./vectors.js";
+import { reattachDocument, type VectorReader } from "./vectors.js";
 
 /** What every satellite and every move needs. Built once in register.ts. */
 export interface RetentionDeps {
@@ -26,34 +32,124 @@ export interface Satellite {
   snapshot?(deps: RetentionDeps, ref: ItemRef, row: unknown): Promise<Partial<SatelliteSnapshots>>;
   /** After the row has left its live scope. Omitted by satellites with purge-only work (metadata). */
   detach?(deps: RetentionDeps, entry: VaultEntry): Promise<void>;
-  /** After the row is back in its live scope. */
-  attach?(deps: RetentionDeps, entry: VaultEntry): Promise<void>;
+  /** After the row is back in its live scope. `reembedNeeded` says the item went back with no stored vector. */
+  attach?(deps: RetentionDeps, entry: VaultEntry): Promise<{ readonly reembedNeeded?: boolean } | void>;
   /** Purge only: clean data keyed by the id that has no restore path. */
   finalize?(deps: RetentionDeps, entry: VaultEntry): Promise<void>;
 }
 
 /**
  * Order: snapshot all, vault put, row out, detach in table order. Restore: row in, attach in table order,
- * vault take.
+ * vault take. Stage T never walks the table: the row stays live and indexed.
  *
- *  search-index     snapshot: vectors.read([id]). detach: keyword.remove(id), vector?.remove(id).
- *                   attach: reattachDocument (keyword then stored vector, one tick; memories through
- *                   memoryToObservation). Disk mode: the ops ride the docs outbox; the TEE-1169 reconciler
- *                   would also delete the leaked doc, since the record is gone.
- *  capture-event    snapshot: the event row. detach: markCaptureEventDeleted. attach: put the snapshot back.
- *                   Replay of a restored event dedups on the existing row (R8 test covers both).
- *  obs-session-index detach: unindexObservationSession. attach: re-index.
- *  image            snapshot + detach: only when no other live row references the file
- *                   (live refs = mem:image-refs count minus the trashed references held in the vault):
- *                   move the mem:image-embeddings row into the snapshot and call images?.remove(ref).
- *                   That row is TEE-1196's truth, so its reconciler removes the entry rather than repairs it,
- *                   and vision search in memory mode (which reads those rows) stops finding it.
- *                   attach: put the row back, images?.put(row) (the vector is in the row). finalize:
- *                   decrementImageRef once, guarded by entry.imageReleased (R4: file removed only at 0 refs).
+ *  search-index     snapshot: vectors.read([id]), which rejects when the backend cannot answer, so displace
+ *                   refuses the row. detach: keyword.remove, invalidateRevision, vector.remove. attach:
+ *                   reattachDocument (keyword, then the stored vector, one tick). An observation id can repeat
+ *                   across imported sessions and the index holds one doc per id, so a doc another session
+ *                   owns is neither snapshotted, removed nor overwritten.
+ *  capture-event    snapshot: the event row. detach: markCaptureEventDeleted. attach: the snapshot back, or,
+ *                   when the event had no row, the marker detach wrote is removed.
+ *  obs-session-index detach: unindex, when it still names this session. attach: index, when nothing else holds the id.
  *  session-count    detach and attach: Session.observationCount := ObservationStats rows for the session.
  *                   Assignment converges where +1/-1 does not, and repairs drift (L4, R11).
- *  metadata         finalize: delete mem:access, mem:retention score, facets, mem:emb, mem:latent for the id.
+ *
+ * Slice 7 adds the rows that only purge and images need: image (snapshot, detach, attach, finalize) and
+ * metadata (finalize).
  */
-// TODO(slice 4): fill the table. displace, reinstate and purge walk it, so an empty table would make
-//  every detach and attach a silent no-op; slice 4's tests assert each row of the comment above.
-export const SATELLITES: readonly Satellite[] = [];
+export const SATELLITES: readonly Satellite[] = [searchIndex(), captureEvent(), obsSessionIndex(), sessionCount()];
+
+type ObsEntry = Extract<VaultEntry, { ref: { kind: "observation" } }>;
+
+function indexOwnedElsewhere(deps: RetentionDeps, ref: ItemRef): boolean | Promise<boolean> {
+  if (ref.kind === "memory") return false;
+  const { keyword } = deps.search();
+  const check = () => {
+    const owner = keyword.sessionOf(ref.id);
+    return owner !== undefined && owner !== ref.sessionId;
+  };
+  return keyword.prefetch ? keyword.prefetch([ref.id]).then(check) : check();
+}
+
+function searchIndex(): Satellite {
+  return {
+    name: "search-index",
+    appliesTo: ["observation", "memory"],
+    async snapshot(deps, ref) {
+      if (await indexOwnedElsewhere(deps, ref)) return {};
+      const vector = (await deps.vectors.read([ref.id])).get(ref.id);
+      return vector === undefined ? {} : { vector };
+    },
+    async detach(deps, entry) {
+      if (await indexOwnedElsewhere(deps, entry.ref)) return;
+      const { keyword, vector } = deps.search();
+      keyword.remove(entry.ref.id);
+      keyword.invalidateRevision(entry.ref.id);
+      vector?.remove(entry.ref.id);
+      deps.search().openPersistence().scheduleSave();
+    },
+    async attach(deps, entry) {
+      if (entry.stage === "T") return;
+      const doc = docOfRecord(entry.ref.kind, entry.row);
+      if (!doc || (await indexOwnedElsewhere(deps, entry.ref))) return;
+      const runtime = deps.search();
+      runtime.openPersistence().scheduleSave();
+      return reattachDocument(runtime.keyword, runtime.vector, doc.obs, doc.layer, entry.satellites.vector);
+    },
+  };
+}
+
+const captureKeyOf = (row: unknown): string | null => {
+  const key = (row as { captureKey?: unknown } | null)?.captureKey;
+  return isCaptureKey(key) ? key : null;
+};
+
+function captureEvent(): Satellite {
+  return {
+    name: "capture-event",
+    appliesTo: ["observation"],
+    async snapshot(deps, _ref, row) {
+      const key = captureKeyOf(row);
+      const event = key === null ? null : await deps.kv.get(captureEventScope(key), key);
+      return event === null ? {} : { captureEvent: event };
+    },
+    async detach(deps, entry) {
+      if (entry.stage !== "T") await markCaptureEventDeleted(deps.kv, entry.row);
+    },
+    async attach(deps, entry) {
+      const key = entry.stage === "T" ? null : captureKeyOf(entry.row);
+      if (key === null) return;
+      const scope = captureEventScope(key);
+      if (entry.satellites.captureEvent !== undefined) await deps.kv.set(scope, key, entry.satellites.captureEvent);
+      else await deps.kv.delete(scope, key);
+    },
+  };
+}
+
+function obsSessionIndex(): Satellite {
+  return {
+    name: "obs-session-index",
+    appliesTo: ["observation"],
+    async detach(deps, entry) {
+      const { ref } = entry as ObsEntry;
+      if ((await lookupObservationSession(deps.kv, ref.id)) === ref.sessionId) await unindexObservationSession(deps.kv, ref.id);
+    },
+    async attach(deps, entry) {
+      const { ref } = entry as ObsEntry;
+      if ((await lookupObservationSession(deps.kv, ref.id)) === null) await indexObservationSession(deps.kv, ref.id, ref.sessionId);
+    },
+  };
+}
+
+async function assignSessionCount(deps: RetentionDeps, entry: VaultEntry): Promise<void> {
+  if (entry.ref.kind !== "observation") return;
+  const { sessionId } = entry.ref;
+  const rows = (await sessionObservationTotals(deps.kv, sessionId)).rows;
+  const session = await deps.kv.get<Session>(KV.sessions, sessionId);
+  if (session && session.observationCount !== rows) {
+    await deps.kv.update(KV.sessions, sessionId, [{ type: "set", path: "observationCount", value: rows }]);
+  }
+}
+
+function sessionCount(): Satellite {
+  return { name: "session-count", appliesTo: ["observation"], detach: assignSessionCount, attach: assignSessionCount };
+}
