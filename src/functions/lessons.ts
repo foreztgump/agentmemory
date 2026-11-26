@@ -5,6 +5,7 @@ import type { Lesson } from "../types.js";
 import { SearchIndex } from "../state/search-index.js";
 import { lessonToObservation } from "../state/memory-utils.js";
 import { recordAudit } from "./audit.js";
+import { recordAccessBatch } from "./access-tracker.js";
 import { deleteFacetsForTargets } from "./facets.js";
 import { collectAll } from "../state/kv.js";
 import { logger } from "../logger.js";
@@ -268,9 +269,15 @@ export function registerLessonsFunctions(sdk: IIIClient, kv: StateKV): void {
         });
       } catch {}
 
+      const returned = scored.slice(0, limit);
+      void recordAccessBatch(
+        kv,
+        returned.map((s) => s.lesson.id),
+      );
+
       return {
         success: true,
-        lessons: scored.slice(0, limit).map((s) => ({
+        lessons: returned.map((s) => ({
           ...s.lesson,
           score: Math.round(s.score * 1000) / 1000,
         })),
