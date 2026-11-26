@@ -16,9 +16,11 @@ import type { ItemRef, RunId } from "./types.js";
  *   reports       bounded          key = run id, value = RunReport (samples capped at 20 per stage)
  *   imageHolds    point-read-only  key = image file path, value = number of references held in vaults
  *   activeDays    bounded          key = project, value = sorted day numbers with a session (clock.ts)
- *   sweepScratch  paged-only       key = observation id, value = 1: the cited-by-memory set once it passes
+ *   sweepScratch  paged-only       key = bare observation id, value = 1: the cited-by-memory set once it passes
  *                                  RETENTION_SPILL_IDS (protect.ts). Point reads for membership; emptied by
- *                                  paging at sweep start and end. The sweep lease admits one writer.
+ *                                  paging at sweep start and end. Keys are bare because sourceObservationIds
+ *                                  are; an id two sessions share protects both rows, which errs toward
+ *                                  keeping. The sweep lease admits one writer; a purge pass only reads it.
  */
 export const RETENTION_KV = {
   vault: (runId: RunId) => `mem:retention:vault:${runId}`,

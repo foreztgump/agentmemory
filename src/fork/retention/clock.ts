@@ -14,8 +14,9 @@ import type { StateKV } from "../../state/kv.js";
  *   - A session makes one day active: the UTC day of its `startedAt`.
  *   - Age of a timestamp t is the number of active days strictly after t's own day and up to today's UTC
  *     day. t's own day is never counted, active or not. A day after today (clock skew) is not counted.
- *   - An item is older than a window of N days when its age is at least N. With N = 0 (the test windows)
- *     every item is older than the window.
+ *   - An item is older than a window of N days when its age is at least N, except a timestamp whose own day
+ *     is after today (clock skew), which is never older than any window. With N = 0 (the test windows) every
+ *     item up to today is older. The cutoff rule (`t < cutoffForActiveDays(project, N)`) is normative.
  *   - A project with no active days has age 0 for every timestamp.
  */
 export interface ActiveClock {

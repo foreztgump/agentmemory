@@ -40,7 +40,8 @@ export type Verdict =
  *                    their window (`windows.supersededDays`: active-day age under it, read from the clock
  *                    with the memory's project and the time it stopped being latest), collected once per
  *                    sweep in one paged pass over mem:memories into a Set. Memories are about 1% of
- *                    observations (760 on buddy).
+ *                    observations (760 on buddy). The ids are bare, so an id two sessions share protects
+ *                    both rows: the set errs toward keeping.
  *                    ponytail: in-RAM Set, spilled to RETENTION_KV.sweepScratch (scopes.ts, classified in
  *                    scope-classes.ts) above RETENTION_SPILL_IDS ids (design 6).
  *   cited-by-insight Insight.sourceMemoryIds, one paged pass over mem:insights.
