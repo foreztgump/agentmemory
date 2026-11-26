@@ -29,7 +29,8 @@ describe("parseRetentionSettings", () => {
     ["grace zero", { ...decided, AM_RETENTION_GRACE_DAYS: "0" }, /AM_RETENTION_GRACE_DAYS/],
     ["grace empty", { ...decided, AM_RETENTION_GRACE_DAYS: "" }, /AM_RETENTION_GRACE_DAYS/],
     ["interval malformed", { ...decided, AM_RETENTION_INTERVAL_MS: "weekly" }, /AM_RETENTION_INTERVAL_MS/],
-    ["interval blank", { ...decided, AM_RETENTION_INTERVAL_MS: "  " }, /AM_RETENTION_INTERVAL_MS/],
+    ["interval blank", { ...decided, AM_RETENTION_INTERVAL_MS: "  " }, /AM_RETENTION_INTERVAL_MS is blank/],
+    ["window with an extra colon", { ...decided, AM_RETENTION_WINDOWS: "trim:45:9,obs:180,sup:180,cold:365" }, /trim.*one colon/],
   ];
 
   it.each(off)("is off: %s", (_name, env, why) => {

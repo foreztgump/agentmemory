@@ -31,6 +31,8 @@ export const RETENTION_PAGE_PAUSE_MS = 25;
 export const RETENTION_IMPORTANCE_FLOOR = 8;
 /** Fixed spill threshold (design 6): the cited-by-memory set moves to `RETENTION_KV.sweepScratch` above this many ids. */
 export const RETENTION_SPILL_IDS = 500_000;
+export const RETENTION_RECALL_STOP_POINTS = 2;
+export const RETENTION_FIRST_RUN_OBSERVATION_SHARE = 0.1;
 
 export const RETENTION_SETTING_KEYS = [
   "AM_RETENTION",
@@ -60,7 +62,8 @@ function parseWindows(raw: string | undefined): Parsed<Windows> {
     const [key = "", value = "", ...rest] = part.split(":").map((piece) => piece.trim());
     if (!Object.hasOwn(WINDOW_KEYS, key)) return { ok: false, why: `AM_RETENTION_WINDOWS has an unknown key "${key}"` };
     if (found.has(key)) return { ok: false, why: `AM_RETENTION_WINDOWS repeats "${key}"` };
-    const days = rest.length === 0 ? wholeNumber(value, 1) : null;
+    if (rest.length > 0) return { ok: false, why: `AM_RETENTION_WINDOWS "${key}" must be key:days, with one colon` };
+    const days = wholeNumber(value, 1);
     if (days === null) return { ok: false, why: `AM_RETENTION_WINDOWS "${key}" must be a whole number of days, at least 1` };
     found.set(key, days);
   }
@@ -94,6 +97,7 @@ export function parseRetentionSettings(env: RetentionEnv): RetentionSettings {
   if (graceDays === null) return off("AM_RETENTION_GRACE_DAYS must be a whole number of days, at least 1");
 
   const intervalRaw = env["AM_RETENTION_INTERVAL_MS"];
+  if (intervalRaw !== undefined && intervalRaw.trim() === "") return off("AM_RETENTION_INTERVAL_MS is blank");
   const intervalMs = intervalRaw === undefined ? WEEK_MS : wholeNumber(intervalRaw.trim(), 0);
   if (intervalMs === null) return off("AM_RETENTION_INTERVAL_MS must be a whole number of milliseconds (0 means manual only)");
 
@@ -101,8 +105,8 @@ export function parseRetentionSettings(env: RetentionEnv): RetentionSettings {
     mode: "enforce",
     windows: windows.value,
     graceDays,
-    recallStopPoints: 2,
-    firstRunObservationShare: 0.1,
+    recallStopPoints: RETENTION_RECALL_STOP_POINTS,
+    firstRunObservationShare: RETENTION_FIRST_RUN_OBSERVATION_SHARE,
     recallCasesPath: env["AM_RETENTION_RECALL_CASES"]?.trim() || null,
     intervalMs,
   };

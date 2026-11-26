@@ -79,7 +79,7 @@ export const SCOPE_CLASS = {
   retentionVault: "paged-only",
   retentionItems: "point-read-only",
   retentionDemoted: "paged-only",
-  // ponytail: runs and reports gain one row per sweep (about 52 a year) and nothing prunes them; page them or prune purged runs if a stack sweeps more often.
+  // ponytail: runs and reports gain one row per sweep (about 60 a year: weekly plus manual runs) and nothing prunes them, so RunStore.unfinished lists the whole scope. Page it or prune purged runs if a stack sweeps more often.
   retentionRuns: "bounded",
   retentionSeals: "paged-only",
   retentionPins: "point-read-only",

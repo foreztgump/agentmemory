@@ -26,7 +26,8 @@ function retentionEnv(): RetentionEnv {
  *   POST /agentmemory/retention/pin, GET /agentmemory/retention/report. Fields whitelisted; auth fails closed
  *   (see registerRetentionTriggers).
  *   No MCP tool (D3: tool count unchanged).
- * Timers: the sweep every AM_RETENTION_INTERVAL_MS (weekly, D11) and the purge daily, both no-ops when off.
+ * Timers (slice 10; none run before it): the sweep every AM_RETENTION_INTERVAL_MS (weekly, D11; 0 = manual
+ * only) and the purge daily, both no-ops when off.
  * Also: setSummarizeVeto(seal.trimmed point read).
  */
 export function registerRetention(sdk: IIIClient, kv: StateKV): void {
@@ -40,10 +41,12 @@ export function registerRetention(sdk: IIIClient, kv: StateKV): void {
     sdk,
     kv,
     search: getSearchRuntime,
+    // TODO(slice 2): vectorReaderFor(...); until then the sweep refuses to trash any row with a stored vector.
     vectors: { canRead: false, read: async () => new Map() },
     now: () => new Date(),
   };
   const harness: RecallHarness = {
+    // TODO(slice 6): drain the docs outbox and score golden cases; until then score rejects, so no enforcing run can pass its recall check.
     settle: async () => {},
     score: () => Promise.reject(new Error("not implemented")),
   };
