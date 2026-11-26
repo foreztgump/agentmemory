@@ -1,5 +1,6 @@
 import type { RetentionDeps } from "./satellites.js";
-import type { RunId } from "./types.js";
+import type { Protector } from "./protect.js";
+import type { ItemRef, RunId } from "./types.js";
 
 export interface RestoreResult {
   readonly restored: number;
@@ -17,10 +18,13 @@ export function restoreRun(deps: RetentionDeps, runId: RunId, why: string): Prom
   throw new Error("not implemented");
 }
 
-/** Restores single items, located through mem:retention:items (one point read each). Includes demotes. */
-export function restoreItems(deps: RetentionDeps, ids: readonly string[], why: string): Promise<RestoreResult> {
+/**
+ * Restores single items, located through mem:retention:items by `itemKey(ref)` (one point read each).
+ * Includes demotes. Takes refs, not bare ids: observation ids can repeat across imported sessions.
+ */
+export function restoreItems(deps: RetentionDeps, refs: readonly ItemRef[], why: string): Promise<RestoreResult> {
   void deps;
-  void ids;
+  void refs;
   void why;
   throw new Error("not implemented");
 }
@@ -34,12 +38,17 @@ export interface PurgeResult {
 
 /**
  * Daily: for runs whose closedAt is older than their grace period, page the vault. Re-judge protection
- * for each entry (design 4.6); a protected one is reinstated. Otherwise: finalize satellites (image ref
- * once, access log, score, facets, embeddings), write the observation tombstone, vault.take.
- * An emptied run's vault scope is deleted and its row keeps the counts. Audited per run (R13).
+ * for each entry with `protect.recheck` (design 4.6); a protected one is reinstated. Otherwise: finalize
+ * satellites (image ref once, access log, score, facets, embeddings), write the observation tombstone,
+ * vault.take. An emptied run's vault scope is deleted and its row keeps the counts. Audited per run (R13).
+ *
+ * `protect` is built by the caller once per purge pass, `createProtector(kv, settings.windows, clock)`
+ * with the current settings' windows (not each run's snapshot) and a clock loaded at `now`, so the re-check
+ * sees the pins, citations and accesses of today. RunRow.graceDays only bounds which runs are visited.
  */
-export function purgeExpired(deps: RetentionDeps, now: Date): Promise<PurgeResult> {
+export function purgeExpired(deps: RetentionDeps, protect: Protector, now: Date): Promise<PurgeResult> {
   void deps;
+  void protect;
   void now;
   throw new Error("not implemented");
 }

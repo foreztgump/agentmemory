@@ -254,6 +254,8 @@ Fork-only files, no upstream conflict risk:
 - `src/fork/retention/register.ts`: registers `mem::retention-*` functions, REST endpoints and the timer.
 - tests under `test/fork/retention/`.
 
+Implementation note (2026-11-26, TEE-1158 phase 1). The names below changed in the sketch: `mem:retention:trash:<run>` became `mem:retention:vault:<runId>`, because the vault also holds the stage T `source` copy and the satellite snapshots, and `mem:retention:runs:<run>` became one bounded `mem:retention:runs` holding the run rows (about 60 a year). The plan is not stored in pages (section 4.3); it is a stream recomputed from a cursor, so no per-run plan scope exists. Keys for observations include the session id (`itemKey`), because imported sessions can repeat an observation id. [retention-architecture.md](retention-architecture.md) has the reasons and the slice plan.
+
 Upstream seams, each small and upstream-able on its own:
 - `src/index.ts`: one call to the fork's register function (the same seam the search runtime uses).
 - `src/functions/summarize.ts`: the veto predicate (section 5.2), 3 to 5 lines.

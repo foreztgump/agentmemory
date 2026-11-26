@@ -1,14 +1,15 @@
 import type { StateKV } from "../../state/kv.js";
-import type { ItemLocator, RunId, RunRow, VaultEntry } from "./types.js";
+import type { ItemLocator, ItemRef, RunId, RunRow, VaultEntry } from "./types.js";
 
 /**
  * The only holder of moved rows. One scope per run (`mem:retention:vault:<runId>`), plus the
- * `mem:retention:items` locator so restore and erase by id are one point read.
+ * `mem:retention:items` locator so restore and erase by ref are one point read. Every key is
+ * `itemKey(ref)` (scopes.ts): observation ids repeat across imported sessions, so the session is part of the key.
  *
  * Access patterns:
  *   restore by run   page one run's scope (keys, then values in pages).
- *   restore by id    items.get(id) -> vault(runId).get(id).
- *   erase by id      the same two reads, then delete both (forget reaches trash copies, D7).
+ *   restore by ref   items.get(itemKey(ref)) -> vault(runId).get(itemKey(ref)).
+ *   erase by ref     the same two reads, then delete both (forget reaches trash copies, D7).
  *   purge by age     runs is bounded: visit runs with held > 0 and closedAt older than grace; page their scope.
  *   resume           runs with phase != "done"; the lease admits one.
  *
@@ -26,14 +27,14 @@ export class Vault {
     throw new Error("not implemented");
   }
 
-  locate(id: string): Promise<ItemLocator | null> {
-    void id;
+  locate(ref: ItemRef): Promise<ItemLocator | null> {
+    void ref;
     throw new Error("not implemented");
   }
 
-  get(runId: RunId, id: string): Promise<VaultEntry | null> {
+  get(runId: RunId, ref: ItemRef): Promise<VaultEntry | null> {
     void runId;
-    void id;
+    void ref;
     throw new Error("not implemented");
   }
 
@@ -45,9 +46,9 @@ export class Vault {
   }
 
   /** Deletes the entry and its locator. After this the item exists only where restore or purge put it. */
-  take(runId: RunId, id: string): Promise<void> {
+  take(runId: RunId, ref: ItemRef): Promise<void> {
     void runId;
-    void id;
+    void ref;
     throw new Error("not implemented");
   }
 

@@ -28,8 +28,8 @@ registerRetention(sdk, kv);
 // in-process (the weekly timer and the REST handlers call the same functions)
 await sdk.trigger({ function_id: "mem::retention-sweep", payload: { dryRun: true } });   // report only
 await sdk.trigger({ function_id: "mem::retention-sweep", payload: { dryRun: false } });  // enforce
-await sdk.trigger({ function_id: "mem::retention-restore", payload: { runId } });       // or { ids: [...] }
-await sdk.trigger({ function_id: "mem::retention-pin", payload: { id, kind: "memory", who: "owner", reason: "runbook" } });
+await sdk.trigger({ function_id: "mem::retention-restore", payload: { runId } });       // or { refs: [...] }
+await sdk.trigger({ function_id: "mem::retention-pin", payload: { ref: { kind: "memory", id }, who: "owner", reason: "runbook" } });
 
 // src/functions/summarize.ts, at the top of mem::summarize
 if (await summaryRebuildVetoed(sessionId)) return { success: true, unchanged: true, summary: existing };
@@ -40,11 +40,13 @@ await afterForget(kv, { observations: deletedObs, memories: deletedMemoryIds });
 
 ```http
 POST /agentmemory/retention/sweep    {"dryRun": true}
-POST /agentmemory/retention/restore  {"runId": "ret_..."} | {"ids": ["obs_..."]}
+POST /agentmemory/retention/restore  {"runId": "ret_..."} | {"refs": [{"kind": "observation", "sessionId": "ses_...", "id": "obs_..."}]}
 POST /agentmemory/retention/purge    {}
-POST /agentmemory/retention/pin      {"id": "mem_...", "kind": "memory", "reason": "..."}
+POST /agentmemory/retention/pin      {"ref": {"kind": "memory", "id": "mem_..."}, "reason": "..."}
 GET  /agentmemory/retention/report?runId=ret_...
 ```
+
+These routes fail closed. `checkAuth` allows a call when no secret is set, and sweep, purge and restore delete data. With `AGENTMEMORY_SECRET` unset, the routes are not registered or return 503 through `requireConfiguredSecret`.
 
 Settings, parsed once: `AM_RETENTION=enforce`, `AM_RETENTION_WINDOWS=trim:45,obs:180,sup:180,cold:365`, `AM_RETENTION_GRACE_DAYS=30` and `AM_RETENTION_RECALL_CASES=<path>`. A stack without all of them is off (R15).
 
@@ -60,7 +62,8 @@ Settings, parsed once: `AM_RETENTION=enforce`, `AM_RETENTION_WINDOWS=trim:45,obs
 
 **Per-run vault plus a locator.**
 - A moved row goes to `mem:retention:vault:<runId>`, with snapshots of its satellites: the stored vector, the capture event, and the image embedding row when this row held the last live reference.
-- `mem:retention:items` maps an item id to its run, so restore by id and erase by id are each one point read. A demote is a point read of `mem:retention:demoted`.
+- `mem:retention:items` maps an item key to its run, so restore by ref and erase by ref are each one point read. A demote is a point read of `mem:retention:demoted`.
+- The key is `itemKey(ref)`, not the bare id. Observation ids repeat across imported sessions (see disagreement 12), so the session is part of every key for an observation: vault entries, locators, tombstones and pins.
 - Restore of a run pages one scope. Purge deletes a run's scope once it empties.
 - Demote records are not purged, so they live in `mem:retention:demoted`, outside the vault.
 
@@ -81,15 +84,18 @@ Settings, parsed once: `AM_RETENTION=enforce`, `AM_RETENTION_WINDOWS=trim:45,obs
 - When a backend cannot read vectors, the sweep refuses to trash a row that has one and counts it in the report.
 
 **The plan is a stream.**
-- `planCandidates` yields one sealed session's rows (at most 5000) or one page of memories, with a cursor.
+- `planCandidates` yields one page of a sealed session's rows, or one page of memories, with a cursor. The cursor records progress inside a session, so a session of any size is walked in pages. Imported sessions bypass `MAX_OBS_PER_SESSION`, so no bound assumes a small session.
+- Sealing is paged too: `readSessionFacts` computes the summary fingerprint piece by piece, so `judgeSeal` is pure over a few facts and never sees the rows.
 - Dry run, apply and resume read the same generator, and no plan is stored.
 
 **Protection.**
 - Protection signals are point reads, plus one paged pass per sweep over memories and insights into a `Set` of cited ids.
 - Only `Protector.judge` mints `Cleared`, and `displace` accepts nothing else.
+- `createProtector(kv, windows, clock)` takes the sweep's `supersededDays` (which superseded memories still cite) and `coldDays`, and the active clock. The `retrieved` signal compares the access time with `clock.cutoffForActiveDays(project, coldDays)`, so it counts project-active days, not wall-clock days. The clock's boundary rules are pinned in `clock.ts`.
+- Purge re-checks protection with `Protector.recheck`. The caller builds one Protector per purge pass from the current settings' windows.
 - Stages T and O need a `SealProof`, and stage S needs a `ChainProof`.
 
-**The run is a state machine** over a persisted `RunRow`: seal, plan, check-before, apply, check-after, settle, done.
+**The run is a state machine** over a persisted `RunRow`: seal, plan, check-before, apply, settle, check-after, done. Settle drains the docs outbox before the recall check reads the index.
 - The lease and an in-process keyed lock admit one sweep at a time.
 - Dry run stops after plan.
 - With no golden recall cases, the run is refused and reports only.
@@ -127,7 +133,7 @@ The call is visible at its one caller. Other delete paths keep their behaviour, 
 | `src/triggers/api.ts` | 2 | `registerRetentionTriggers` | 10 |
 
 Fork-owned files outside `src/fork/retention/`:
-- `src/fork/kv/scope-classes.ts`: about 11 lines.
+- `src/fork/kv/scope-classes.ts`: about 12 lines, one per retention scope, `sweepScratch` included.
 - `src/state/search-ports.ts`: about 3 lines, `readVectors?`.
 - The worker op in `protocol.ts`, `client.ts` and `worker/engine.ts`: about 60 lines.
 - TEE-1169's `doc-of-record.ts`: 1 line.
@@ -193,6 +199,9 @@ Both candidates left one gap: the re-embed race in disk mode. It is closed by th
 10. **The importance-floor signal (≥ 8) never fires in production.** Both stacks run `AGENTMEMORY_AUTO_COMPRESS=false`, so every row has importance 5. R5's importance-9 case is fixture-only.
 11. **AGENTS.md says "1,596+ tests" and "Current Stats (v0.9.29)".** The suite has about 5,000 tests on v0.9.33.
 
+12. **Observation ids are not globally unique, so bare-id keys would collide.** Native captures mint unique ids (`generateId("obs")`, or `observationIdFor` from a hash that includes the session id). Imported sessions do not. The jsonl replay builds ids with `fingerprintId("obs", entry.uuid ...)` in `jsonl-parser.ts:149`, from the transcript's own `uuid` with no session in the hash, and a resumed or forked Claude Code transcript repeats earlier uuids under a new session id. Export import (`export-import.ts:595`) writes any string id under the session it names. Two sessions can therefore hold the same observation id. The sketch keys items, vault entries, tombstones and pins by `itemKey(ref)`, which includes the session. A citation from a graph node or memory holds a bare id, so the tombstone lookup for it needs the citing record's session ids.
+13. **Design 10 names two scopes differently.** It lists `mem:retention:trash:<run>` and `mem:retention:runs:<run>` with the plan stored per run. The sketch uses `mem:retention:vault:<runId>` and one bounded `mem:retention:runs`, with the plan as a stream. Section 10 of the design carries a note.
+
 ## Slice plan
 
 Each slice is one PR against `disk`, at most about 800 changed lines, with its tests in `test/fork/retention/`. "Unmerged" names work that must land first.
@@ -201,7 +210,7 @@ Each slice is one PR against `disk`, at most about 800 changed lines, with its t
 |---|---|---|---|---|---|
 | 1 | Foundation: scopes, scope classes, audit ops, settings parser, `Vault`, run row and lease, `registerRetention` wired off by default | R15 (off part), R14 | Settings table test, and with no decided windows a sweep is a no-op. A 1,000-row session stores all rows with the cap at 5000, and a 5000-row session captures within the old latency. | `index.ts` 2, `schema.ts` ~12, `types.ts` ~6 | none |
 | 2 | Stored-vector read: `readVectors` port method, memory implementation, `search::read-vectors` op | prerequisite for R3 | Unit tests for both modes; a live-Qdrant test that round-trips an exact vector | none (fork files) | none |
-| 3 | Seal, active-day clock, summarize veto | R7, the seal half of R2 | Table tests for `judgeSeal` over the four R2 sessions; R7 byte-identical summary after a trim and soft delete; clock tests with 51 or more sessions | `summarize.ts` ~4 | none |
+| 3 | Seal, active-day clock, summarize veto | R7, the seal half of R2 | Table tests for `judgeSeal` over the four R2 sessions; `readSessionFacts` fingerprint equals `summaryFingerprint` on a session larger than one page; R7 byte-identical summary after a trim and soft delete; clock tests with 51 or more sessions, and the boundary cases (a timestamp on a day edge, `since`'s own day, an empty project, the cutoff for 0 days and for more days than exist) | `summarize.ts` ~4 | none |
 | 4 | Move core: satellites (index, capture event, session index, session count), `displace`, `reinstate`, `recoverRun` for stages T, O and X; `restoreRun` and `restoreItems` | R3, R11, R8 (replay), R12 (crash half) | R3 in both modes with an embedding spy at 0 and the re-embed loop on; crash injected after each step and then `recoverRun`; capture replay after a sweep; stats count equals rows | none | 2, 3; the disk-mode reconcile assertion of R8 needs TEE-1169 merged |
 | 5 | Protection and plan: `Protector`, `planCandidates`, stage S chain proof | R2, R5, R6 | Fixtures with zero windows: the four R2 sessions; the six R5 items, each under its signal; R6 supersede, then plan and move | none | 3, 4 |
 | 6 | Sweep state machine, report, audit; recall check and auto-restore | R1 (fixture), R9, R13 (sweep half), R12 (resume half), the 10% cap | A dry run leaves every user scope and index size unchanged, and the report has every field; a forced golden loss triggers `restoreRun`, recorded in audit and report; resume from the cursor; one audit entry per run and stage | none | 4, 5 |
@@ -212,6 +221,9 @@ Each slice is one PR against `disk`, at most about 800 changed lines, with its t
 | 11 | Upstream-able fixes, one commit each: L2 evict orphans, L5 auto-forget index removal, lesson recall records access | supports G2 and the near-duplicate rule in design 5.4 | One failing-then-passing test per fix | `evict.ts`, `auto-forget.ts`, `lessons.ts` | none; can run in parallel with anything |
 | 12 | Staging proof on a replica (takes the replica lock) | R1, R4, R9 and R12 at full size | Dry run on a staging copy with collection counts and index sizes before and after; memory peak sampled during a full sweep; a kill mid-sweep, then resume; a one-day grace observed at 23 h and 25 h; a forced recall loss | none (bench scripts) | 1 to 10 merged; TEE-1169 and TEE-1196 merged |
 | 13 | First production run (owner) | R15 | Owner sets main's env; see the rollout below | none | 12, and the owner's answers below |
+
+Slice notes:
+- Slice 3: `veto.ts` holds a module-level singleton, and a second `setSummarizeVeto` call silently replaces the first. When slice 3 wires the veto, make a second registration log or fail, and add a reset helper so a test cannot leak its veto into another.
 
 Rollout for slice 13, on main only. Set:
 - `AM_RETENTION=enforce`, with the D1 windows, grace 30 and the recall-cases path;
