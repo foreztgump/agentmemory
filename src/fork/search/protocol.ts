@@ -17,6 +17,7 @@ export const SEARCH_FN = {
   scanDocs: "search::scan-docs",
   imageQuery: "search::image-query",
   scanEntries: "search::scan-entries",
+  readVectors: "search::read-vectors",
 } as const;
 
 /** One list drives the collection names, the worker's routing and the client binding. */
@@ -138,6 +139,11 @@ export function imageRev(image: { sessionId?: string; observationId?: string; up
 
 export interface LookupRequest extends CollectionScoped { ids: string[] }
 export interface LookupResult { items: DocStub[] }
+
+export interface ReadVectorsRequest extends CollectionScoped { ids: string[] }
+/** The dense vector as Qdrant holds it (float16 precision, widened to float32); an id with none is absent. */
+export interface StoredVector { id: string; f32b64: string }
+export interface ReadVectorsResult { vectors: StoredVector[] }
 
 export interface ClearRequest extends CollectionScoped { scope: ClearScope }
 export interface HealthResult { ok: boolean; collection: string; dimensions: number; status: string; error?: string }

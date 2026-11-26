@@ -76,6 +76,8 @@ export interface VectorStorePort {
   has(obsId: string): boolean;
   /** Identity only, never the embedding. */
   get(obsId: string): VectorToken | undefined;
+  /** Copies of the stored embeddings; an id with none is absent. Rejects when the backend cannot answer, so absent never means unreadable. */
+  readVectors?(obsIds: readonly string[]): MaybePromise<ReadonlyMap<string, Float32Array>>;
   /** A remote store reads the layer from its own payload and ignores resolveLayer. */
   search(
     query: Float32Array,

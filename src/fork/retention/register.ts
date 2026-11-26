@@ -5,6 +5,7 @@ import { logger } from "../../logger.js";
 import { getSearchRuntime } from "../../state/search-ports.js";
 import type { RecallHarness } from "./recall-check.js";
 import type { RetentionDeps } from "./satellites.js";
+import { activeVectorReader } from "./vectors.js";
 import { parseRetentionSettings, RETENTION_SETTING_KEYS, retentionEnforceRequested, type RetentionEnv } from "./settings.js";
 import { runSweep } from "./sweep.js";
 
@@ -41,8 +42,7 @@ export function registerRetention(sdk: IIIClient, kv: StateKV): void {
     sdk,
     kv,
     search: getSearchRuntime,
-    // TODO(slice 2): vectorReaderFor(...); until then the sweep refuses to trash any row with a stored vector.
-    vectors: { canRead: false, read: async () => new Map() },
+    vectors: activeVectorReader(getSearchRuntime),
     now: () => new Date(),
   };
   const harness: RecallHarness = {
