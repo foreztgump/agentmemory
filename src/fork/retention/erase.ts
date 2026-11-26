@@ -1,4 +1,5 @@
 import type { StateKV } from "../../state/kv.js";
+import type { ItemRef } from "./types.js";
 
 /**
  * Explicit forget reaches everything at once (D7, R10, R11). `mem::forget` keeps its immediate hard delete
@@ -11,10 +12,11 @@ import type { StateKV } from "../../state/kv.js";
  *     stale with mutateIndexedGraphRecord, the path mem::cascade-update uses; graph queries already skip
  *     stale items. Marked stale, not deleted, in phase 1 (design 4.7).
  *   - session count: assign Session.observationCount from ObservationStats (L4).
- *   - retention copies: a vault entry and its locator (found through mem:retention:items), or a demote
- *     record (a point read of mem:retention:demoted; demotes have no locator), is deleted, so a forgotten
- *     item cannot come back by restore. An id that exists only in a vault (forget arrived during
- *     grace) is erased from there; forget's own not-found answer for it is replaced by "erased from trash".
+ *   - retention copies: a vault entry and its locator (found through mem:retention:items by
+ *     `itemKey(ref)`), or a demote record (a point read of mem:retention:demoted; demotes have no locator),
+ *     is deleted, so a forgotten item cannot come back by restore. A ref that exists only in a vault (forget
+ *     arrived during grace) is erased from there; forget's own not-found answer for it is replaced by
+ *     "erased from trash". Observation refs carry their session: bare ids can repeat across imported sessions.
  */
 export interface ErasedIds {
   readonly observations: readonly { id: string; sessionId: string }[];
@@ -27,9 +29,9 @@ export function afterForget(kv: StateKV, erased: ErasedIds): Promise<{ graphMark
   throw new Error("not implemented");
 }
 
-/** For ids forget did not find live: erase them from the vault or the demote records if retention holds them. */
-export function eraseFromVault(kv: StateKV, ids: readonly string[]): Promise<readonly string[]> {
+/** For refs forget did not find live: erase them from the vault or the demote records if retention holds them; returns the refs erased. */
+export function eraseFromVault(kv: StateKV, refs: readonly ItemRef[]): Promise<readonly ItemRef[]> {
   void kv;
-  void ids;
+  void refs;
   throw new Error("not implemented");
 }

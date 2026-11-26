@@ -81,6 +81,7 @@ export const KV = {
   retentionReports: RETENTION_KV.reports,
   retentionImageHolds: RETENTION_KV.imageHolds,
   retentionActiveDays: RETENTION_KV.activeDays,
+  retentionSweepScratch: RETENTION_KV.sweepScratch,
 } as const;
 
 export function generateId(prefix: string): string {

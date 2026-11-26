@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Vault } from "../../../src/fork/retention/vault.js";
-import { RETENTION_KV } from "../../../src/fork/retention/scopes.js";
+import { RETENTION_KV, itemKey } from "../../../src/fork/retention/scopes.js";
 import { newRunRow, RunStore } from "../../../src/fork/retention/run-store.js";
-import type { RowEntry, RunId, TrimEntry } from "../../../src/fork/retention/types.js";
+import type { ItemRef, MemoryRowEntry, RowEntry, RunId, TrimEntry } from "../../../src/fork/retention/types.js";
 import type { CompressedObservation } from "../../../src/types.js";
 import { retentionHarness } from "./harness.js";
 
@@ -16,11 +16,15 @@ function observation(id: string, sessionId = "ses_1"): CompressedObservation {
   };
 }
 
+function obs(id: string, sessionId = "ses_1"): ItemRef {
+  return { kind: "observation", sessionId, id };
+}
+
 function rowEntry(runId: RunId, id: string, sessionId = "ses_1"): RowEntry {
   return {
     stage: "O", ref: { kind: "observation", sessionId, id }, runId,
     reason: { stage: "O", ageActiveDays: 200, note: "aged" }, movedAt: "2026-06-01T00:00:00.000Z",
-    rowFingerprint: `fp_${id}`, satellites: { vector: "AAAA" }, row: observation(id, sessionId),
+    project: "proj", rowFingerprint: `fp_${id}`, satellites: { vector: "AAAA" }, row: observation(id, sessionId),
   };
 }
 
@@ -28,7 +32,7 @@ function trimEntry(runId: RunId, id: string): TrimEntry {
   return {
     stage: "T", ref: { kind: "observation", sessionId: "ses_1", id }, runId,
     reason: { stage: "T", ageActiveDays: 50, note: "aged" }, movedAt: "2026-06-01T00:00:00.000Z",
-    rowFingerprint: `fp_${id}`, satellites: {}, source: { type: "tool", tool: "Read" } as never,
+    project: "proj", rowFingerprint: `fp_${id}`, satellites: {}, source: { type: "tool", tool: "Read" } as never,
   };
 }
 
@@ -39,26 +43,26 @@ async function collect(vault: Vault, runId: RunId, size: number) {
 }
 
 describe("Vault", () => {
-  it("puts an entry in its run's scope and a locator, and reads both back by id", async () => {
+  it("puts an entry in its run's scope and a locator, and reads both back by ref", async () => {
     const h = retentionHarness();
     const vault = new Vault(h.kv);
     const entry = rowEntry(RUN_A, "obs_1");
     await vault.put(entry);
 
-    expect(h.store.get(RETENTION_KV.vault(RUN_A))?.get("obs_1")).toEqual(entry);
-    expect(await vault.locate("obs_1")).toEqual({ runId: RUN_A, stage: "O", sessionId: "ses_1" });
-    expect(await vault.get(RUN_A, "obs_1")).toEqual(entry);
-    expect(await vault.locate("obs_missing")).toBeNull();
-    expect(await vault.get(RUN_A, "obs_missing")).toBeNull();
-    expect(await vault.get(RUN_B, "obs_1")).toBeNull();
+    expect(h.store.get(RETENTION_KV.vault(RUN_A))?.get(itemKey(obs("obs_1")))).toEqual(entry);
+    expect(await vault.locate(obs("obs_1"))).toEqual({ runId: RUN_A, stage: "O" });
+    expect(await vault.get(RUN_A, obs("obs_1"))).toEqual(entry);
+    expect(await vault.locate(obs("obs_missing"))).toBeNull();
+    expect(await vault.get(RUN_A, obs("obs_missing"))).toBeNull();
+    expect(await vault.get(RUN_B, obs("obs_1"))).toBeNull();
   });
 
-  it("records no session on the locator of a memory", async () => {
+  it("locates a memory by its own ref", async () => {
     const h = retentionHarness();
     const vault = new Vault(h.kv);
-    const entry: RowEntry = { ...rowEntry(RUN_A, "mem_1"), stage: "S", ref: { kind: "memory", id: "mem_1" } };
+    const entry = { ...rowEntry(RUN_A, "mem_1"), stage: "S", ref: { kind: "memory", id: "mem_1" } } as unknown as MemoryRowEntry;
     await vault.put(entry);
-    expect(await vault.locate("mem_1")).toEqual({ runId: RUN_A, stage: "S" });
+    expect(await vault.locate({ kind: "memory", id: "mem_1" })).toEqual({ runId: RUN_A, stage: "S" });
   });
 
   it("is idempotent: a second put of the same entry leaves one entry and one locator", async () => {
@@ -69,7 +73,7 @@ describe("Vault", () => {
     await vault.put(entry);
     expect(h.store.get(RETENTION_KV.vault(RUN_A))?.size).toBe(1);
     expect(h.store.get(RETENTION_KV.items)?.size).toBe(1);
-    expect(await vault.get(RUN_A, "obs_1")).toEqual(entry);
+    expect(await vault.get(RUN_A, obs("obs_1"))).toEqual(entry);
   });
 
   it("stores a trim entry with its source and locates it as stage T", async () => {
@@ -77,8 +81,8 @@ describe("Vault", () => {
     const vault = new Vault(h.kv);
     const entry = trimEntry(RUN_A, "obs_t");
     await vault.put(entry);
-    expect(await vault.locate("obs_t")).toMatchObject({ runId: RUN_A, stage: "T" });
-    expect(await vault.get(RUN_A, "obs_t")).toEqual(entry);
+    expect(await vault.locate(obs("obs_t"))).toMatchObject({ runId: RUN_A, stage: "T" });
+    expect(await vault.get(RUN_A, obs("obs_t"))).toEqual(entry);
   });
 
   it("pages one run in groups of the requested size and never reads another run's scope", async () => {
@@ -107,18 +111,39 @@ describe("Vault", () => {
     expect(gets).toEqual([4, 8, 10]);
   });
 
+  it("keeps two sessions' observations that share an id apart", async () => {
+    const h = retentionHarness();
+    const vault = new Vault(h.kv);
+    const first = rowEntry(RUN_A, "obs_same", "ses_1");
+    const second = rowEntry(RUN_B, "obs_same", "ses_2");
+    await vault.put(first);
+    await vault.put(second);
+
+    expect(await vault.locate(obs("obs_same", "ses_1"))).toMatchObject({ runId: RUN_A });
+    expect(await vault.locate(obs("obs_same", "ses_2"))).toMatchObject({ runId: RUN_B });
+    expect(await vault.get(RUN_A, obs("obs_same", "ses_1"))).toEqual(first);
+    expect(await vault.get(RUN_A, obs("obs_same", "ses_2"))).toBeNull();
+    await vault.take(RUN_B, obs("obs_same", "ses_2"));
+    expect(await vault.get(RUN_A, obs("obs_same", "ses_1"))).toEqual(first);
+  });
+
+  it("builds an injective key, so a session id that ends like an observation id cannot collide", () => {
+    expect(itemKey(obs("c", "a:1:b"))).not.toBe(itemKey(obs("b:c", "a")));
+    expect(itemKey({ kind: "memory", id: "x" })).not.toBe(itemKey(obs("x")));
+  });
+
   it("take removes the entry and its locator, and a repeat take is a no-op", async () => {
     const h = retentionHarness();
     const vault = new Vault(h.kv);
     await vault.put(rowEntry(RUN_A, "obs_1"));
     await vault.put(rowEntry(RUN_A, "obs_2"));
-    await vault.take(RUN_A, "obs_1");
-    await vault.take(RUN_A, "obs_1");
+    await vault.take(RUN_A, obs("obs_1"));
+    await vault.take(RUN_A, obs("obs_1"));
 
-    expect(await vault.get(RUN_A, "obs_1")).toBeNull();
-    expect(await vault.locate("obs_1")).toBeNull();
-    expect(await vault.get(RUN_A, "obs_2")).not.toBeNull();
-    expect(await vault.locate("obs_2")).not.toBeNull();
+    expect(await vault.get(RUN_A, obs("obs_1"))).toBeNull();
+    expect(await vault.locate(obs("obs_1"))).toBeNull();
+    expect(await vault.get(RUN_A, obs("obs_2"))).not.toBeNull();
+    expect(await vault.locate(obs("obs_2"))).not.toBeNull();
   });
 
   it("take leaves a locator that a later run now owns", async () => {
@@ -126,10 +151,10 @@ describe("Vault", () => {
     const vault = new Vault(h.kv);
     await vault.put(rowEntry(RUN_A, "obs_1"));
     await vault.put(rowEntry(RUN_B, "obs_1"));
-    await vault.take(RUN_A, "obs_1");
-    expect(await vault.get(RUN_A, "obs_1")).toBeNull();
-    expect(await vault.locate("obs_1")).toMatchObject({ runId: RUN_B });
-    expect(await vault.get(RUN_B, "obs_1")).not.toBeNull();
+    await vault.take(RUN_A, obs("obs_1"));
+    expect(await vault.get(RUN_A, obs("obs_1"))).toBeNull();
+    expect(await vault.locate(obs("obs_1"))).toMatchObject({ runId: RUN_B });
+    expect(await vault.get(RUN_B, obs("obs_1"))).not.toBeNull();
   });
 
   it("lists only the runs that still hold restorable entries", async () => {

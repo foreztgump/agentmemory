@@ -24,9 +24,13 @@ export type RetentionSettings =
       readonly intervalMs: number;
     };
 
-/** Fixed, not configurable: rows per paged read (the sweep's memory bound, R12) and the pause between pages. */
+/** Fixed, not configurable: rows per paged read (the sweep's memory bound, R12), the pause between pages and the two protection thresholds below. */
 export const RETENTION_PAGE_SIZE = 200;
 export const RETENTION_PAGE_PAUSE_MS = 25;
+/** Fixed protection threshold (design 6): a row with `importance` at or above it is never a candidate. */
+export const RETENTION_IMPORTANCE_FLOOR = 8;
+/** Fixed spill threshold (design 6): the cited-by-memory set moves to `RETENTION_KV.sweepScratch` above this many ids. */
+export const RETENTION_SPILL_IDS = 500_000;
 
 export const RETENTION_SETTING_KEYS = [
   "AM_RETENTION",

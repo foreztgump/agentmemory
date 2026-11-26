@@ -88,4 +88,5 @@ export const SCOPE_CLASS = {
   retentionReports: "bounded",
   retentionImageHolds: "point-read-only",
   retentionActiveDays: "point-read-only",
+  retentionSweepScratch: "paged-only",
 } as const satisfies Record<keyof typeof KV, ScopeClass>;

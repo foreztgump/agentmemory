@@ -13,9 +13,12 @@ export interface RetentionMark {
  *   - TEE-1169's `docOfRecord` memory branch (reconcile and re-embed, 1 line once TEE-1169 merges);
  * so neither the reconciler nor a restart re-adds a demoted memory (grounding: R8 in disk mode).
  *
+ * The mark is presence, not truthiness: `demotedAt` is an ISO timestamp the sweep writes, and any value
+ * other than `undefined` (an empty string included) hides the memory, so no writer un-demotes by accident.
+ *
  * Observations need no predicate: retention moves a soft-deleted row out of `mem:obs:<session>`, so
  * every reader sees it as absent, exactly as after a delete (design 4.4).
  */
 export function hiddenFromIndex(memory: RetentionMark | null | undefined): boolean {
-  return Boolean(memory?.retention?.demotedAt);
+  return memory?.retention?.demotedAt !== undefined;
 }
