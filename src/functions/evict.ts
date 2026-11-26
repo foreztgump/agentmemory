@@ -197,8 +197,10 @@ export function registerEvictFunction(sdk: IIIClient, kv: StateKV): void {
               continue;
             }
 
+            const deleted: Array<CompressedObservation | RawObservation> = [];
+            let removed = false;
             try {
-              const removed = await withKeyedLock(`obs:${session.id}`, async () => {
+              removed = await withKeyedLock(`obs:${session.id}`, async () => {
                 const current = await kv.get<Session>(KV.sessions, session.id);
                 if (!current || JSON.stringify(current) !== sessionRevision) return false;
                 const currentObservations = await kv.list<CompressedObservation | RawObservation>(
@@ -207,28 +209,28 @@ export function registerEvictFunction(sdk: IIIClient, kv: StateKV): void {
                 if (JSON.stringify(currentObservations) !== observationsRevision) return false;
                 for (const o of currentObservations) {
                   await deleteObservationRow(session.id, o);
+                  deleted.push(o);
                 }
                 await kv.delete(KV.sessions, session.id);
                 await kv.delete(KV.summaryRepairs, session.id);
                 return true;
               });
-              if (!removed) continue;
-              stats.staleSessions++;
             } catch (err) {
               logger.warn("Eviction delete failed", {
                 resource: "session",
                 id: session.id,
                 error: err instanceof Error ? err.message : String(err),
               });
-              continue;
             }
-            for (const o of observations) {
+            for (const o of deleted) {
               await unindexObservationSession(kv, o.id).catch(() => {});
               if ("imageData" in o && o.imageData) await decrementImageRef(kv, sdk, o.imageData);
               if ("imageRef" in o && o.imageRef && o.imageRef !== o.imageData) {
                 await decrementImageRef(kv, sdk, o.imageRef);
               }
             }
+            if (!removed) continue;
+            stats.staleSessions++;
             await removeSessionFromProjectIndex(
               kv,
               session.project,

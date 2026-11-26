@@ -255,6 +255,32 @@ describe("mem::evict stale sessions", () => {
     }
   });
 
+  it("releases the image refs of rows it already deleted when a later delete fails", async () => {
+    const sessionId = "ses_stale_partial";
+    const withImage = { ...makeObservation(sessionId), id: "obs_img", imageRef: "/tmp/evict-partial.png" };
+    const failing = { ...makeObservation(sessionId), id: "obs_fail" };
+    const store = storeForObservations(sessionId, [withImage, failing]);
+    const kv = mockKV(store);
+    await kv.set(KV.imageRefs, withImage.imageRef, 2);
+    const remove = kv.delete;
+    kv.delete = async (scope: string, key: string) => {
+      if (key === failing.id) throw new Error("delete failed");
+      return remove(scope, key);
+    };
+    const { sdk } = mockSdk();
+    registerEvictFunction(sdk as never, kv as never);
+    sdk.registerFunction("event::session::stopped", async () => ({ success: true }));
+    sdk.registerFunction("mem::consolidate-pipeline", () => ({ success: true }));
+    sdk.registerFunction("mem::auto-crystallize", () => ({ success: true }));
+
+    const result = (await sdk.trigger({ function_id: "mem::evict", payload: {} })) as { staleSessions: number };
+
+    expect(result.staleSessions).toBe(0);
+    expect(await kv.get(KV.observations(sessionId), withImage.id)).toBeNull();
+    expect(await kv.get(KV.imageRefs, withImage.imageRef)).toBe(1);
+    getSearchIndex().remove(withImage.id);
+  });
+
   it("bounds consolidation to one pass regardless of how many stale sessions are recovered", async () => {
     // Regression (P1): before the skipConsolidation guard, N recovered
     // sessions each triggered a forced full-corpus consolidate + crystallize
