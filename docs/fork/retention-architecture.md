@@ -255,6 +255,13 @@ Each slice records its accepted deviations here before handing off.
 - A trim entry and a later stage O entry for one observation share a key, so each lands in its own run's scope and the locator names the later run. Slice 4 must restore a trim by run, or key the locator by stage.
 - R14 (open risk 8): the fork's capture path reads `ObservationStats`, not the session. In-process timing with the cap at 5000: median 0.64 to 0.86 ms per `mem::observe` from 100 to 4,900 rows, against 1.3 ms to 26 ms for the upstream path that lists the session. The config change to 5000 on the stacks is still the owner's step in slice 13.
 
+**Slice 2 (stored-vector read).**
+- `VectorStorePort.readVectors?` returns `ReadonlyMap<string, Float32Array>`; `vectorReaderFor` encodes it to the base64 the `VectorReader` contract keeps. It rejects when the backend cannot answer, so an unreadable vector never looks like a row with no vector. `read` on a reader with `canRead: false` also rejects.
+- Memory mode needed a 7-line `VectorIndex.readVectors` in `src/state/vector-index.ts`, which the fork-owned list did not name; `VectorIndex` is the memory runtime's port, so there is no other place for it.
+- Disk mode returns what Qdrant holds, not what the provider returned. The collection is cosine at float16, so a vector comes back normalized to unit length and rounded to float16. It ranks the same, and writing it back stores the same bytes, so restore is a fixed point after the first trash. "Exact" holds in memory mode, and in disk mode for the stored bytes. The live test pins both: a unit vector float16 holds comes back bit for bit, and an arbitrary one comes back normalized within 2^-10 relative.
+- `register.ts` uses `activeVectorReader(getSearchRuntime)`, which calls `vectorReaderFor` on the vector store at each use. Built once at registration, a reader would see no store if the runtime did not exist yet, and a null store reads as "nothing to keep".
+- `search::read-vectors` reads at most 1000 ids per call and rejects more, so an absent id always means no stored vector, and the client asks 200 at a time, about 1 MB at 1024 dimensions. It drains the docs outbox first, so a vector added a moment ago is readable.
+
 **Slice 3 (seal, clock, veto).**
 - `SealRefusal` gains `"no-session"`, for a session deleted between listing and sealing. `sealSession` returns it and leaves no seal.
 - `judgeSeal` keeps an existing seal that still matches (same fingerprint and row count) as the same object, so sealing twice keeps the first `sealedAt`. `sealSession` deletes a seal on any refusal and writes only a new or changed one. `graphExtracted` is written `false`: nothing records that graph extraction ran, and nothing reads the flag yet.

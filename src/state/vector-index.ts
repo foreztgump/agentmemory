@@ -65,6 +65,15 @@ export class VectorIndex implements VectorStorePort {
     return this.vectors.get(obsId);
   }
 
+  readVectors(obsIds: readonly string[]): Map<string, Float32Array> {
+    const found = new Map<string, Float32Array>();
+    for (const id of obsIds) {
+      const entry = this.vectors.get(id);
+      if (entry) found.set(id, Float32Array.from(entry.embedding));
+    }
+    return found;
+  }
+
   entries(): IterableIterator<[string, VectorEntry]> {
     return this.vectors.entries();
   }

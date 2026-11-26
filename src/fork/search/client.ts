@@ -14,6 +14,7 @@ import {
   type MaxVersionResult,
   type Op,
   type OpVersion,
+  type ReadVectorsResult,
   type ScanDocsResult,
   type ScanEntriesResult,
   type ScanMissingResult,
@@ -28,6 +29,8 @@ export interface SearchWorkerClient {
   maxVersion?(): Promise<OpVersion>;
   /** Live documents among ids; unknown and deleted ids are absent. */
   lookup(ids: string[]): Promise<LookupResult["items"]>;
+  /** Stored dense vectors among ids; unknown, deleted and vectorless ids are absent. */
+  readVectors(ids: string[]): Promise<ReadVectorsResult["vectors"]>;
   keyword(query: string, limit: number, layer: SearchLayer): Promise<Hit[]>;
   vector(f32b64: string, limit: number, layer: SearchLayer): Promise<Hit[]>;
   /** Only the images collection answers; text collections reject it. */
@@ -56,6 +59,7 @@ export function iiiSearchClient(sdk: IIIClient, collection: CollectionId = "docs
     apply: (ops, version) => call<ApplyResult>(SEARCH_FN.apply, { ops, version }, WRITE_TIMEOUT_MS),
     maxVersion: async () => (await call<MaxVersionResult>(SEARCH_FN.maxVersion, {})).version,
     lookup: async (ids) => (await call<LookupResult>(SEARCH_FN.lookup, { ids })).items,
+    readVectors: async (ids) => (await call<ReadVectorsResult>(SEARCH_FN.readVectors, { ids })).vectors,
     keyword: async (query, limit, layer) => (await call<HitsResult>(SEARCH_FN.keyword, { query, limit, layer }, SEARCH_TIMEOUT_MS)).hits,
     vector: async (f32b64, limit, layer) => (await call<HitsResult>(SEARCH_FN.vector, { f32b64, limit, layer }, SEARCH_TIMEOUT_MS)).hits,
     imageQuery: (f32b64, limit, sessionId) => call<ImageQueryResult>(SEARCH_FN.imageQuery, { f32b64, limit, sessionId }, SEARCH_TIMEOUT_MS),
