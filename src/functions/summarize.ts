@@ -268,6 +268,7 @@ export function registerSummarizeFunction(
         return { success: false, error: "sessionId is required" };
       }
       const sessionId = data.sessionId.trim();
+      // R7: a trimmed session keeps its digest of record, even under force; with none stored there is nothing to keep.
       if (await summaryRebuildVetoed(sessionId)) {
         const kept = await kv.get<SessionSummary>(KV.summaries, sessionId);
         if (kept) return { success: true, unchanged: true, summary: kept };

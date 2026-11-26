@@ -12,6 +12,7 @@ import { judgeSeal, readSessionFacts, sealSession, type SessionRowFacts } from "
 import { RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import { RETENTION_PAGE_SIZE } from "../../../src/fork/retention/settings.js";
 import type { SessionSeal } from "../../../src/fork/retention/types.js";
+import { withKeyedLock } from "../../../src/state/keyed-mutex.js";
 import { KV } from "../../../src/state/schema.js";
 import type { StateKV } from "../../../src/state/kv.js";
 import type { CompressedObservation, Session, SessionSummary } from "../../../src/types.js";
@@ -316,6 +317,25 @@ describe.each(MODES)("sealSession (%s)", (mode) => {
     expect(verdicts.ses_stale).toEqual({ kind: "refused", why: "summary-out-of-date" });
     expect([...h.store.get(RETENTION_KV.seals)!.keys()]).toEqual(["ses_ok"]);
     expect(h.store.get(RETENTION_KV.seals)!.get("ses_ok")).toMatchObject({ sessionId: "ses_ok", observationCount: 4, trimmed: false });
+  });
+
+  it("waits for the session's observation lock, so a summary published meanwhile is judged", async () => {
+    const { h, kv } = setup();
+    const s = session("ses_locked");
+    const rows = rowsOf(s.id, 4);
+    await store(kv, s, rows, summaryFor(s, rows.slice(0, 3)));
+    let release!: () => void;
+    const held = withKeyedLock(`obs:${s.id}`, async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      await kv.set(KV.summaries, s.id, summaryFor(s, rows));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sealing = sealSession(kv, s.id, OPTS);
+    release();
+    await held;
+
+    expect((await sealing).kind).toBe("sealed");
+    expect(h.store.get(RETENTION_KV.seals)!.has(s.id)).toBe(true);
   });
 
   it("seals a session of more than one page, and sealing again keeps the first seal", async () => {

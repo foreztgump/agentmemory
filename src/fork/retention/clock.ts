@@ -91,8 +91,10 @@ async function sessionDaysByProject(kv: StateKV): Promise<Map<string, Set<number
 export async function loadActiveClock(kv: StateKV, now: () => Date): Promise<ActiveClock> {
   const todayDay = dayOf(now());
   const merged = new Map<string, readonly number[]>();
-  for (const [project, fresh] of await sessionDaysByProject(kv)) {
-    const read = await kv.get<number[]>(RETENTION_KV.activeDays, project);
+  const fromSessions = [...(await sessionDaysByProject(kv))];
+  const storedLists = await kv.getMany<number[]>(RETENTION_KV.activeDays, fromSessions.map(([project]) => project));
+  for (const [i, [project, fresh]] of fromSessions.entries()) {
+    const read = storedLists[i];
     const stored = Array.isArray(read) ? read : [];
     const days = [...new Set([...stored, ...fresh])].sort((a, b) => a - b);
     if (days.length !== stored.length) await kv.set(RETENTION_KV.activeDays, project, days);

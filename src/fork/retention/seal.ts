@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { needsCompression, type StoredObservation } from "../../functions/compression-state.js";
 import type { StateKV } from "../../state/kv.js";
+import { withKeyedLock } from "../../state/keyed-mutex.js";
 import { KV } from "../../state/schema.js";
 import type { CompressedObservation, Session, SessionSummary } from "../../types.js";
 import type { SealProof } from "./protect.js";
@@ -92,7 +93,10 @@ const sortTime = (row: CompressedObservation): string => row.compressedAt ?? row
 
 async function* rowPages(kv: StateKV, scope: string, keys: readonly string[]): AsyncGenerator<Array<CompressedObservation | null>> {
   for (let start = 0; start < keys.length; start += RETENTION_PAGE_SIZE) {
-    yield await kv.getMany<CompressedObservation>(scope, keys.slice(start, start + RETENTION_PAGE_SIZE));
+    const slice = keys.slice(start, start + RETENTION_PAGE_SIZE);
+    const rows = await kv.getMany<CompressedObservation>(scope, slice);
+    if (rows.length !== slice.length) throw new Error(`getMany returned ${rows.length} values for ${slice.length} keys in ${scope}`);
+    yield rows;
   }
 }
 
@@ -127,12 +131,12 @@ export async function readSessionFacts(kv: StateKV, session: Session): Promise<S
   hash.update(`${opening.slice(0, -1)},[`);
   let stable = true;
   let written = 0;
-  for await (const rows of rowPages(kv, scope, ordered.map((r) => r.key))) {
+  pages: for await (const rows of rowPages(kv, scope, ordered.map((r) => r.key))) {
     for (const [i, row] of rows.entries()) {
       const expected = ordered[written + i]!;
       if (!row || !row.title || row.id !== expected.id || sortTime(row) !== expected.sortAt) {
         stable = false;
-        continue;
+        break pages;
       }
       hash.update(`${written + i > 0 ? "," : ""}${JSON.stringify([row.id, row.type, row.title, row.narrative, row.facts, row.files, row.concepts])}`);
     }
@@ -147,8 +151,15 @@ export async function readSessionFacts(kv: StateKV, session: Session): Promise<S
   };
 }
 
-/** Reads one session through `readSessionFacts` (paged, never a whole-session list), judges it and writes or drops its seal. */
-export async function sealSession(kv: StateKV, sessionId: string, opts: { now: Date; llmCompression: boolean }): Promise<ReturnType<typeof judgeSeal>> {
+/**
+ * Reads one session through `readSessionFacts` (paged, never a whole-session list), judges it and writes or drops its seal,
+ * under the `obs:<sessionId>` lock summarize publishes under, so the seal is judged against one summary and one set of rows.
+ */
+export function sealSession(kv: StateKV, sessionId: string, opts: { now: Date; llmCompression: boolean }): Promise<ReturnType<typeof judgeSeal>> {
+  return withKeyedLock(`obs:${sessionId}`, () => judgeAndStoreSeal(kv, sessionId, opts));
+}
+
+async function judgeAndStoreSeal(kv: StateKV, sessionId: string, opts: { now: Date; llmCompression: boolean }): Promise<ReturnType<typeof judgeSeal>> {
   const [session, summary, existing] = await Promise.all([
     kv.get<Session>(KV.sessions, sessionId),
     kv.get<SessionSummary>(KV.summaries, sessionId),
