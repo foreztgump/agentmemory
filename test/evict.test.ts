@@ -217,6 +217,44 @@ describe("mem::evict stale sessions", () => {
     }
   });
 
+  it("removes an evicted session's observation rows and both index entries", async () => {
+    const sessionId = "ses_stale_orphans";
+    const store = storeForObservedSession(sessionId);
+    const kv = mockKV(store);
+    const { sdk } = mockSdk();
+    const vectors = new VectorIndex();
+    setVectorIndex(vectors);
+
+    try {
+      registerEvictFunction(sdk as never, kv as never);
+      sdk.registerFunction("event::session::stopped", async () => ({
+        success: true,
+      }));
+      sdk.registerFunction("mem::consolidate-pipeline", () => ({
+        success: true,
+      }));
+      sdk.registerFunction("mem::auto-crystallize", () => ({ success: true }));
+
+      const observation = makeObservation(sessionId);
+      getSearchIndex().add(observation);
+      vectors.add(observation.id, sessionId, new Float32Array([1, 0, 0]));
+      expect(getSearchIndex().has(observation.id)).toBe(true);
+
+      const result = (await sdk.trigger({
+        function_id: "mem::evict",
+        payload: {},
+      })) as { staleSessions: number };
+
+      expect(result.staleSessions).toBe(1);
+      expect(await kv.list(KV.observations(sessionId))).toEqual([]);
+      expect(getSearchIndex().has(observation.id)).toBe(false);
+      expect(vectors.has(observation.id)).toBe(false);
+    } finally {
+      setVectorIndex(null);
+      getSearchIndex().remove("obs_1");
+    }
+  });
+
   it("bounds consolidation to one pass regardless of how many stale sessions are recovered", async () => {
     // Regression (P1): before the skipConsolidation guard, N recovered
     // sessions each triggered a forced full-corpus consolidate + crystallize
