@@ -8,6 +8,7 @@ vi.mock("../../../src/logger.js", () => ({
 
 import { logger } from "../../../src/logger.js";
 import { registerRetention } from "../../../src/fork/retention/register.js";
+import { resetSummarizeVeto } from "../../../src/fork/retention/veto.js";
 import { runSweep } from "../../../src/fork/retention/sweep.js";
 import { parseRetentionSettings } from "../../../src/fork/retention/settings.js";
 import type { RetentionDeps } from "../../../src/fork/retention/satellites.js";
@@ -40,7 +41,10 @@ beforeEach(() => {
   vi.mocked(logger.info).mockClear();
   vi.mocked(logger.warn).mockClear();
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetSummarizeVeto();
+});
 
 describe.each(UNDECIDED)("a stack with %s (R15, off part)", (_name, env) => {
   it("runSweep returns off and touches no storage, index or harness, dry run or not", async () => {
@@ -78,6 +82,7 @@ describe("registerRetention", () => {
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("AM_RETENTION"));
     expect(logger.warn).not.toHaveBeenCalled();
 
+    resetSummarizeVeto();
     vi.stubEnv("AM_RETENTION", "enforce");
     registerRetention(retentionHarness().sdk as never, retentionHarness().kv);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("AM_RETENTION_WINDOWS"));

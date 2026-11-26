@@ -1,4 +1,7 @@
 import type { StateKV } from "../../state/kv.js";
+import type { Session } from "../../types.js";
+import { KV } from "../../state/schema.js";
+import { RETENTION_KV } from "./scopes.js";
 
 /**
  * The project-active clock (design 6): age counts only days on which the item's project had a session.
@@ -6,7 +9,9 @@ import type { StateKV } from "../../state/kv.js";
  * The design says to read it from the project's session index, but `mem:idx:project-sessions` keeps only
  * the 50 newest sessions per project (session-index.ts), too few to measure 180 or 365 active days. So the
  * sweep keeps its own `mem:retention:active-days` (project -> sorted UTC day numbers), refreshed from one
- * paged pass over mem:sessions per sweep (ids and dates only). A few hundred numbers per project.
+ * paged pass over mem:sessions per sweep (ids and dates only). A few hundred numbers per project. The stored
+ * days are never dropped, so a deleted session's day stays active; a project with no session left in
+ * mem:sessions reads as empty (age 0, nothing older), the safe side.
  *
  * Boundary semantics, which every window depends on:
  *   - A day is a UTC day number, `Math.floor(ms / 86_400_000)`. A timestamp is truncated to its UTC day, so
@@ -34,17 +39,28 @@ export interface ActiveClock {
   cutoffForActiveDays(project: string, days: number): Date;
 }
 
+export const MS_PER_DAY = 86_400_000;
+
+const dayOf = (at: Date): number => Math.floor(at.getTime() / MS_PER_DAY);
+
+function upperBound(days: readonly number[], day: number): number {
+  let low = 0;
+  let high = days.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (days[mid]! <= day) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
 /**
  * Pure. `days` must be sorted ascending with no duplicates; the loader writes it that way and this does
  * not check, so an unsorted list gives an undefined count. Counts `d` with `sinceDay < d <= todayDay`.
  * An empty list gives 0.
  */
 export function countActiveDaysAfter(days: readonly number[], sinceDay: number, todayDay: number): number {
-  void days;
-  void sinceDay;
-  void todayDay;
-  // TODO: binary search for the first day > sinceDay and the first day > todayDay; return the difference.
-  throw new Error("not implemented");
+  return Math.max(0, upperBound(days, todayDay) - upperBound(days, sinceDay));
 }
 
 /**
@@ -53,14 +69,46 @@ export function countActiveDaysAfter(days: readonly number[], sinceDay: number, 
  * there are fewer than `windowDays` such days. Same preconditions as countActiveDaysAfter.
  */
 export function activeDayCutoff(days: readonly number[], windowDays: number, todayDay: number): number | null {
-  void days;
-  void windowDays;
-  void todayDay;
-  throw new Error("not implemented");
+  if (windowDays === 0) return todayDay + 1;
+  const upToToday = upperBound(days, todayDay);
+  return upToToday < windowDays ? null : days[upToToday - windowDays]!;
 }
 
-export function loadActiveClock(kv: StateKV, now: () => Date): Promise<ActiveClock> {
-  void kv;
-  void now;
-  throw new Error("not implemented");
+async function sessionDaysByProject(kv: StateKV): Promise<Map<string, Set<number>>> {
+  const found = new Map<string, Set<number>>();
+  for await (const page of kv.iterate<Session>(KV.sessions)) {
+    for (const session of page) {
+      const day = dayOf(new Date(session.startedAt));
+      if (typeof session.project !== "string" || !Number.isFinite(day)) continue;
+      const set = found.get(session.project) ?? new Set<number>();
+      set.add(day);
+      found.set(session.project, set);
+    }
+  }
+  return found;
+}
+
+export async function loadActiveClock(kv: StateKV, now: () => Date): Promise<ActiveClock> {
+  const todayDay = dayOf(now());
+  const merged = new Map<string, readonly number[]>();
+  const fromSessions = [...(await sessionDaysByProject(kv))];
+  const storedLists = await kv.getMany<number[]>(RETENTION_KV.activeDays, fromSessions.map(([project]) => project));
+  for (const [i, [project, fresh]] of fromSessions.entries()) {
+    const read = storedLists[i];
+    const stored = Array.isArray(read) ? read : [];
+    const days = [...new Set([...stored, ...fresh])].sort((a, b) => a - b);
+    if (days.length !== stored.length) await kv.set(RETENTION_KV.activeDays, project, days);
+    merged.set(project, days);
+  }
+  const daysOf = (project: string): readonly number[] => merged.get(project) ?? [];
+  return {
+    activeDaysSince(project, since) {
+      const sinceDay = dayOf(since);
+      return Number.isFinite(sinceDay) ? countActiveDaysAfter(daysOf(project), sinceDay, todayDay) : 0;
+    },
+    cutoffForActiveDays(project, days) {
+      const cutoffDay = activeDayCutoff(daysOf(project), days, todayDay);
+      return new Date(cutoffDay === null ? 0 : cutoffDay * MS_PER_DAY);
+    },
+  };
 }

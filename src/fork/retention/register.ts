@@ -8,6 +8,7 @@ import type { RetentionDeps } from "./satellites.js";
 import { activeVectorReader } from "./vectors.js";
 import { parseRetentionSettings, RETENTION_SETTING_KEYS, retentionEnforceRequested, type RetentionEnv } from "./settings.js";
 import { runSweep } from "./sweep.js";
+import { setSummarizeVeto, trimmedSealVeto } from "./veto.js";
 
 function retentionEnv(): RetentionEnv {
   return Object.fromEntries(RETENTION_SETTING_KEYS.map((key) => [key, getEnvVar(key)]));
@@ -29,7 +30,8 @@ function retentionEnv(): RetentionEnv {
  *   No MCP tool (D3: tool count unchanged).
  * Timers (slice 10; none run before it): the sweep every AM_RETENTION_INTERVAL_MS (weekly, D11; 0 = manual
  * only) and the purge daily, both no-ops when off.
- * Also: setSummarizeVeto(seal.trimmed point read).
+ * Also: setSummarizeVeto(trimmedSealVeto(kv)), always, whatever the mode: a session trimmed under an earlier
+ * enforcing run keeps its summary when retention is switched off. A second registerRetention in one process throws.
  */
 export function registerRetention(sdk: IIIClient, kv: StateKV): void {
   const env = retentionEnv();
@@ -50,6 +52,8 @@ export function registerRetention(sdk: IIIClient, kv: StateKV): void {
     settle: async () => {},
     score: () => Promise.reject(new Error("not implemented")),
   };
+
+  setSummarizeVeto(trimmedSealVeto(kv));
 
   sdk.registerFunction("mem::retention-sweep", async (req?: { dryRun?: unknown }) =>
     runSweep(deps, settings, harness, { dryRun: req?.dryRun !== false }),

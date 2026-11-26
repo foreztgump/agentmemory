@@ -223,7 +223,7 @@ Each slice is one PR against `disk`, at most about 800 changed lines, with its t
 | 13 | First production run (owner) | R15 | Owner sets main's env; see the rollout below | none | 12, and the owner's answers below |
 
 Slice notes:
-- Slice 3: `veto.ts` holds a module-level singleton, and a second `setSummarizeVeto` call silently replaces the first. When slice 3 wires the veto, make a second registration log or fail, and add a reset helper so a test cannot leak its veto into another.
+- Slice 3 (done): `setSummarizeVeto` now throws on a second registration, and `resetSummarizeVeto` clears it for tests. See the reconciliation below.
 
 Rollout for slice 13, on main only. Set:
 - `AM_RETENTION=enforce`, with the D1 windows, grace 30 and the recall-cases path;
@@ -260,7 +260,15 @@ Each slice records its accepted deviations here before handing off.
 - Memory mode needed a 7-line `VectorIndex.readVectors` in `src/state/vector-index.ts`, which the fork-owned list did not name; `VectorIndex` is the memory runtime's port, so there is no other place for it.
 - Disk mode returns what Qdrant holds, not what the provider returned. The collection is cosine at float16, so a vector comes back normalized to unit length and rounded to float16. It ranks the same, and writing it back stores the same bytes, so restore is a fixed point after the first trash. "Exact" holds in memory mode, and in disk mode for the stored bytes. The live test pins both: a unit vector float16 holds comes back bit for bit, and an arbitrary one comes back normalized within 2^-10 relative.
 - `register.ts` uses `activeVectorReader(getSearchRuntime)`, which calls `vectorReaderFor` on the vector store at each use. Built once at registration, a reader would see no store if the runtime did not exist yet, and a null store reads as "nothing to keep".
-- `search::read-vectors` reads at most 1000 ids per call (as `search::lookup` does), and the client asks 200 at a time, about 1 MB at 1024 dimensions. It drains the docs outbox first, so a vector added a moment ago is readable.
+- `search::read-vectors` reads at most 1000 ids per call and rejects more, so an absent id always means no stored vector, and the client asks 200 at a time, about 1 MB at 1024 dimensions. It drains the docs outbox first, so a vector added a moment ago is readable.
+
+**Slice 3 (seal, clock, veto).**
+- The veto is read before summarize generates, so a stage O delete can land while a rebuild is in flight. summarize's publish step re-checks the fingerprint under `obs:<sessionId>` and drops the rebuild as `source_changed`, which closes the race only if slice 4 deletes stage O rows and sets `trimmed` under that same lock. Slice 4 must, and should pin it with a test. `sealSession` takes the lock itself, so the sweep must not call it while holding the lock.
+- `SealRefusal` gains `"no-session"`, for a session deleted between listing and sealing. `sealSession` returns it and leaves no seal.
+- `judgeSeal` keeps an existing seal that still matches (same fingerprint and row count) as the same object, so sealing twice keeps the first `sealedAt`. `sealSession` deletes a seal on any refusal and writes only a new or changed one. `graphExtracted` is written `false`: nothing records that graph extraction ran, and nothing reads the flag yet.
+- `readSessionFacts` takes `allCompressed` from `needsCompression` (compression-state.ts): a pending or failed row, or a raw row with no title, counts as awaiting. It reads the rows twice, once for order and timestamps, once to hash in order. A row that changed or vanished between the passes gives an empty `summaryFingerprint`, which matches no summary.
+- `loadActiveClock` unions the days from the sessions pass with the stored `mem:retention:active-days`, so a deleted session's day stays active. A project with no session left reads as empty (age 0), the safe side.
+- The veto is `trimmedSealVeto(kv)`, one point read of the seal. `registerRetention` registers it in every mode and a second `registerRetention` in one process throws. `mem::summarize` falls through to its normal path when the veto holds but no summary is stored.
 
 ## Next implementation step
 
