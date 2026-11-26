@@ -45,6 +45,13 @@ The stacks use an Anthropic-compatible endpoint for the LLM and Voyage for embed
 
 Changing the model or the dimension does not re-embed stored vectors. Vectors from different models are not comparable, even at the same size.
 
+### Hybrid search with embeddings
+
+The fork changes two things in hybrid search (TEE-1204). Upstream still has both problems.
+
+- **Query embeddings.** Voyage and Cohere embed a search query with their query input type (`query`, `search_query`) and stored content with their document type. Stored vectors are unchanged, so nothing is re-embedded.
+- **Default fusion weights.** The defaults are `BM25_WEIGHT=0.6` and `VECTOR_WEIGHT=0.4`. Upstream uses 0.4 and 0.6. At upstream's weights, any vector-only hit in the top 30 ranks above the keyword rank-1 hit. On buddy's eval, recall@10 was then 0.10, against 0.86 for keyword search alone. Set both variables to override the defaults.
+
 `test/fork-deploy-config.test.ts` checks these settings. It fails if a rebase changes how they select the LLM or the embedding model.
 
 ## Scope guard (measurement)
@@ -63,9 +70,27 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 
 [kvrocks.md](kvrocks.md) describes the Kvrocks state store (TEE-1163): the stack service, the resumable Valkey-to-Kvrocks copy and its verify (`scripts/fork/kvrocks-migrate.ts`), and how the replica and the bench run on Kvrocks.
 
+## Filling the disk search index
+
+[search-migration.md](search-migration.md) describes the migration that fills Qdrant from a memory-mode stack's records and persisted vectors with no embedding calls (TEE-1168): `scripts/fork/search-migrate.ts`, its verify, the measured results on buddy's snapshot, Qdrant's memory during a fill (TEE-1201) and the cutover order.
+
 ## Baseline and benchmarks
 
 [baseline/README.md](baseline/README.md) records the in-memory system's numbers on a replica of buddy's stack and on synthetic stores, and how to re-run them. The scripts are in `bench/fork/`, and `bench/fork/ceilings.json` fails a run that regresses.
+
+## Disk keyword search ceilings
+
+Disk keyword search expands query prefixes and ranks with SearchIndex's exact BM25 (TEE-1195). Two checks hold its costs:
+
+- **Latency under capture writes.** Keyword search p99 under capture writes must stay at or under 60 ms at 200,000 documents. Measured on 2026-11-20 at 41–44 ms. Run it before a change to the keyword path ships. It needs a Qdrant of its own with a 1 GB limit and takes about 15 minutes:
+
+  ```
+  docker run -d --name kw-qdrant -m 1g --memory-swap 1g -p 127.0.0.1:16345:6333 qdrant/qdrant:v1.20.2
+  node --import tsx bench/fork/qdrant/keyword-capture.ts --qdrant http://127.0.0.1:16345 --count 200000
+  ```
+
+  It prints p50, p95 and p99 for each phase. It exits 1 when a capture phase's p99 is above `--ceiling-p99-ms` (default 60).
+- **Worker heap.** `bench/fork/qdrant/prefix-vocabulary-heap.ts` fills the prefix vocabulary to its 1,000,000-term bound and exits 1 above 78 MiB. `npm test` runs it, in `test/fork-prefix-vocabulary-heap.test.ts`.
 
 ## Search engine spikes
 

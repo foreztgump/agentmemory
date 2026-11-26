@@ -10,6 +10,7 @@ import { getSearchResultLayer, isSearchLayer, matchesSearchLayer, type SearchLay
 import type { SearchIndexRevision } from '../state/search-index.js'
 import { getSearchRuntime, type KeywordIndexPort, type VectorStorePort } from '../state/search-ports.js'
 import type { EmbeddingProvider } from '../types.js'
+import { embedQuery } from '../providers/embedding/query.js'
 import { memoryToObservation, observationEmbedText } from '../state/memory-utils.js'
 import { buildRecallResponse, type RecallFormat } from "./recall-response.js";
 import { recordAccessBatch } from './access-tracker.js'
@@ -122,7 +123,7 @@ export async function rankMemoryIds(
   let semantic: Array<{ obsId: string }> = []
   if (vectorIndex && vectorIndex.size > 0 && currentEmbeddingProvider) {
     try {
-      const embedding = await currentEmbeddingProvider.embed(query)
+      const embedding = await embedQuery(currentEmbeddingProvider, query)
       semantic = await vectorIndex
         .search(embedding, fetchLimit, "memory", (id) => getSearchIndex().layerOf(id))
     } catch (err) {
@@ -535,13 +536,19 @@ function isStateNotReadyError(err: unknown): boolean {
   return /function_not_found|Function state::\w+ not found|timed out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|connection (?:closed|reset)/i.test(message)
 }
 
-async function listWithRetry<T>(kv: StateKV, scope: string, label: string, deadline: number): Promise<T[] | null> {
+async function listWithRetry<T>(
+  kv: StateKV,
+  scope: string,
+  label: string,
+  deadline: number,
+  read: () => Promise<T[]> = () => collectAll<T>(kv, scope),
+): Promise<T[] | null> {
   let lastErr: unknown
   let attempts = 0
   while (attempts < LIST_RETRY_ATTEMPTS) {
     attempts++
     try {
-      return await collectAll<T>(kv, scope)
+      return await read()
     } catch (err) {
       lastErr = err
       if (!isStateNotReadyError(err)) break
@@ -579,9 +586,12 @@ async function runKeywordRebuild(
   vectorBackfillSince?: string | null,
 ): Promise<KeywordRebuildResult> {
   const idx = getSearchIndex()
-  if (getSearchRuntime().backend === 'disk') {
+  const runtime = getSearchRuntime()
+  if (runtime.backend === 'disk') {
     // The index lives in the search worker and survives restarts; refreshing the counts is the whole boot cost.
     await idx.documentKindCounts()
+    runtime.service?.start({ kv, embedBatch: vectorIndexAddBatchGuarded, embeddingEnabled: () => Boolean(vectorIndex && currentEmbeddingProvider) })
+    await runtime.service?.whenRankingReady?.()
     memoryIndexReady = true
     return { documents: idx.size, vectorJobs: [], fullBackfillPending: 0, historicalVectorGaps: 0 }
   }
@@ -642,16 +652,20 @@ async function runKeywordRebuild(
     return { documents, vectorJobs, fullBackfillPending, historicalVectorGaps }
   }
   const failedSessions: string[] = []
+  const observationsDeadline = performance.now() + LIST_RETRY_BUDGET_MS
   for (let batch = 0; batch < sessions.length; batch += 10) {
     const chunk = sessions.slice(batch, batch + 10)
     const results = await Promise.all(
       chunk.map(async (s) => {
-        try {
-          return await kv.list<CompressedObservation>(KV.observations(s.id))
-        } catch {
-          failedSessions.push(s.id)
-          return [] as CompressedObservation[]
-        }
+        const observations = await listWithRetry<CompressedObservation>(
+          kv,
+          KV.observations(s.id),
+          `rebuildKeywordIndex: observations of ${s.id}`,
+          observationsDeadline,
+          () => kv.list<CompressedObservation>(KV.observations(s.id)),
+        )
+        if (observations === null) failedSessions.push(s.id)
+        return observations ?? []
       })
     )
     for (const obs of results.flat()) {

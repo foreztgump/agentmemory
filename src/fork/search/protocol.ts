@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SearchLayer, SearchResultLayer } from "../../state/search-layer.js";
-import type { TermSource } from "../../state/term-extraction.js";
+import { termSourceOf, type TermSource } from "../../state/term-extraction.js";
+import type { CompressedObservation } from "../../types.js";
 
 export const SEARCH_FN = {
   apply: "search::apply",
@@ -13,7 +14,9 @@ export const SEARCH_FN = {
   health: "search::health",
   lookup: "search::lookup",
   maxVersion: "search::max-version",
+  scanDocs: "search::scan-docs",
   imageQuery: "search::image-query",
+  scanEntries: "search::scan-entries",
 } as const;
 
 /** One list drives the collection names, the worker's routing and the client binding. */
@@ -41,6 +44,12 @@ export function contentRev(fields: TermSource): ContentRev {
 }
 
 export type DocOp = { k: "doc"; id: string; sessionId: string; layer: SearchResultLayer; ts: number; rev: ContentRev; fields: TermSource };
+/** The keyword document for a record; the app's write path and the disk migration both build it here. */
+export function docOp(obs: CompressedObservation, layer: SearchResultLayer): DocOp {
+  const fields = termSourceOf(obs);
+  const ts = Date.parse(obs.timestamp ?? "");
+  return { k: "doc", id: obs.id, sessionId: obs.sessionId, layer, ts: Number.isFinite(ts) ? ts : Date.now(), rev: contentRev(fields), fields };
+}
 export type DelOp = { k: "del"; id: string };
 export type VecOp = { k: "vec"; id: string; rev: ContentRev; f32b64: string };
 export type VecDelOp = { k: "vec-del"; id: string };
@@ -100,6 +109,8 @@ export interface StatsResult {
   lessons: number;
   /** Observations and memories without a dense vector. */
   missingVectors: number;
+  /** False while the worker's prefix vocabulary is still filling; absent (an older worker) counts as ready. */
+  rankingReady?: boolean;
 }
 
 export interface SessionCountsResult { counts: Array<[string, number]> }
@@ -110,8 +121,23 @@ export interface ScanMissingResult {
   next?: string;
 }
 
+/** Live documents of one session's observations, or of every memory when sessionId is absent. */
+export interface ScanDocsRequest extends CollectionScoped { sessionId?: string; cursor?: string; limit: number }
+export interface DocStub { id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }
+export interface ScanDocsResult { items: DocStub[]; next?: string }
+
+/** Every live entry of a collection, as id and revision; the lessons and images collections serve it. */
+export interface ScanEntriesRequest extends CollectionScoped { cursor?: string; limit: number }
+export interface EntryStub { id: string; rev: string }
+export interface ScanEntriesResult { items: EntryStub[]; next?: string }
+
+/** Revision of an image entry: the metadata its record and its payload share. A re-embed sets a new updatedAt. */
+export function imageRev(image: { sessionId?: string; observationId?: string; updatedAt?: string }): string {
+  return createHash("sha256").update(JSON.stringify([image.sessionId ?? "", image.observationId ?? null, image.updatedAt ?? ""])).digest("hex").slice(0, 16);
+}
+
 export interface LookupRequest extends CollectionScoped { ids: string[] }
-export interface LookupResult { items: Array<{ id: string; sessionId: string; layer: SearchResultLayer; rev: ContentRev }> }
+export interface LookupResult { items: DocStub[] }
 
 export interface ClearRequest extends CollectionScoped { scope: ClearScope }
 export interface HealthResult { ok: boolean; collection: string; dimensions: number; status: string; error?: string }

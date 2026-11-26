@@ -190,7 +190,7 @@ A plain upsert replaces the whole point and drops the vector it does not name. T
 | Search | `params.quantization { rescore: true, oversampling: 6 }` | ≥ 0.95 on every layer at 464k real. Re-check at each corpus doubling, and raise it when the release gate misses |
 | HNSW | `m: 16`, `ef_construct: 100`, `memory: cached`; query `hnsw_ef` default | `ef` 128/256 did not change recall |
 | Sparse | `bm25 { modifier: idf, index: { memory: cold } }` | on disk (mmap). Keyword p95 under 8 ms at 1M |
-| Payload | `on_disk_payload: true`; indexes `layer`, `session_id` (keyword), `ts` (integer), `dense` (bool) | filtered searches are faster than unfiltered ones |
+| Payload | `on_disk_payload: true`; indexes `layer`, `session_id` (keyword), `ts` (integer), `dense`, `deleted` (bool) | filtered searches are faster than unfiltered ones. Every field a filter names needs an index: with payloads on disk, the tombstone filter (`deleted`) without one read every payload, and one count over 254k points took 37–42 s against 0.09 s with it (TEE-1222) |
 | Segments | `default_segment_number: 2` at 1M | Qdrant kept 1 indexed segment and 1 appendable segment. At 3M it chose 5; every segment rescores its own candidates, so fewer segments mean fewer reads |
 | Container limit | 1 GB at 1M (floor ~768 MB). 2.5 GB at 3M (1.5 GB works but rescoring then reads from disk) | measured above |
 | Write path | the `insert_only` + `update_vectors` batch from S3 | one request, idempotent |

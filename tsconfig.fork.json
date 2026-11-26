@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true, "types": ["node"] },
-  "include": ["src/state/search-ports.ts", "src/state/term-extraction.ts", "src/fork/**/*.ts"],
+  "compilerOptions": { "noEmit": true, "types": ["node"], "rootDir": "." },
+  "include": ["src/state/search-ports.ts", "src/state/term-extraction.ts", "src/fork/**/*.ts", "scripts/fork/search-migrate.ts"],
   "exclude": ["node_modules", "dist", "test"]
 }

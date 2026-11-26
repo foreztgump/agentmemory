@@ -1,3 +1,6 @@
+# Every service caps its core dump size at 0. NR1's kernel core_pattern is a
+# plain `core` file name, so a crash of the engine writes a Node core dump of
+# 2.3-3.6 GB into the container's filesystem; main collected 31 GB in 10 days.
 services:
   agentmemory:
     # Coolify runs compose with --project-directory set to the repository root,
@@ -6,6 +9,8 @@ services:
       context: .
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
+    ulimits:
+      core: 0
     # Caps the stack's engine and workers inside this container's cgroup so a
     # leak cannot push the host into swap. Node sizes the worker heap from this
     # limit (about half of it), and the in-memory vector index grows with the
@@ -157,6 +162,9 @@ services:
       AM_SEARCH_DIMENSIONS: "${VOYAGE_OUTPUT_DIMENSION:-1024}"
       AM_SEARCH_OVERSAMPLING: "${AM_SEARCH_OVERSAMPLING:-}"
       AM_SEARCH_AVGDL: "${AM_SEARCH_AVGDL:-}"
+      AM_SEARCH_RECONCILE_INTERVAL_MS: "${AM_SEARCH_RECONCILE_INTERVAL_MS:-}"
+      AM_SEARCH_RECONCILE_SWEEP: "${AM_SEARCH_RECONCILE_SWEEP:-}"
+      AM_SEARCH_REEMBED_PER_MINUTE: "${AM_SEARCH_REEMBED_PER_MINUTE:-}"
     expose:
       - "3111"
     volumes:
@@ -182,6 +190,8 @@ services:
   kvrocks:
     image: apache/kvrocks:2.17.0
     restart: unless-stopped
+    ulimits:
+      core: 0
     command:
       - --requirepass
       - "${KVROCKS_PASSWORD:?}"
@@ -223,6 +233,8 @@ services:
     image: valkey/valkey:9
     profiles: [valkey-source]
     restart: unless-stopped
+    ulimits:
+      core: 0
     command: valkey-server --appendonly yes --appendfsync everysec --maxmemory ${VALKEY_MAXMEMORY:-2gb} --maxmemory-policy noeviction
     mem_limit: "${VALKEY_MEM_LIMIT:-3g}"
     volumes:
@@ -240,10 +252,14 @@ services:
 
   # Keyword index and vectors for AM_SEARCH_BACKEND=disk. Not published: only
   # agentmemory reaches it, on the stack's network. 1 GB holds about 1M documents
-  # (docs/fork/spikes/qdrant.md); raise QDRANT_MEM_LIMIT toward 2.5g near 3M.
+  # at rest (docs/fork/spikes/qdrant.md), but a fill from empty only to about 500k
+  # (docs/fork/search-migration.md); raise QDRANT_MEM_LIMIT before a stack passes
+  # that, and toward 2.5g near 3M.
   qdrant:
     image: qdrant/qdrant:v1.20.2
     restart: unless-stopped
+    ulimits:
+      core: 0
     mem_limit: "${QDRANT_MEM_LIMIT:-1g}"
     environment:
       QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?}"

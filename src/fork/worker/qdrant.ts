@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { TOMBSTONE } from "./versioned.js";
 
 export interface QdrantConfig {
   url: string;
@@ -10,7 +11,12 @@ export interface QdrantConfig {
   layout?: "text" | "lessons" | "image";
 }
 
+// Payloads live on disk, so a filter on a field with no index reads every point's payload. Every count and
+// search excludes tombstones, and without this index a count over 254k points took 40 s (TEE-1222).
+const TOMBSTONE_INDEX = [TOMBSTONE.key, "bool"] as const;
+
 const TEXT_INDEXES = [
+  TOMBSTONE_INDEX,
   ["layer", "keyword"],
   ["session_id", "keyword"],
   ["ts", "integer"],
@@ -20,7 +26,17 @@ const TEXT_INDEXES = [
   ["v", "integer"],
 ] as const;
 
+// A fill from empty merges and indexes ever larger segments, and each build holds memory in proportion to
+// its segment: with one build per core and 2 target segments, a fill passed 1 GB at 130k documents.
+// One build at a time bounds how many run at once. max_segment_size (in KB of vectors, about 100k documents
+// with their 1024-dim vectors) bounds a build in the migration's fill. A reconcile from empty writes documents
+// with no vector, which that cap barely counts, so 4 target segments bound its merges instead. At a 1 GB
+// limit the migration's fill holds to about 900k documents and reconcile's to about 570k
+// (docs/fork/search-migration.md, "Qdrant memory during a fill").
+const OPTIMIZERS = { default_segment_number: 4, max_optimization_threads: 1, max_segment_size: 300_000 } as const;
+
 const IMAGE_INDEXES = [
+  TOMBSTONE_INDEX,
   ["session_id", "keyword"],
   ["v", "integer"],
 ] as const;
@@ -84,7 +100,7 @@ export class Qdrant {
       quantization_config: { binary: { memory: "pinned", encoding: "one_bit", query_encoding: "scalar8bits" } },
       sparse_vectors: { bm25: { modifier: "idf", index: { memory: "cold" } } },
       hnsw_config: { m: 16, ef_construct: 100, memory: "cached" },
-      optimizers_config: { default_segment_number: 2 },
+      optimizers_config: OPTIMIZERS,
       on_disk_payload: true,
     });
     await this.createPayloadIndexes();

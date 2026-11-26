@@ -3,9 +3,15 @@ import { SHUTDOWN_FLUSH_TIMEOUT_MS } from "../../shutdown.js";
 import type { IndexPersistenceStatus, PendingReplayResult, VectorLoadResult } from "../../state/index-persistence.js";
 import { registerSearchBackend, type IndexPersistencePort, type LessonIndexPort, type SearchRuntime } from "../../state/search-ports.js";
 import { iiiSearchClient, type SearchWorkerClient } from "./client.js";
+import { CollectionReconciler, imageRecords, lessonRecords } from "./collection-reconcile.js";
 import { RemoteImageIndex } from "./images.js";
 import { DocLedger, SearchOutbox } from "./outbox.js";
+import { BackendHealth, trackHealth } from "./health.js";
+import { Reconciler } from "./reconcile.js";
+import { ReembedLoop } from "./reembed.js";
 import { RemoteKeywordIndex, RemoteVectorStore, StatsCache } from "./remote-index.js";
+import { DiskBackendService } from "./service.js";
+import { loadMaintenanceSettings, type MaintenanceSettings } from "./settings.js";
 
 const SHUTDOWN_DRAIN_MS = SHUTDOWN_FLUSH_TIMEOUT_MS - 100;
 
@@ -47,7 +53,15 @@ export class DiskIndexPersistence implements IndexPersistencePort {
     await Promise.all([this.outbox, ...this.otherOutboxes].map((outbox) => outbox.drainFor(SHUTDOWN_DRAIN_MS)));
   }
 
-  stop(): void {}
+  private stopHooks: Array<() => void> = [];
+
+  onStop(hook: () => void): void {
+    this.stopHooks.push(hook);
+  }
+
+  stop(): void {
+    for (const hook of this.stopHooks) hook();
+  }
 
   status(): IndexPersistenceStatus {
     return { saveIntervalMs: 0, saving: false, buckets: 0, pendingChanges: this.otherOutboxes.reduce((n, outbox) => n + outbox.pending, this.outbox.pending), vector: null, vectorCountShortfall: null };
@@ -57,6 +71,10 @@ export class DiskIndexPersistence implements IndexPersistencePort {
 export interface DiskSearchRuntime extends SearchRuntime<RemoteKeywordIndex, RemoteVectorStore, DiskIndexPersistence> {
   readonly outbox: SearchOutbox;
   readonly stats: StatsCache;
+  readonly health: BackendHealth;
+  readonly reconciler: Reconciler;
+  readonly reembed: ReembedLoop;
+  readonly service: DiskBackendService;
   readonly lessons?: LessonIndexPort;
   readonly images?: RemoteImageIndex;
   /** Every outbox this runtime writes through: docs first, then lessons and images when present. */
@@ -70,50 +88,74 @@ export interface CollectionClients {
 }
 
 function createCollectionStores(clients: CollectionClients) {
-  const lessonsOutbox = new SearchOutbox(clients.lessons);
-  const imagesOutbox = new SearchOutbox(clients.images);
+  const lessonsHealth = new BackendHealth();
+  const lessonsClient = trackHealth(clients.lessons, lessonsHealth);
+  const lessonsOutbox = new SearchOutbox(lessonsClient);
+  const imagesHealth = new BackendHealth();
+  const imagesClient = trackHealth(clients.images, imagesHealth);
+  const imagesOutbox = new SearchOutbox(imagesClient);
+  // Lesson recall reads search hits only, so this index never starts a stats poll.
+  const lessons = new RemoteKeywordIndex(lessonsClient, lessonsOutbox, new DocLedger(), new StatsCache(lessonsClient, lessonsOutbox), lessonsHealth);
+  const images = new RemoteImageIndex(imagesClient, imagesOutbox);
   return {
     outboxes: [lessonsOutbox, imagesOutbox],
-    // Lesson recall reads search hits only, so this index never starts a stats poll.
-    lessons: new RemoteKeywordIndex(clients.lessons, lessonsOutbox, new DocLedger(), new StatsCache(clients.lessons, lessonsOutbox)),
-    images: new RemoteImageIndex(clients.images, imagesOutbox),
+    lessons,
+    images,
+    reconcilers: [
+      new CollectionReconciler("lessons", { client: lessonsClient, health: lessonsHealth, outbox: lessonsOutbox, records: lessonRecords(lessons) }),
+      new CollectionReconciler("images", { client: imagesClient, health: imagesHealth, outbox: imagesOutbox, records: imageRecords(images) }),
+    ],
   };
 }
 
 export function createDiskSearchRuntime(
-  client: SearchWorkerClient,
+  rawClient: SearchWorkerClient,
   withVectors: boolean,
   expectedDimensions?: number,
   collections?: CollectionClients,
+  maintenance: MaintenanceSettings = loadMaintenanceSettings(process.env),
 ): DiskSearchRuntime {
+  const health = new BackendHealth();
+  const client = trackHealth(rawClient, health);
   const outbox = new SearchOutbox(client);
   const ledger = new DocLedger();
   const stats = new StatsCache(client, outbox);
   const extra = collections ? createCollectionStores(collections) : null;
   const persistence = new DiskIndexPersistence(outbox, extra?.outboxes);
   stats.start();
+  health.onRecover(() => void stats.refresh());
   void client.health().then(
-    (health) => {
-      if (!health.ok) logger.warn("search worker reports Qdrant unhealthy", { collection: health.collection, status: health.status, error: health.error });
-      else if (expectedDimensions && health.dimensions !== expectedDimensions) {
+    (h) => {
+      if (!h.ok) logger.warn("search worker reports Qdrant unhealthy", { collection: h.collection, status: h.status, error: h.error });
+      else if (expectedDimensions && h.dimensions !== expectedDimensions) {
         logger.error("Qdrant collection dimensions differ from the embedding provider; vector writes will fail", {
-          collection: health.collection,
-          collectionDimensions: health.dimensions,
+          collection: h.collection,
+          collectionDimensions: h.dimensions,
           providerDimensions: expectedDimensions,
         });
       }
     },
-    (err) => stats.markDegraded(err),
+    () => {},
   );
+  const keyword = new RemoteKeywordIndex(client, outbox, ledger, stats, health);
+  const vector = withVectors ? new RemoteVectorStore(client, outbox, ledger, stats, health) : null;
+  const reconciler = new Reconciler({ client, keyword, outbox, health, intervalMs: maintenance.reconcileIntervalMs, sweepPerPass: maintenance.sweepPerPass, collections: extra?.reconcilers });
+  const reembed = new ReembedLoop({ client, keyword, vector, health, perMinute: maintenance.reembedPerMinute });
+  const service = new DiskBackendService({ client, health, stats, outbox, reconciler, reembed, withVectors });
+  persistence.onStop(() => void service.stop());
   return {
     backend: "disk",
-    keyword: new RemoteKeywordIndex(client, outbox, ledger, stats),
-    vector: withVectors ? new RemoteVectorStore(client, outbox, ledger, stats) : null,
+    keyword,
+    vector,
     ...(extra && { lessons: extra.lessons, images: extra.images }),
     openPersistence: () => persistence,
     outbox,
     outboxes: [outbox, ...(extra?.outboxes ?? [])],
     stats,
+    health,
+    reconciler,
+    reembed,
+    service,
   };
 }
 
