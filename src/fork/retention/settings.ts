@@ -90,8 +90,8 @@ export function parseRetentionSettings(env: RetentionEnv): RetentionSettings {
   if (graceDays === null) return off("AM_RETENTION_GRACE_DAYS must be a whole number of days, at least 1");
 
   const intervalRaw = env["AM_RETENTION_INTERVAL_MS"];
-  const intervalMs = intervalRaw === undefined ? WEEK_MS : wholeNumber(intervalRaw.trim(), 1);
-  if (intervalMs === null) return off("AM_RETENTION_INTERVAL_MS must be a whole number of milliseconds, at least 1");
+  const intervalMs = intervalRaw === undefined ? WEEK_MS : wholeNumber(intervalRaw.trim(), 0);
+  if (intervalMs === null) return off("AM_RETENTION_INTERVAL_MS must be a whole number of milliseconds (0 means manual only)");
 
   return {
     mode: "enforce",

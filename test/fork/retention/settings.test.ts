@@ -30,7 +30,6 @@ describe("parseRetentionSettings", () => {
     ["grace empty", { ...decided, AM_RETENTION_GRACE_DAYS: "" }, /AM_RETENTION_GRACE_DAYS/],
     ["interval malformed", { ...decided, AM_RETENTION_INTERVAL_MS: "weekly" }, /AM_RETENTION_INTERVAL_MS/],
     ["interval blank", { ...decided, AM_RETENTION_INTERVAL_MS: "  " }, /AM_RETENTION_INTERVAL_MS/],
-    ["interval zero", { ...decided, AM_RETENTION_INTERVAL_MS: "0" }, /AM_RETENTION_INTERVAL_MS/],
   ];
 
   it.each(off)("is off: %s", (_name, env, why) => {
@@ -66,6 +65,10 @@ describe("parseRetentionSettings", () => {
       recallCasesPath: "/data/cases.json",
       intervalMs: 3_600_000,
     });
+  });
+
+  it("reads an interval of 0 as manual only", () => {
+    expect(parseRetentionSettings({ ...decided, AM_RETENTION_INTERVAL_MS: "0" })).toMatchObject({ mode: "enforce", intervalMs: 0 });
   });
 
   it("treats a blank recall cases path as none", () => {
