@@ -46,8 +46,9 @@ export interface SessionRowFacts {
  * today). A session without a summary never seals, so a stack with no LLM provider never deletes
  * observations (reported as undigested backlog).
  *
- * An existing seal is dropped on any refusal (active, recent capture, no summary, out of date, compression pending, no session),
- * unless `trimmed` is set: then the stored summary is the digest of record (D10) and the seal stands. A seal that still matches stands
+ * An existing seal is dropped on any refusal (active, recent capture, no summary, out of date, compression pending),
+ * unless `trimmed` is set: then the stored summary is the digest of record (D10) and the seal stands. `sealSession`
+ * also drops the seal of a session that no longer exists, trimmed or not. A seal that still matches stands
  * as it is, so sealing twice keeps the first `sealedAt`. `graphExtracted` is written false: nothing
  * records that graph extraction ran, and nothing reads the flag yet.
  */
@@ -164,11 +165,9 @@ async function judgeAndStoreSeal(kv: StateKV, sessionId: string, opts: { now: Da
     kv.get<SessionSummary>(KV.summaries, sessionId),
     kv.get<SessionSeal>(RETENTION_KV.seals, sessionId),
   ]);
-  if (!session) {
-    if (existing) await kv.delete(RETENTION_KV.seals, sessionId);
-    return { kind: "refused", why: "no-session" };
-  }
-  const verdict = judgeSeal(session, await readSessionFacts(kv, session), summary, existing, opts);
+  const verdict: ReturnType<typeof judgeSeal> = session
+    ? judgeSeal(session, await readSessionFacts(kv, session), summary, existing, opts)
+    : { kind: "refused", why: "no-session" };
   if (verdict.kind === "refused") {
     if (existing) await kv.delete(RETENTION_KV.seals, sessionId);
   } else if (verdict.proof.seal !== existing) {
