@@ -117,6 +117,16 @@ export function registerEvictFunction(sdk: IIIClient, kv: StateKV): void {
       const dryRun = data?.dryRun ?? false;
       const { decrementImageRef } = await import("./image-refs.js");
       let indexCleaned = false;
+      const deleteObservationRow = async (
+        sessionId: string,
+        observation: CompressedObservation | RawObservation,
+      ) => {
+        await markCaptureEventDeleted(kv, observation);
+        await kv.delete(KV.observations(sessionId), observation.id);
+        getSearchIndex().remove(observation.id);
+        vectorIndexRemove(observation.id);
+        indexCleaned = true;
+      };
       const removeObservation = (
         sessionId: string,
         selected: CompressedObservation,
@@ -124,11 +134,7 @@ export function registerEvictFunction(sdk: IIIClient, kv: StateKV): void {
       ) => withKeyedLock(`obs:${sessionId}`, async () => {
         const current = await kv.get<CompressedObservation>(KV.observations(sessionId), selected.id);
         if (!current || !eligible(current)) return null;
-        await markCaptureEventDeleted(kv, current);
-        await kv.delete(KV.observations(sessionId), selected.id);
-        getSearchIndex().remove(selected.id);
-        vectorIndexRemove(selected.id);
-        indexCleaned = true;
+        await deleteObservationRow(sessionId, current);
         return current;
       });
 
@@ -191,29 +197,40 @@ export function registerEvictFunction(sdk: IIIClient, kv: StateKV): void {
               continue;
             }
 
+            const deleted: Array<CompressedObservation | RawObservation> = [];
+            let removed = false;
             try {
-              const removed = await withKeyedLock(`obs:${session.id}`, async () => {
+              removed = await withKeyedLock(`obs:${session.id}`, async () => {
                 const current = await kv.get<Session>(KV.sessions, session.id);
                 if (!current || JSON.stringify(current) !== sessionRevision) return false;
-                const currentObservations = await kv.list(KV.observations(session.id));
+                const currentObservations = await kv.list<CompressedObservation | RawObservation>(
+                  KV.observations(session.id),
+                );
                 if (JSON.stringify(currentObservations) !== observationsRevision) return false;
+                for (const o of currentObservations) {
+                  await deleteObservationRow(session.id, o);
+                  deleted.push(o);
+                }
                 await kv.delete(KV.sessions, session.id);
                 await kv.delete(KV.summaryRepairs, session.id);
                 return true;
               });
-              if (!removed) continue;
-              stats.staleSessions++;
             } catch (err) {
               logger.warn("Eviction delete failed", {
                 resource: "session",
                 id: session.id,
                 error: err instanceof Error ? err.message : String(err),
               });
-              continue;
             }
-            for (const o of observations) {
+            for (const o of deleted) {
               await unindexObservationSession(kv, o.id).catch(() => {});
+              if ("imageData" in o && o.imageData) await decrementImageRef(kv, sdk, o.imageData);
+              if ("imageRef" in o && o.imageRef && o.imageRef !== o.imageData) {
+                await decrementImageRef(kv, sdk, o.imageRef);
+              }
             }
+            if (!removed) continue;
+            stats.staleSessions++;
             await removeSessionFromProjectIndex(
               kv,
               session.project,

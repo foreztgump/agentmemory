@@ -6,6 +6,7 @@ vi.mock("../src/logger.js", () => ({
 
 import { normalizeLessonSourceIds, registerLessonsFunctions } from "../src/functions/lessons.js";
 import { currentAuditScope } from "./helpers/mocks.js";
+import { getAccessLog } from "../src/functions/access-tracker.js";
 import type { Lesson } from "../src/types.js";
 
 function mockKV() {
@@ -188,6 +189,27 @@ describe("Lessons", () => {
       expect(result.success).toBe(true);
       expect(result.lessons.length).toBeGreaterThan(0);
       expect(result.lessons[0].content).toContain("Database indexing");
+    });
+
+    it("records access for each returned lesson only", async () => {
+      const result = (await sdk.trigger("mem::lesson-recall", {
+        query: "database performance",
+        limit: 1,
+      })) as { lessons: Lesson[] };
+      expect(result.lessons).toHaveLength(1);
+      const [returned] = result.lessons;
+
+      await vi.waitFor(async () => {
+        expect((await getAccessLog(kv as never, returned.id)).count).toBe(1);
+      });
+
+      const others = (await kv.list<Lesson>("mem:lessons")).filter(
+        (l) => l.id !== returned.id,
+      );
+      expect(others.length).toBeGreaterThan(0);
+      for (const other of others) {
+        expect((await getAccessLog(kv as never, other.id)).count).toBe(0);
+      }
     });
 
     it("filters by project", async () => {
