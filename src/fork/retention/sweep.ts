@@ -31,9 +31,9 @@ export type SweepResult =
  *   6. check-after: harness.settle(), score, judgeRecall. "restore" -> restoreRun with the reason (R9).
  *   7. settle and done: write report, one audit entry per stage (R13), release the lease.
  */
-export function runSweep(deps: RetentionDeps, settings: RetentionSettings, harness: RecallHarness, req: SweepRequest): Promise<SweepResult> {
+export async function runSweep(deps: RetentionDeps, settings: RetentionSettings, harness: RecallHarness, req: SweepRequest): Promise<SweepResult> {
+  if (settings.mode === "off") return { kind: "off", why: settings.why };
   void deps;
-  void settings;
   void harness;
   void req;
   throw new Error("not implemented");

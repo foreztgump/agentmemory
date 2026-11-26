@@ -28,10 +28,64 @@ export type RetentionSettings =
 export const RETENTION_PAGE_SIZE = 200;
 export const RETENTION_PAGE_PAUSE_MS = 25;
 
+const WEEK_MS = 604_800_000;
+const WINDOW_KEYS = { trim: "trimDays", obs: "observationDays", sup: "supersededDays", cold: "coldDays" } as const;
+
+type Parsed<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly why: string };
+
+function wholeNumber(raw: string, min: number): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= min ? value : null;
+}
+
+function parseWindows(raw: string | undefined): Parsed<Windows> {
+  if (raw === undefined || raw.trim() === "") return { ok: false, why: "AM_RETENTION_WINDOWS is not set" };
+  const found = new Map<string, number>();
+  for (const part of raw.split(",")) {
+    const [key = "", value = "", ...rest] = part.split(":").map((piece) => piece.trim());
+    if (!Object.hasOwn(WINDOW_KEYS, key)) return { ok: false, why: `AM_RETENTION_WINDOWS has an unknown key "${key}"` };
+    if (found.has(key)) return { ok: false, why: `AM_RETENTION_WINDOWS repeats "${key}"` };
+    const days = rest.length === 0 ? wholeNumber(value, 1) : null;
+    if (days === null) return { ok: false, why: `AM_RETENTION_WINDOWS "${key}" must be a whole number of days, at least 1` };
+    found.set(key, days);
+  }
+  const missing = Object.keys(WINDOW_KEYS).find((key) => !found.has(key));
+  if (missing) return { ok: false, why: `AM_RETENTION_WINDOWS has no "${missing}" window` };
+  return {
+    ok: true,
+    value: {
+      trimDays: found.get("trim")!,
+      observationDays: found.get("obs")!,
+      supersededDays: found.get("sup")!,
+      coldDays: found.get("cold")!,
+    },
+  };
+}
+
 export function parseRetentionSettings(env: Record<string, string | undefined>): RetentionSettings {
-  void env;
-  // TODO: off unless AM_RETENTION=enforce AND AM_RETENTION_WINDOWS has all four keys AND
-  //  AM_RETENTION_GRACE_DAYS is a whole number. Reject anything malformed with a logged reason
-  //  (mode off, why) instead of falling back to defaults. Decimal integers only (^\d+$), as TEE-1169's settings.
-  throw new Error("not implemented");
+  const off = (why: string): RetentionSettings => ({ mode: "off", why });
+  if (env["AM_RETENTION"]?.trim().toLowerCase() !== "enforce") return off("AM_RETENTION is not enforce");
+
+  const windows = parseWindows(env["AM_RETENTION_WINDOWS"]);
+  if (!windows.ok) return off(windows.why);
+
+  const graceRaw = env["AM_RETENTION_GRACE_DAYS"]?.trim();
+  if (graceRaw === undefined) return off("AM_RETENTION_GRACE_DAYS is not set");
+  const graceDays = wholeNumber(graceRaw, 1);
+  if (graceDays === null) return off("AM_RETENTION_GRACE_DAYS must be a whole number of days, at least 1");
+
+  const intervalRaw = env["AM_RETENTION_INTERVAL_MS"]?.trim();
+  const intervalMs = intervalRaw ? wholeNumber(intervalRaw, 0) : WEEK_MS;
+  if (intervalMs === null) return off("AM_RETENTION_INTERVAL_MS must be a whole number of milliseconds");
+
+  return {
+    mode: "enforce",
+    windows: windows.value,
+    graceDays,
+    recallStopPoints: 2,
+    firstRunObservationShare: 0.1,
+    recallCasesPath: env["AM_RETENTION_RECALL_CASES"]?.trim() || null,
+    intervalMs,
+  };
 }

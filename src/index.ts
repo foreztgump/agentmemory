@@ -119,6 +119,7 @@ import { registerSlidingWindowFunction } from "./functions/sliding-window.js";
 import { registerQueryExpansionFunction } from "./functions/query-expansion.js";
 import { registerTemporalGraphFunctions } from "./functions/temporal-graph.js";
 import { registerRetentionFunctions } from "./functions/retention.js";
+import { registerRetention } from "./fork/retention/register.js";
 import { startAuditMigration } from "./functions/audit.js";
 import { registerCompressFileFunction } from "./functions/compress-file.js";
 import { registerReplayFunctions } from "./functions/replay.js";
@@ -414,6 +415,7 @@ async function main() {
   registerQueryExpansionFunction(sdk, provider);
   registerTemporalGraphFunctions(sdk, kv, provider);
   registerRetentionFunctions(sdk, kv);
+  registerRetention(sdk, kv);
   registerCompressFileFunction(sdk, kv, provider);
   registerReplayFunctions(sdk, kv);
   bootLog(
