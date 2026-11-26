@@ -391,7 +391,8 @@ export class SearchEngine {
 
   /** Dense vectors of live documents among ids, read from their points. */
   async readVectors(rawIds: unknown): Promise<ReadVectorsResult["vectors"]> {
-    const ids = Array.isArray(rawIds) ? rawIds.filter((id): id is string => typeof id === "string" && id.length > 0).slice(0, MAX_LIMIT) : [];
+    const ids = Array.isArray(rawIds) ? rawIds.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+    if (ids.length > MAX_LIMIT) throw new Error(`search::read-vectors reads at most ${MAX_LIMIT} ids per call, got ${ids.length}`);
     if (ids.length === 0) return [];
     await this.ready();
     const points = await this.qdrant.call<DenseRecordPoint[]>("POST", `${this.qdrant.path}/points`, {

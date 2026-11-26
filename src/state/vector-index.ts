@@ -69,7 +69,7 @@ export class VectorIndex implements VectorStorePort {
     const found = new Map<string, Float32Array>();
     for (const id of obsIds) {
       const entry = this.vectors.get(id);
-      if (entry) found.set(id, entry.embedding);
+      if (entry) found.set(id, Float32Array.from(entry.embedding));
     }
     return found;
   }

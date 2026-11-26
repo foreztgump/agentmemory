@@ -23,6 +23,13 @@ describe("memory mode", () => {
     expect(read.get("obs_1")).toEqual(embedding(1));
   });
 
+  it("returns a copy, so a caller cannot change the index", () => {
+    const index = new VectorIndex();
+    index.add("obs_1", "ses_1", embedding(1));
+    index.readVectors(["obs_1"]).get("obs_1")!.fill(0);
+    expect(index.readVectors(["obs_1"]).get("obs_1")).toEqual(embedding(1));
+  });
+
   it("stops returning a vector once it is removed", () => {
     const index = new VectorIndex();
     index.add("obs_1", "ses_1", embedding(1));
@@ -173,6 +180,13 @@ describe("SearchEngine.readVectors", () => {
       point("obs_live", {}, { dense }),
     ]);
     expect((await engine.readVectors(["obs_gone", "obs_nodense", "obs_nullvec", "obs_live"])).map((v) => v.id)).toEqual(["obs_live"]);
+  });
+
+  it("rejects more ids than one call may read instead of dropping the rest", async () => {
+    const { engine, call } = engineOver([]);
+    const ids = Array.from({ length: 1001 }, (_, i) => `obs_${i}`);
+    await expect(engine.readVectors(ids)).rejects.toThrow(/1000/);
+    expect(call).not.toHaveBeenCalled();
   });
 
   it("ignores ids that are not non-empty strings and asks Qdrant nothing for an empty list", async () => {
