@@ -8,7 +8,9 @@ import { registerAutoForgetFunction } from "../src/functions/auto-forget.js";
 import {
   getSearchIndex,
   setIndexPersistence,
+  setVectorIndex,
 } from "../src/functions/search.js";
+import { VectorIndex } from "../src/state/vector-index.js";
 import { memoryToObservation } from "../src/state/memory-utils.js";
 import type { Memory, CompressedObservation, Session, Facet } from "../src/types.js";
 
@@ -217,6 +219,61 @@ describe("Auto-Forget Function", () => {
 
     afterEach(() => {
       setIndexPersistence(null);
+      setVectorIndex(null);
+    });
+
+    it("removes a demoted near-duplicate memory from both indexes and flushes persistence", async () => {
+      const persistence = { scheduleSave: vi.fn(), save: vi.fn(async () => {}) };
+      setIndexPersistence(persistence);
+      const vectors = new VectorIndex();
+      setVectorIndex(vectors);
+
+      const content = "Use React hooks for state management in all components";
+      const older = makeMemory({
+        id: "mem_older",
+        content,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      const newer = makeMemory({
+        id: "mem_newer",
+        content,
+        createdAt: "2026-02-01T00:00:00Z",
+      });
+      for (const mem of [older, newer]) {
+        await kv.set("mem:memories", mem.id, mem);
+        getSearchIndex().add(memoryToObservation(mem), "memory");
+        vectors.add(mem.id, "memory", new Float32Array([1, 0, 0]));
+      }
+
+      await sdk.trigger("mem::auto-forget", {});
+
+      expect((await kv.get<Memory>("mem:memories", "mem_older"))!.isLatest).toBe(false);
+      expect(getSearchIndex().has("mem_older")).toBe(false);
+      expect(vectors.has("mem_older")).toBe(false);
+      expect(getSearchIndex().has("mem_newer")).toBe(true);
+      expect(vectors.has("mem_newer")).toBe(true);
+      expect(persistence.save).toHaveBeenCalled();
+    });
+
+    it("keeps a near-duplicate memory indexed on dryRun", async () => {
+      const vectors = new VectorIndex();
+      setVectorIndex(vectors);
+
+      const content = "Use React hooks for state management in all components";
+      for (const mem of [
+        makeMemory({ id: "mem_older", content, createdAt: "2026-01-01T00:00:00Z" }),
+        makeMemory({ id: "mem_newer", content, createdAt: "2026-02-01T00:00:00Z" }),
+      ]) {
+        await kv.set("mem:memories", mem.id, mem);
+        getSearchIndex().add(memoryToObservation(mem), "memory");
+        vectors.add(mem.id, "memory", new Float32Array([1, 0, 0]));
+      }
+
+      await sdk.trigger("mem::auto-forget", { dryRun: true });
+
+      expect(getSearchIndex().has("mem_older")).toBe(true);
+      expect(vectors.has("mem_older")).toBe(true);
     });
 
     it("removes TTL-expired memories from the BM25 index and flushes persistence", async () => {
