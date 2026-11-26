@@ -58,10 +58,6 @@ export class RunStore {
     private readonly now: () => Date,
   ) {}
 
-  create(row: RunRow): Promise<RunRow> {
-    return this.kv.set(RETENTION_KV.runs, row.id, row);
-  }
-
   save(row: RunRow): Promise<RunRow> {
     return this.kv.set(RETENTION_KV.runs, row.id, row);
   }

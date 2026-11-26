@@ -5,19 +5,11 @@ import { logger } from "../../logger.js";
 import { getSearchRuntime } from "../../state/search-ports.js";
 import type { RecallHarness } from "./recall-check.js";
 import type { RetentionDeps } from "./satellites.js";
-import { parseRetentionSettings } from "./settings.js";
+import { parseRetentionSettings, RETENTION_SETTING_KEYS, retentionEnforceRequested, type RetentionEnv } from "./settings.js";
 import { runSweep } from "./sweep.js";
 
-const SETTING_KEYS = [
-  "AM_RETENTION",
-  "AM_RETENTION_WINDOWS",
-  "AM_RETENTION_GRACE_DAYS",
-  "AM_RETENTION_RECALL_CASES",
-  "AM_RETENTION_INTERVAL_MS",
-] as const;
-
-function retentionEnv(): Record<string, string | undefined> {
-  return Object.fromEntries(SETTING_KEYS.map((key) => [key, getEnvVar(key)]));
+function retentionEnv(): RetentionEnv {
+  return Object.fromEntries(RETENTION_SETTING_KEYS.map((key) => [key, getEnvVar(key)]));
 }
 
 /**
@@ -37,9 +29,10 @@ function retentionEnv(): Record<string, string | undefined> {
  * Also: setSummarizeVeto(seal.trimmed point read).
  */
 export function registerRetention(sdk: IIIClient, kv: StateKV): void {
-  const settings = parseRetentionSettings(retentionEnv());
+  const env = retentionEnv();
+  const settings = parseRetentionSettings(env);
   if (settings.mode === "off") {
-    const log = getEnvVar("AM_RETENTION")?.trim().toLowerCase() === "enforce" ? logger.warn : logger.info;
+    const log = retentionEnforceRequested(env) ? logger.warn : logger.info;
     log(`retention off: ${settings.why}`);
   }
   const deps: RetentionDeps = {

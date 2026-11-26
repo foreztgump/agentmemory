@@ -28,6 +28,16 @@ export type RetentionSettings =
 export const RETENTION_PAGE_SIZE = 200;
 export const RETENTION_PAGE_PAUSE_MS = 25;
 
+export const RETENTION_SETTING_KEYS = [
+  "AM_RETENTION",
+  "AM_RETENTION_WINDOWS",
+  "AM_RETENTION_GRACE_DAYS",
+  "AM_RETENTION_RECALL_CASES",
+  "AM_RETENTION_INTERVAL_MS",
+] as const;
+
+export type RetentionEnv = Partial<Record<(typeof RETENTION_SETTING_KEYS)[number], string>>;
+
 const WEEK_MS = 604_800_000;
 const WINDOW_KEYS = { trim: "trimDays", obs: "observationDays", sup: "supersededDays", cold: "coldDays" } as const;
 
@@ -63,9 +73,13 @@ function parseWindows(raw: string | undefined): Parsed<Windows> {
   };
 }
 
-export function parseRetentionSettings(env: Record<string, string | undefined>): RetentionSettings {
+export function retentionEnforceRequested(env: RetentionEnv): boolean {
+  return env["AM_RETENTION"]?.trim().toLowerCase() === "enforce";
+}
+
+export function parseRetentionSettings(env: RetentionEnv): RetentionSettings {
   const off = (why: string): RetentionSettings => ({ mode: "off", why });
-  if (env["AM_RETENTION"]?.trim().toLowerCase() !== "enforce") return off("AM_RETENTION is not enforce");
+  if (!retentionEnforceRequested(env)) return off("AM_RETENTION is not enforce");
 
   const windows = parseWindows(env["AM_RETENTION_WINDOWS"]);
   if (!windows.ok) return off(windows.why);
@@ -75,9 +89,9 @@ export function parseRetentionSettings(env: Record<string, string | undefined>):
   const graceDays = wholeNumber(graceRaw, 1);
   if (graceDays === null) return off("AM_RETENTION_GRACE_DAYS must be a whole number of days, at least 1");
 
-  const intervalRaw = env["AM_RETENTION_INTERVAL_MS"]?.trim();
-  const intervalMs = intervalRaw ? wholeNumber(intervalRaw, 0) : WEEK_MS;
-  if (intervalMs === null) return off("AM_RETENTION_INTERVAL_MS must be a whole number of milliseconds");
+  const intervalRaw = env["AM_RETENTION_INTERVAL_MS"];
+  const intervalMs = intervalRaw === undefined ? WEEK_MS : wholeNumber(intervalRaw.trim(), 1);
+  if (intervalMs === null) return off("AM_RETENTION_INTERVAL_MS must be a whole number of milliseconds, at least 1");
 
   return {
     mode: "enforce",

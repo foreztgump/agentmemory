@@ -35,8 +35,8 @@ describe("RunStore", () => {
     const runs = store(h, { now: T0 });
     const open = newRunRow({ id: "ret_open" as RunId, dryRun: false, windows: WINDOWS, graceDays: 30, ranBy: "p1", startedAt: "x" });
     const finished = { ...newRunRow({ id: "ret_done" as RunId, dryRun: false, windows: WINDOWS, graceDays: 30, ranBy: "p1", startedAt: "x" }), phase: "done" as const };
-    await runs.create(open);
-    await runs.create(finished);
+    await runs.save(open);
+    await runs.save(finished);
 
     expect(await runs.get("ret_open" as RunId)).toEqual(open);
     expect(await runs.get("ret_nope" as RunId)).toBeNull();

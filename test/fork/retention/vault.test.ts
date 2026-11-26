@@ -137,8 +137,8 @@ describe("Vault", () => {
     const vault = new Vault(h.kv);
     const runs = new RunStore(h.kv, () => new Date("2026-06-01T00:00:00.000Z"));
     const settings = { windows: { trimDays: 1, observationDays: 1, supersededDays: 1, coldDays: 1 }, graceDays: 30 };
-    await runs.create({ ...newRunRow({ id: RUN_A, dryRun: false, ranBy: "p1", startedAt: "2026-06-01T00:00:00.000Z", ...settings }), held: 2 });
-    await runs.create({ ...newRunRow({ id: RUN_B, dryRun: false, ranBy: "p1", startedAt: "2026-06-01T00:00:00.000Z", ...settings }), held: 0 });
+    await runs.save({ ...newRunRow({ id: RUN_A, dryRun: false, ranBy: "p1", startedAt: "2026-06-01T00:00:00.000Z", ...settings }), held: 2 });
+    await runs.save({ ...newRunRow({ id: RUN_B, dryRun: false, ranBy: "p1", startedAt: "2026-06-01T00:00:00.000Z", ...settings }), held: 0 });
     expect((await vault.runsHolding()).map((r) => r.id)).toEqual([RUN_A]);
   });
 });

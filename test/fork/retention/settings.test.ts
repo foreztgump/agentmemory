@@ -29,6 +29,8 @@ describe("parseRetentionSettings", () => {
     ["grace zero", { ...decided, AM_RETENTION_GRACE_DAYS: "0" }, /AM_RETENTION_GRACE_DAYS/],
     ["grace empty", { ...decided, AM_RETENTION_GRACE_DAYS: "" }, /AM_RETENTION_GRACE_DAYS/],
     ["interval malformed", { ...decided, AM_RETENTION_INTERVAL_MS: "weekly" }, /AM_RETENTION_INTERVAL_MS/],
+    ["interval blank", { ...decided, AM_RETENTION_INTERVAL_MS: "  " }, /AM_RETENTION_INTERVAL_MS/],
+    ["interval zero", { ...decided, AM_RETENTION_INTERVAL_MS: "0" }, /AM_RETENTION_INTERVAL_MS/],
   ];
 
   it.each(off)("is off: %s", (_name, env, why) => {
@@ -55,14 +57,14 @@ describe("parseRetentionSettings", () => {
       AM_RETENTION_WINDOWS: " trim:7 , obs:8,sup:9,cold:10 ",
       AM_RETENTION_GRACE_DAYS: " 14 ",
       AM_RETENTION_RECALL_CASES: " /data/cases.json ",
-      AM_RETENTION_INTERVAL_MS: "0",
+      AM_RETENTION_INTERVAL_MS: " 3600000 ",
     });
     expect(settings).toMatchObject({
       mode: "enforce",
       windows: { trimDays: 7, observationDays: 8, supersededDays: 9, coldDays: 10 },
       graceDays: 14,
       recallCasesPath: "/data/cases.json",
-      intervalMs: 0,
+      intervalMs: 3_600_000,
     });
   });
 

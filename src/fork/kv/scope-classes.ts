@@ -79,6 +79,7 @@ export const SCOPE_CLASS = {
   retentionVault: "paged-only",
   retentionItems: "point-read-only",
   retentionDemoted: "paged-only",
+  // ponytail: runs and reports gain one row per sweep (about 52 a year) and nothing prunes them; page them or prune purged runs if a stack sweeps more often.
   retentionRuns: "bounded",
   retentionSeals: "paged-only",
   retentionPins: "point-read-only",
@@ -86,5 +87,5 @@ export const SCOPE_CLASS = {
   retentionControl: "bounded",
   retentionReports: "bounded",
   retentionImageHolds: "point-read-only",
-  retentionActiveDays: "bounded",
+  retentionActiveDays: "point-read-only",
 } as const satisfies Record<keyof typeof KV, ScopeClass>;

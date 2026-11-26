@@ -14,7 +14,7 @@ import type { RunId } from "./types.js";
  *   control       bounded          lease, enforced-run count, last report id
  *   reports       bounded          key = run id, value = RunReport (samples capped at 20 per stage)
  *   imageHolds    point-read-only  key = image file path, value = number of references held in vaults
- *   activeDays    bounded          key = project, value = sorted day numbers with a session (clock.ts)
+ *   activeDays    point-read-only  key = project, value = sorted day numbers with a session (clock.ts)
  */
 export const RETENTION_KV = {
   vault: (runId: RunId | string) => `mem:retention:vault:${runId}`,
