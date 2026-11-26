@@ -742,7 +742,12 @@ export interface AuditEntry {
     | "graph_compact"
     | "graph_index_migrate"
     | "audit_migrate"
-    | "session_sweep";
+    | "session_sweep"
+    | "retention_seal"
+    | "retention_soft_delete"
+    | "retention_restore"
+    | "retention_purge"
+    | "retention_demote";
   userId?: string;
   functionId: string;
   targetIds: string[];

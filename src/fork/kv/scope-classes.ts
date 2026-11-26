@@ -76,4 +76,17 @@ export const SCOPE_CLASS = {
   captureEvents: "paged-only",
   capturePrompts: "paged-only",
   obsStats: "point-read-only",
+  retentionVault: "paged-only",
+  retentionItems: "point-read-only",
+  retentionDemoted: "paged-only",
+  // ponytail: runs and reports gain one row per sweep (about 60 a year: weekly plus manual runs) and nothing prunes them, so RunStore.unfinished lists the whole scope. Page it or prune purged runs if a stack sweeps more often.
+  retentionRuns: "bounded",
+  retentionSeals: "paged-only",
+  retentionPins: "point-read-only",
+  retentionTombstones: "point-read-only",
+  retentionControl: "bounded",
+  retentionReports: "bounded",
+  retentionImageHolds: "point-read-only",
+  retentionActiveDays: "point-read-only",
+  retentionSweepScratch: "paged-only",
 } as const satisfies Record<keyof typeof KV, ScopeClass>;

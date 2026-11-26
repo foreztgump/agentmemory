@@ -35,9 +35,9 @@ export type SweepResult =
  *   8. done: write report, one audit entry per stage (R13), release the lease. The outcome is final
  *      (FinalOutcome); a run that is not done keeps outcome "running".
  */
-export function runSweep(deps: RetentionDeps, settings: RetentionSettings, harness: RecallHarness, req: SweepRequest): Promise<SweepResult> {
+export async function runSweep(deps: RetentionDeps, settings: RetentionSettings, harness: RecallHarness, req: SweepRequest): Promise<SweepResult> {
+  if (settings.mode === "off") return { kind: "off", why: settings.why };
   void deps;
-  void settings;
   void harness;
   void req;
   throw new Error("not implemented");

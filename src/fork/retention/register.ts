@@ -1,5 +1,16 @@
 import type { IIIClient } from "iii-sdk";
 import type { StateKV } from "../../state/kv.js";
+import { getEnvVar } from "../../config.js";
+import { logger } from "../../logger.js";
+import { getSearchRuntime } from "../../state/search-ports.js";
+import type { RecallHarness } from "./recall-check.js";
+import type { RetentionDeps } from "./satellites.js";
+import { parseRetentionSettings, RETENTION_SETTING_KEYS, retentionEnforceRequested, type RetentionEnv } from "./settings.js";
+import { runSweep } from "./sweep.js";
+
+function retentionEnv(): RetentionEnv {
+  return Object.fromEntries(RETENTION_SETTING_KEYS.map((key) => [key, getEnvVar(key)]));
+}
 
 /**
  * The only entry point upstream code calls (src/index.ts, one line after the search runtime is created).
@@ -15,13 +26,34 @@ import type { StateKV } from "../../state/kv.js";
  *   POST /agentmemory/retention/pin, GET /agentmemory/retention/report. Fields whitelisted; auth fails closed
  *   (see registerRetentionTriggers).
  *   No MCP tool (D3: tool count unchanged).
- * Timers: the sweep every AM_RETENTION_INTERVAL_MS (weekly, D11) and the purge daily, both no-ops when off.
+ * Timers (slice 10; none run before it): the sweep every AM_RETENTION_INTERVAL_MS (weekly, D11; 0 = manual
+ * only) and the purge daily, both no-ops when off.
  * Also: setSummarizeVeto(seal.trimmed point read).
  */
 export function registerRetention(sdk: IIIClient, kv: StateKV): void {
-  void sdk;
-  void kv;
-  throw new Error("not implemented");
+  const env = retentionEnv();
+  const settings = parseRetentionSettings(env);
+  if (settings.mode === "off") {
+    const log = retentionEnforceRequested(env) ? logger.warn : logger.info;
+    log(`retention off: ${settings.why}`);
+  }
+  const deps: RetentionDeps = {
+    sdk,
+    kv,
+    search: getSearchRuntime,
+    // TODO(slice 2): vectorReaderFor(...); until then the sweep refuses to trash any row with a stored vector.
+    vectors: { canRead: false, read: async () => new Map() },
+    now: () => new Date(),
+  };
+  const harness: RecallHarness = {
+    // TODO(slice 6): drain the docs outbox and score golden cases; until then score rejects, so no enforcing run can pass its recall check.
+    settle: async () => {},
+    score: () => Promise.reject(new Error("not implemented")),
+  };
+
+  sdk.registerFunction("mem::retention-sweep", async (req?: { dryRun?: unknown }) =>
+    runSweep(deps, settings, harness, { dryRun: req?.dryRun !== false }),
+  );
 }
 
 /**

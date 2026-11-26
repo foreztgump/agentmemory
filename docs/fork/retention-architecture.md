@@ -243,7 +243,17 @@ Buddy keeps retention unset.
 
 ## Implementation reconciliation
 
-None yet. Each slice records its accepted deviations here before handing off.
+Each slice records its accepted deviations here before handing off.
+
+**Slice 1 (foundation).**
+- `run-store.ts` is new. It holds `newRunRow`, `RunStore` (run rows) and the sweep lease with its heartbeat, because the sketch had no home for them.
+- The `KV` keys are `retentionVault`, `retentionItems` and so on, one line each in `schema.ts` that points at `RETENTION_KV`. Bare names such as `items` or `runs` would be ambiguous in the shared `KV` object.
+- The settings parser rejects a window or a grace of 0. The sketch said "a whole number", but 0 would delete everything eligible at once or leave no restore window. Tests reach zero windows through `windowsOverride`, which the REST layer does not accept.
+- `registerRetention` registers only `mem::retention-sweep` and starts no timer. Its deps say `vectors.canRead: false` and its recall harness throws, so an enforcing build before slices 2 and 6 cannot trash a row. Slices 2 and 6 replace both.
+- After the sketch ocr round, `Vault.locate`, `get` and `take` take an `ItemRef`, and every vault and locator key is `itemKey(ref)`. `ItemLocator` no longer holds a session id, because the ref carries it. `retentionSweepScratch` is a `KV` key and is classified `paged-only`, though nothing reads it before slice 5.
+- `Vault.put` and `Vault.take` do not touch `RunRow.held`; the sweep and purge own that counter, and `runsHolding` reads it. `take` deletes the locator first, and only when it still names the run, so a later run's claim on the same id survives.
+- A trim entry and a later stage O entry for one observation share a key, so each lands in its own run's scope and the locator names the later run. Slice 4 must restore a trim by run, or key the locator by stage.
+- R14 (open risk 8): the fork's capture path reads `ObservationStats`, not the session. In-process timing with the cap at 5000: median 0.64 to 0.86 ms per `mem::observe` from 100 to 4,900 rows, against 1.3 ms to 26 ms for the upstream path that lists the session. The config change to 5000 on the stacks is still the owner's step in slice 13.
 
 ## Next implementation step
 

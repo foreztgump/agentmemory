@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { hasCjk, segmentCjk } from "./cjk-segmenter.js";
+import { RETENTION_KV } from "../fork/retention/scopes.js";
 
 export const KV = {
   sessions: "mem:sessions",
@@ -69,6 +70,18 @@ export const KV = {
   captureEvents: (shard: string) => `mem:capture:events:${shard}`,
   capturePrompts: "mem:capture:prompts",
   obsStats: "mem:obs-stats",
+  retentionVault: RETENTION_KV.vault,
+  retentionItems: RETENTION_KV.items,
+  retentionDemoted: RETENTION_KV.demoted,
+  retentionRuns: RETENTION_KV.runs,
+  retentionSeals: RETENTION_KV.seals,
+  retentionPins: RETENTION_KV.pins,
+  retentionTombstones: RETENTION_KV.tombstones,
+  retentionControl: RETENTION_KV.control,
+  retentionReports: RETENTION_KV.reports,
+  retentionImageHolds: RETENTION_KV.imageHolds,
+  retentionActiveDays: RETENTION_KV.activeDays,
+  retentionSweepScratch: RETENTION_KV.sweepScratch,
 } as const;
 
 export function generateId(prefix: string): string {

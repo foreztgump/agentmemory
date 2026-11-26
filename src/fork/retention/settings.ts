@@ -31,11 +31,83 @@ export const RETENTION_PAGE_PAUSE_MS = 25;
 export const RETENTION_IMPORTANCE_FLOOR = 8;
 /** Fixed spill threshold (design 6): the cited-by-memory set moves to `RETENTION_KV.sweepScratch` above this many ids. */
 export const RETENTION_SPILL_IDS = 500_000;
+export const RETENTION_RECALL_STOP_POINTS = 2;
+export const RETENTION_FIRST_RUN_OBSERVATION_SHARE = 0.1;
 
-export function parseRetentionSettings(env: Record<string, string | undefined>): RetentionSettings {
-  void env;
-  // TODO: off unless AM_RETENTION=enforce AND AM_RETENTION_WINDOWS has all four keys AND
-  //  AM_RETENTION_GRACE_DAYS is a whole number. Reject anything malformed with a logged reason
-  //  (mode off, why) instead of falling back to defaults. Decimal integers only (^\d+$), as TEE-1169's settings.
-  throw new Error("not implemented");
+export const RETENTION_SETTING_KEYS = [
+  "AM_RETENTION",
+  "AM_RETENTION_WINDOWS",
+  "AM_RETENTION_GRACE_DAYS",
+  "AM_RETENTION_RECALL_CASES",
+  "AM_RETENTION_INTERVAL_MS",
+] as const;
+
+export type RetentionEnv = Partial<Record<(typeof RETENTION_SETTING_KEYS)[number], string>>;
+
+const WEEK_MS = 604_800_000;
+const WINDOW_KEYS = { trim: "trimDays", obs: "observationDays", sup: "supersededDays", cold: "coldDays" } as const;
+
+type Parsed<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly why: string };
+
+function wholeNumber(raw: string, min: number): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= min ? value : null;
+}
+
+function parseWindows(raw: string | undefined): Parsed<Windows> {
+  if (raw === undefined || raw.trim() === "") return { ok: false, why: "AM_RETENTION_WINDOWS is not set" };
+  const found = new Map<string, number>();
+  for (const part of raw.split(",")) {
+    const [key = "", value = "", ...rest] = part.split(":").map((piece) => piece.trim());
+    if (!Object.hasOwn(WINDOW_KEYS, key)) return { ok: false, why: `AM_RETENTION_WINDOWS has an unknown key "${key}"` };
+    if (found.has(key)) return { ok: false, why: `AM_RETENTION_WINDOWS repeats "${key}"` };
+    if (rest.length > 0) return { ok: false, why: `AM_RETENTION_WINDOWS "${key}" must be key:days, with one colon` };
+    const days = wholeNumber(value, 1);
+    if (days === null) return { ok: false, why: `AM_RETENTION_WINDOWS "${key}" must be a whole number of days, at least 1` };
+    found.set(key, days);
+  }
+  const missing = Object.keys(WINDOW_KEYS).find((key) => !found.has(key));
+  if (missing) return { ok: false, why: `AM_RETENTION_WINDOWS has no "${missing}" window` };
+  return {
+    ok: true,
+    value: {
+      trimDays: found.get("trim")!,
+      observationDays: found.get("obs")!,
+      supersededDays: found.get("sup")!,
+      coldDays: found.get("cold")!,
+    },
+  };
+}
+
+export function retentionEnforceRequested(env: RetentionEnv): boolean {
+  return env["AM_RETENTION"]?.trim().toLowerCase() === "enforce";
+}
+
+export function parseRetentionSettings(env: RetentionEnv): RetentionSettings {
+  const off = (why: string): RetentionSettings => ({ mode: "off", why });
+  if (!retentionEnforceRequested(env)) return off("AM_RETENTION is not enforce");
+
+  const windows = parseWindows(env["AM_RETENTION_WINDOWS"]);
+  if (!windows.ok) return off(windows.why);
+
+  const graceRaw = env["AM_RETENTION_GRACE_DAYS"]?.trim();
+  if (graceRaw === undefined) return off("AM_RETENTION_GRACE_DAYS is not set");
+  const graceDays = wholeNumber(graceRaw, 1);
+  if (graceDays === null) return off("AM_RETENTION_GRACE_DAYS must be a whole number of days, at least 1");
+
+  const intervalRaw = env["AM_RETENTION_INTERVAL_MS"];
+  if (intervalRaw !== undefined && intervalRaw.trim() === "") return off("AM_RETENTION_INTERVAL_MS is blank");
+  const intervalMs = intervalRaw === undefined ? WEEK_MS : wholeNumber(intervalRaw.trim(), 0);
+  if (intervalMs === null) return off("AM_RETENTION_INTERVAL_MS must be a whole number of milliseconds (0 means manual only)");
+
+  return {
+    mode: "enforce",
+    windows: windows.value,
+    graceDays,
+    recallStopPoints: RETENTION_RECALL_STOP_POINTS,
+    firstRunObservationShare: RETENTION_FIRST_RUN_OBSERVATION_SHARE,
+    recallCasesPath: env["AM_RETENTION_RECALL_CASES"]?.trim() || null,
+    intervalMs,
+  };
 }
