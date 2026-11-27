@@ -15,7 +15,7 @@ const WHOLE_SCOPE_READS = new Set(["state::list", "state::list_keys"]);
  * fresh modules, so a second boot on the same store behaves like a restarted process: the first
  * boot's locks and queued work are gone, only the store survives.
  */
-async function boot(store: Store, opts: { cap?: number; gate?: Promise<void> } = {}) {
+async function boot(store: Store, opts: { cap?: number; gate?: Promise<void>; inboxScan?: Promise<void> } = {}) {
   vi.resetModules();
   const { StateKV } = await import("../src/state/kv.js");
   const { withObservationStats } = await import("../src/fork/kv/observation-stats.js");
@@ -37,6 +37,7 @@ async function boot(store: Store, opts: { cap?: number; gate?: Promise<void> } =
     trigger: async (req: Req) => {
       const p = req.payload as { scope: string; key: string; value?: unknown };
       if (req.function_id.startsWith("state::")) calls.push({ fn: req.function_id, scope: p.scope });
+      if (req.function_id === "state::list_keys" && p.scope === "mem:capture:inbox" && opts.inboxScan) await opts.inboxScan;
       switch (req.function_id) {
         case "state::get": return structuredClone(store.get(p.scope)?.get(p.key) ?? null);
         case "state::set": scope(p.scope).set(p.key, structuredClone(p.value)); return { new_value: p.value };
@@ -118,6 +119,26 @@ describe("capture route answers before processing", () => {
     expect(h.rows()).toHaveLength(40);
     expect(h.calls.filter((c) => WHOLE_SCOPE_READS.has(c.fn) && c.scope.startsWith("mem:obs"))).toEqual([]);
     expect(h.calls.length / 10).toBeLessThanOrEqual(20);
+  });
+
+  it("answers the first capture after a restart without waiting for the inbox scan", async () => {
+    const store: Store = new Map([["mem:capture:inbox", new Map<string, unknown>()]]);
+    for (let i = 0; i < 500; i++) {
+      store.get("mem:capture:inbox")!.set(`cap_dead${i}`, {
+        key: `cap_dead${i}`, eventId: `evt_dead_${i}`, eventSource: "client", sessionId: "ses_old", project: "p",
+        hookType: "post_tool_use", observationId: `obs_dead_${i}`, status: "dead", attempts: 5,
+        acceptedAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", payload: {},
+      });
+    }
+    let finishScan!: () => void;
+    const h = await boot(store, { inboxScan: new Promise<void>((resolve) => (finishScan = resolve)) });
+
+    const { status } = await h.accept(1);
+
+    expect(status).toBe(202);
+    finishScan();
+    await h.controller.idle();
+    expect(h.rows()).toHaveLength(1);
   });
 
   it("stores every acknowledged capture exactly once after the process dies before processing", async () => {

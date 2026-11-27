@@ -31,9 +31,16 @@ export class RowIndex<Row extends { key: string }, Entry extends { key: string }
     this.apply({ key, entry: null });
   }
 
-  /** The entry for `key` when the copy is loaded, without waiting for a load. */
+  /** The entry for `key` when the copy is loaded, without waiting for a load. Undefined also before the load, so a miss does not prove the row is absent. */
   peek(key: string): Entry | undefined {
     return this.loaded ? this.entriesByKey.get(key) : undefined;
+  }
+
+  /** The number of rows when the copy is loaded, else undefined after starting the load in the background. */
+  loadedSize(): number | undefined {
+    if (this.loaded) return this.entriesByKey.size;
+    void this.ensureLoaded().catch(() => undefined);
+    return undefined;
   }
 
   async entries(): Promise<Entry[]> {

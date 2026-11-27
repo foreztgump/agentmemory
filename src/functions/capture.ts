@@ -342,7 +342,7 @@ export function registerCaptureFunctions(
         counters.duplicates++;
         return { status: "duplicate", state: queued.status, eventId, observationId: queued.observationId, deduplicated: true };
       }
-      if ((await inboxIndex.size()) >= policy.inboxMax) {
+      if ((inboxIndex.loadedSize() ?? 0) >= policy.inboxMax) {
         counters.rejected++;
         return { status: "rejected", eventId, error: `capture inbox is full (${policy.inboxMax} unprocessed events)`, retryable: true };
       }
@@ -366,7 +366,9 @@ export function registerCaptureFunctions(
       inboxIndex.put(rec);
       counters.accepted++;
       if (!input.defer) return attempt(rec);
-      void lanes.submit(rec.sessionId, key).catch(() => {});
+      void lanes.submit(rec.sessionId, key).catch((err) => {
+        logger.warn("background capture run failed, the sweep will retry it", { eventId, error: errorText(err) });
+      });
       return { status: "accepted", state: "pending", eventId, observationId: rec.observationId, attempts: 0 };
     });
   }

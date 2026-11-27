@@ -34,11 +34,6 @@ export class SessionLanes<T> {
     return promise;
   }
 
-  /** Captures waiting or running. */
-  depth(): number {
-    return this.results.size;
-  }
-
   /** Resolves once nothing is waiting or running. */
   idle(): Promise<void> {
     if (this.results.size === 0) return Promise.resolve();

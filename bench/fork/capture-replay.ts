@@ -22,6 +22,7 @@ const { values } = parseArgs({
     run: { type: "string", default: Date.now().toString(36) },
     "output-bytes": { type: "string", default: "1500" },
     "timeout-ms": { type: "string", default: "3000" },
+    "max-attempts": { type: "string", default: "40" },
     "session-inject": { type: "boolean", default: false },
     verify: { type: "boolean", default: false },
     "drain-timeout-s": { type: "string", default: "900" },
@@ -49,6 +50,8 @@ const observe: Sample[] = [];
 const sessionStart: Sample[] = [];
 const statuses = new Map<string, number>();
 const acked = new Map<string, string>();
+const abandoned: string[] = [];
+const maxAttempts = Math.max(1, Number(values["max-attempts"]));
 let resends = 0;
 
 async function post(path: string, body: unknown): Promise<Sample & { text: string }> {
@@ -91,7 +94,7 @@ function captureBody(sessionId: string, n: number) {
 
 async function deliver(sessionId: string, n: number): Promise<void> {
   const body = captureBody(sessionId, n);
-  for (let attempt = 0; ; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     const r = await post("/agentmemory/observe", body);
     observe.push({ ms: r.ms, status: r.status });
     note(`observe ${r.status}`);
@@ -100,6 +103,10 @@ async function deliver(sessionId: string, n: number): Promise<void> {
       return;
     }
     if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) return;
+    if (attempt >= maxAttempts) {
+      abandoned.push(body.eventId);
+      return;
+    }
     resends++;
     await new Promise((resolve) => setTimeout(resolve, Math.min(5000, 250 * 2 ** Math.min(attempt, 4))));
   }
@@ -124,19 +131,19 @@ function quantiles(samples: Sample[]) {
 
 const started = performance.now();
 let next = 0;
-let startedSessions = 0;
+const startedSessions = new Set<string>();
 async function lane(): Promise<void> {
   for (;;) {
     const first = next;
     if (first >= total) return;
     const size = Math.min(burst, total - first);
     next += size;
-    const s = Math.floor(first / burst) % sessions;
-    if (s >= startedSessions && first / burst < sessions) {
-      startedSessions = s + 1;
-      await startSession(sessionIds[s]!);
+    const sessionId = sessionIds[Math.floor(first / burst) % sessions]!;
+    if (!startedSessions.has(sessionId)) {
+      startedSessions.add(sessionId);
+      await startSession(sessionId);
     }
-    await Promise.all(Array.from({ length: size }, (_, i) => deliver(sessionIds[s]!, first + i)));
+    await Promise.all(Array.from({ length: size }, (_, i) => deliver(sessionId, first + i)));
   }
 }
 await Promise.all(Array.from({ length: Math.max(1, Math.floor(concurrency / burst)) }, lane));
@@ -149,8 +156,9 @@ const report: Record<string, unknown> = {
   concurrency,
   burst,
   loadSeconds: Number(loadSeconds.toFixed(1)),
-  throughputPerS: Number((observe.length / loadSeconds).toFixed(1)),
+  ackedPerS: Number((acked.size / loadSeconds).toFixed(1)),
   resends,
+  abandoned: abandoned.length,
   observe: quantiles(observe),
   sessionStart: quantiles(sessionStart),
   statuses: Object.fromEntries(statuses),
@@ -172,8 +180,13 @@ if (values.verify) {
     if (Date.now() > deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
+  const dead = (await get("/agentmemory/capture?status=dead&limit=500")) as { items?: Array<{ key: string; eventId: string; lastError?: string }> };
+  const deadKeys = new Set((dead.items ?? []).filter((item) => acked.has(item.eventId)).map((item) => item.key));
   const expected = new Map<string, string>();
-  for (const [eventId, sessionId] of acked) expected.set(captureKey(project, sessionId, eventId), eventId);
+  for (const [eventId, sessionId] of acked) {
+    const key = captureKey(project, sessionId, eventId);
+    if (!deadKeys.has(key)) expected.set(key, eventId);
+  }
   const seen = new Map<string, number>();
   let rows = 0;
   for (const sessionId of sessionIds) {
@@ -192,11 +205,13 @@ if (values.verify) {
     drainSeconds: Number(((performance.now() - drainStarted) / 1000).toFixed(1)),
     inbox,
     acked: acked.size,
+    deadLettered: deadKeys.size,
+    deadReasons: [...new Set((dead.items ?? []).filter((item) => deadKeys.has(item.key)).map((item) => item.lastError))],
     rows,
     missing: missing.length,
     duplicates,
     unexpected,
-    exactlyOnce: missing.length === 0 && duplicates === 0 && rows === acked.size,
+    exactlyOnce: missing.length === 0 && duplicates === 0 && unexpected === 0 && rows === expected.size && abandoned.length === 0,
     missingSample: missing.slice(0, 5).map((key) => expected.get(key)),
   };
 }

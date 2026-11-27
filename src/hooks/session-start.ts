@@ -83,7 +83,7 @@ async function main() {
   const init: RequestInit = {
     method: "POST",
     headers: authHeaders(),
-    body: JSON.stringify({ sessionId, project, cwd }),
+    body: JSON.stringify({ sessionId, project, cwd, ...(INJECT_CONTEXT ? {} : { injectContext: false }) }),
   };
 
   if (!INJECT_CONTEXT) {
@@ -92,7 +92,6 @@ async function main() {
     // gives the pending socket before exit.
     fetch(url, {
       ...init,
-      body: JSON.stringify({ sessionId, project, cwd, injectContext: false }),
       signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS),
     }).catch(() => {});
     return;
