@@ -9,6 +9,8 @@ vi.mock("../../../src/logger.js", () => ({
 }));
 
 import { collectRestEndpoints } from "../../../scripts/skills/rest-endpoints.js";
+import { itemKey, RETENTION_KV } from "../../../src/fork/retention/scopes.js";
+import type { ItemRef } from "../../../src/fork/retention/types.js";
 import { resetSummarizeVeto } from "../../../src/fork/retention/veto.js";
 import { MAX_REFS } from "../../../src/fork/retention/requests.js";
 import { liveRoutes, spiedRoutes, type Route } from "./api-fixtures.js";
@@ -138,6 +140,14 @@ describe("pin validates and whitelists", () => {
     expect(reply.status_code).toBe(400);
     expect(typeof reply.body["error"]).toBe("string");
     expect(spies.pin).not.toHaveBeenCalled();
+  });
+
+  it("trims who and reason before the length check and before passing them on", async () => {
+    const { call, spies } = spiedRoutes();
+    expect((await call("pin", { body: { ref: MEM, reason: `  ${long(500)}  `, who: `  ${long(100)}  ` } })).status_code).toBe(200);
+    expect(spies.pin.mock.calls[0]![0]).toEqual({ ref: MEM, reason: long(500), who: long(100) });
+    await call("pin", { body: { ref: MEM, unpin: true, who: " dana\n" } });
+    expect(spies.pin.mock.calls[1]![0]).toEqual({ ref: MEM, unpin: true, who: "dana" });
   });
 
   it("accepts ids at the limit", async () => {
@@ -274,10 +284,11 @@ describe("the iii functions refuse a payload the routes would refuse, since othe
     expect(r.h.stateOps.slice(writes).some((op) => /^state::(set|delete|update)/.test(op))).toBe(false);
   });
 
-  it("a valid payload still goes through", async () => {
+  it("a valid payload still goes through, and the pin is stored with who and reason trimmed", async () => {
     const { r, pin } = functions();
     await seedMemory(r, memory("mem_1"));
-    expect(await pin({ ref: MEM, who: "dana", reason: "r" })).toMatchObject({ kind: "pinned" });
+    expect(await pin({ ref: MEM, who: "  dana ", reason: "\tkeep it  " })).toMatchObject({ kind: "pinned" });
+    expect(await r.kv.get(RETENTION_KV.pins, itemKey(MEM as ItemRef))).toMatchObject({ who: "dana", reason: "keep it" });
   });
 
   it("the route answers 400 for an invalid outcome", async () => {

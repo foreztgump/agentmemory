@@ -41,6 +41,11 @@ function text(value: unknown, name: string, max: number): Parsed<string> {
   return value.length > max ? bad(`${name} must be at most ${max} characters`) : ok(value);
 }
 
+/** Free text a person typed (`who`, `reason`): trimmed before the length check and stored trimmed. Ids are never trimmed. */
+function label(value: unknown, name: string, max: number): Parsed<string> {
+  return text(typeof value === "string" ? value.trim() : value, name, max);
+}
+
 function parseRef(raw: unknown): Parsed<ItemRef> {
   if (!isRecord(raw)) return bad("ref must be an object");
   const id = text(raw["id"], "ref.id", MAX_ID_LENGTH);
@@ -78,10 +83,10 @@ export function parseRestore(body: Record<string, unknown>): Parsed<RestoreReque
 export function parsePin(body: Record<string, unknown>): Parsed<PinRequest> {
   const ref = parseRef(body["ref"]);
   if (!ref.ok) return ref;
-  const who = text(body["who"], "who", MAX_WHO_LENGTH);
+  const who = label(body["who"], "who", MAX_WHO_LENGTH);
   if (!who.ok) return who;
   if (body["unpin"] !== undefined && typeof body["unpin"] !== "boolean") return bad("unpin must be a boolean");
   if (body["unpin"] === true) return ok({ ref: ref.value, who: who.value, unpin: true });
-  const reason = text(body["reason"], "reason", MAX_REASON_LENGTH);
+  const reason = label(body["reason"], "reason", MAX_REASON_LENGTH);
   return reason.ok ? ok({ ref: ref.value, who: who.value, reason: reason.value }) : reason;
 }
