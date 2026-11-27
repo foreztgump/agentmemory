@@ -164,9 +164,9 @@ async function* planMemories(kv: StateKV, clock: ActiveClock, windows: Windows, 
   for (let start = 0; start < rest.length; start += RETENTION_PAGE_SIZE) {
     const slice = rest.slice(start, start + RETENTION_PAGE_SIZE);
     const rows = (await kv.getMany<Memory>(KV.memories, slice)).filter((row): row is Memory => row !== null);
-    const latest = rows.filter((m) => m.isLatest);
-    const logs = await kv.getMany<unknown>(KV.accessLog, latest.map((m) => m.id));
-    const scoreOf = new Map(latest.map((m, i) => [m.id, retentionScore(m, logs[i], now)]));
+    const latest = rows.filter((m) => m.isLatest).map((m) => m.id);
+    const logs = await kv.getMany<unknown>(KV.accessLog, latest);
+    const logOf = new Map(latest.map((id, i) => [id, logs[i]]));
     const candidates: Candidate[] = [];
     for (const row of rows) {
       const project = row.project ?? "";
@@ -177,7 +177,7 @@ async function* planMemories(kv: StateKV, clock: ActiveClock, windows: Windows, 
         successors ??= await successorIndex(kv);
         const proof = await proveChain(kv, row, successors);
         if (proof) candidates.push({ project, stage: "S", ref, row, proof, reason: reasonOf("S", project, row.updatedAt, windows.supersededDays) });
-      } else if (row.isLatest && !hiddenFromIndex(row) && older(project, row.createdAt, windows.coldDays) && scoreOf.get(row.id)! < RETENTION_COLD_SCORE) {
+      } else if (row.isLatest && !hiddenFromIndex(row) && older(project, row.createdAt, windows.coldDays) && retentionScore(row, logOf.get(row.id), now) < RETENTION_COLD_SCORE) {
         candidates.push({ project, stage: "C", ref, row, reason: reasonOf("C", project, row.createdAt, windows.coldDays) });
       }
     }
