@@ -334,7 +334,7 @@ async function checkAfter(s: Sweep, row: RunRow): Promise<SweepResult> {
 
 /** `restoreRun` changes the run row (`held`, `restoredBecause`), so the row is read again; the index is settled once more so the restored documents have landed. */
 async function restoreAll(s: Sweep, row: RunRow, why: string, patch: Partial<RunReport> = {}): Promise<SweepResult> {
-  const result = await restoreRun(s.deps, row.id, why);
+  const result = await restoreRun(s.deps, row.id, why, { beat: () => beat(s) });
   const fresh = (await s.runs.get(row.id)) ?? row;
   await beat(s);
   await s.harness.settle();

@@ -18,18 +18,22 @@ export type RestoreRequest = { readonly runId: RunId } | { readonly refs: readon
 export type RestoreOutcome =
   | ({ readonly kind: "done" } & RestoreResult)
   | { readonly kind: "busy"; readonly heldBy: string }
-  | { readonly kind: "not-found" };
+  | { readonly kind: "not-found" }
+  /** Another process took the lease mid-restore. The restore stopped before its next write; repeating it finishes it. */
+  | { readonly kind: "lease-lost" };
 
 const REQUESTED = "restore requested";
+
+class LeaseLost extends Error {}
 
 /**
  * `mem::retention-restore`. Runs under the sweep lease, the one the sweep and the purge take. `restoreRun` and
  * `restoreItems` read and rewrite the run row of every run they touch (`held`), and a sweep or a purge rewrites
  * that row too, so a restore beside either would lose an update. A held lease answers `busy`. Per entry the restore
  * was already safe against a purge, which `reinstate` rereads under the item lock; the lease covers the run row.
- * The lease is renewed on a timer while the restore pages (it has no heartbeat hook of its own), and
- * a restore that outlives it, after a stall, finishes anyway: every step repeats safely.
- * ponytail: a lease taken over mid-restore is not noticed until the restore ends; give `restoreRun` a `beat` if that matters.
+ * The restore heartbeats the lease before each batch of writes (`beat`) and stops with `lease-lost` once another
+ * process has it, leaving that owner's lease alone. A timer also renews the lease, for a page slow enough to outlast
+ * it, and stops once a renewal finds it gone.
  *
  * A run that has not finished is one a sweep died in (a live sweep holds the lease, so this answers `busy` beside it).
  * It is recovered, restored and closed as `restored`, with retention on or off: with retention off no sweep would
@@ -40,18 +44,31 @@ export async function restoreLeased(deps: RetentionDeps, req: RestoreRequest, sc
   const owner = `restore-${randomUUID()}`;
   const lease = await runs.acquireLease(owner);
   if (!lease.held) return { kind: "busy", heldBy: lease.heldBy };
+  let lost = false;
   const renewal = scheduler.every(LEASE_STALE_MS / 3, async () => {
-    if (!(await runs.heartbeat(owner).catch(() => false))) logger.warn("retention restore: the lease was taken over while restoring");
+    if (lost || (await runs.heartbeat(owner).catch(() => true))) return;
+    lost = true;
+    renewal.stop();
+    logger.warn("retention restore: the lease was taken over while restoring");
   });
+  const beat = async (): Promise<void> => {
+    if (!lost && (await runs.heartbeat(owner))) return;
+    lost = true;
+    renewal.stop();
+    throw new LeaseLost();
+  };
   try {
-    if ("refs" in req) return { kind: "done", ...(await restoreItems(deps, req.refs, REQUESTED)) };
+    if ("refs" in req) return { kind: "done", ...(await restoreItems(deps, req.refs, REQUESTED, { beat })) };
     const run = await runs.get(req.runId);
     if (!run) return { kind: "not-found" };
-    if (run.phase === "done") return { kind: "done", ...(await restoreRun(deps, req.runId, REQUESTED)) };
-    return { kind: "done", ...(await restoreUnfinished(deps, runs, run)) };
+    if (run.phase === "done") return { kind: "done", ...(await restoreRun(deps, req.runId, REQUESTED, { beat })) };
+    return { kind: "done", ...(await restoreUnfinished(deps, runs, run, beat)) };
+  } catch (err) {
+    if (err instanceof LeaseLost) return { kind: "lease-lost" };
+    throw err;
   } finally {
     renewal.stop();
-    await runs.releaseLease(owner).catch((err) => logger.warn("retention restore: lease release failed", { error: String(err) }));
+    if (!lost) await runs.releaseLease(owner).catch((err) => logger.warn("retention restore: lease release failed", { error: String(err) }));
   }
 }
 
@@ -59,11 +76,13 @@ export async function restoreLeased(deps: RetentionDeps, req: RestoreRequest, sc
  * The sweep's own recovery first (`recoverRun` settles moves cut off mid-way, and the crashed sweep's scratch is cleared),
  * then `restoreRun`, then the run row and its report, if the run got that far, are closed the way a sweep closes a restored run.
  */
-async function restoreUnfinished(deps: RetentionDeps, runs: RunStore, run: RunRow): Promise<RestoreResult> {
+async function restoreUnfinished(deps: RetentionDeps, runs: RunStore, run: RunRow, beat: () => Promise<void>): Promise<RestoreResult> {
   const why = `${REQUESTED}; the run had stopped in phase ${run.phase}`;
   await recoverRun(deps, new Vault(deps.kv), run.id);
+  await beat();
   await clearSweepScratch(deps.kv);
-  const result = await restoreRun(deps, run.id, why);
+  const result = await restoreRun(deps, run.id, why, { beat });
+  await beat();
   const fresh = (await runs.get(run.id)) ?? run;
   const report = await deps.kv.get<RunReport>(RETENTION_KV.reports, run.id);
   if (report) {

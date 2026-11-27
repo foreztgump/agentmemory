@@ -27,7 +27,7 @@ function statusOf(outcome: Outcome): Response {
     case "busy":
       return { status_code: 409, body: { ...outcome, error: outcome.kind } };
     case "lease-lost":
-      return { status_code: 409, body: { error: "lease-lost", why: "another process took the sweep lease; the run stays open and the next sweep resumes it" } };
+      return { status_code: 409, body: { error: "lease-lost", why: "another process took the sweep lease; this call stopped part way, and repeating it settles the rest" } };
     case "off":
       return { status_code: 503, body: { error: "retention is off", why: outcome.why } };
     case "not-found":

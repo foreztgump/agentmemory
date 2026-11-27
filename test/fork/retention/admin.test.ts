@@ -9,7 +9,7 @@ vi.mock("../../../src/logger.js", () => ({
 
 import { readReport, restoreLeased } from "../../../src/fork/retention/admin.js";
 import { displace } from "../../../src/fork/retention/move.js";
-import { LEASE_STALE_MS, newRunRow } from "../../../src/fork/retention/run-store.js";
+import { LEASE_STALE_MS, newRunRow, RunStore } from "../../../src/fork/retention/run-store.js";
 import { itemKey, RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import type { Scheduler } from "../../../src/fork/retention/timers.js";
 import type { ItemRef, RunId, RunRow } from "../../../src/fork/retention/types.js";
@@ -17,7 +17,7 @@ import { resetSummarizeVeto } from "../../../src/fork/retention/veto.js";
 import type { StateKV } from "../../../src/state/kv.js";
 import { KV } from "../../../src/state/schema.js";
 import { liveRoutes } from "./api-fixtures.js";
-import { candidate, observation, rig, seedObservation, seedSeal, type Rig } from "./move-fixtures.js";
+import { candidate, NOW, observation, rig, seedObservation, seedSeal, type Rig } from "./move-fixtures.js";
 import { at, clocked, closedRun } from "./purge-fixtures.js";
 import { liveIds } from "./plan-fixtures.js";
 
@@ -179,6 +179,66 @@ describe("restore of an unfinished run with retention off, through the endpoint"
     const report = await call("report", { query: { runId: A } });
     expect(report.body["run"]).toMatchObject({ phase: "done", outcome: "restored", held: 0, restoredBecause: "restore requested; the run had stopped in phase apply" });
     expect(await call("restore", { body: { runId: A } })).toMatchObject({ status_code: 200, body: { kind: "done", restored: 0 } });
+  });
+});
+
+describe("a restore that loses its lease", () => {
+  it("by run: stops with lease-lost before it writes again, leaves the run row alone and does not release the new owner's lease", async () => {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    await heldRun(r);
+    const reached = gate();
+    const resume = gate();
+    const slow = pausingIterate(deps.kv, RETENTION_KV.vault(A), reached.open, resume.promise);
+    const restoring = restoreLeased({ ...deps, kv: slow }, { runId: A }, { every: () => ({ stop() {} }) });
+    await reached.promise;
+    clock.now = new Date(clock.now.getTime() + LEASE_STALE_MS + 1000);
+    expect(await new RunStore(deps.kv, deps.now).acquireLease("sweep-other")).toMatchObject({ held: true });
+    resume.open();
+    expect(await restoring).toEqual({ kind: "lease-lost" });
+    expect(await liveIds(r, "ses_p")).toEqual([]);
+    expect(await r.runs.get(A)).toMatchObject({ held: 3 });
+    expect(await leaseOwner(r)).toBe("sweep-other");
+  });
+
+  it("by refs: restores the refs before the takeover and none after", async () => {
+    const r = rig();
+    await heldRun(r);
+    let located = 0;
+    const stealing = new Proxy(r.kv, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (prop !== "get") return typeof value === "function" ? value.bind(target) : value;
+        return async (scope: string, key: string) => {
+          if (scope === RETENTION_KV.items && ++located === 1) await target.set(RETENTION_KV.control, "lease", { owner: "sweep-other", heartbeatAt: NOW.toISOString() });
+          return target.get(scope, key);
+        };
+      },
+    }) as StateKV;
+    const result = await restoreLeased({ ...r.deps, kv: stealing }, { refs: [obs("ses_p", "p1"), obs("ses_p", "p2")] }, { every: () => ({ stop() {} }) });
+    expect(result).toEqual({ kind: "lease-lost" });
+    expect(await liveIds(r, "ses_p")).toEqual(["p1"]);
+    expect(await leaseOwner(r)).toBe("sweep-other");
+  });
+
+  it("stops renewing once a renewal finds the lease gone", async () => {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    await heldRun(r);
+    let stopped = 0;
+    let renew: () => Promise<void> | void = () => {};
+    const scheduler: Scheduler = { every: (_ms, tick) => { renew = tick; return { stop: () => { stopped++; } }; } };
+    const reached = gate();
+    const resume = gate();
+    const slow = pausingIterate(deps.kv, RETENTION_KV.vault(A), reached.open, resume.promise);
+    const restoring = restoreLeased({ ...deps, kv: slow }, { runId: A }, scheduler);
+    await reached.promise;
+    clock.now = new Date(clock.now.getTime() + LEASE_STALE_MS + 1000);
+    await new RunStore(deps.kv, deps.now).acquireLease("sweep-other");
+    await renew();
+    expect(stopped).toBe(1);
+    resume.open();
+    expect(await restoring).toEqual({ kind: "lease-lost" });
   });
 });
 
