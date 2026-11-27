@@ -200,6 +200,14 @@ interface CitedObservations {
 
 const SPILL_BATCH = 200;
 
+/** Empties the spill scope. A sweep that recovers a crashed run calls it, because `release` on a Protector that did not spill does nothing. */
+export async function clearSweepScratch(kv: StateKV): Promise<void> {
+  const keys = await kv.listKeys(RETENTION_KV.sweepScratch);
+  for (let start = 0; start < keys.length; start += SPILL_BATCH) {
+    await Promise.all(keys.slice(start, start + SPILL_BATCH).map((key) => kv.delete(RETENTION_KV.sweepScratch, key)));
+  }
+}
+
 async function collectCitedObservations(
   kv: StateKV,
   windows: Pick<Windows, "supersededDays">,
@@ -220,15 +228,9 @@ async function collectCitedObservations(
       await Promise.all(ids.slice(start, start + SPILL_BATCH).map((id) => kv.set(RETENTION_KV.sweepScratch, id, 1)));
     }
   };
-  const clearScratch = async (): Promise<void> => {
-    const keys = await kv.listKeys(RETENTION_KV.sweepScratch);
-    for (let start = 0; start < keys.length; start += SPILL_BATCH) {
-      await Promise.all(keys.slice(start, start + SPILL_BATCH).map((key) => kv.delete(RETENTION_KV.sweepScratch, key)));
-    }
-  };
   const release = async (): Promise<void> => {
     if (!spilled) return;
-    await clearScratch();
+    await clearSweepScratch(kv);
     spilled = false;
   };
   for await (const page of kv.iterate<Memory>(KV.memories)) {
@@ -236,7 +238,7 @@ async function collectCitedObservations(
       if (memory && stillCites(memory)) for (const id of memory.sourceObservationIds ?? []) ram.add(id);
     }
     if (!spilled && ram.size > spillIds) {
-      await clearScratch();
+      await clearSweepScratch(kv);
       spilled = true;
     }
     if (spilled) await flush();
