@@ -62,6 +62,17 @@ export class Vault {
     return this.kv.get<ItemLocator>(RETENTION_KV.items, itemKey(ref));
   }
 
+  /**
+   * True while a vault holds the row itself (a stage O, S or X claim, newest or `under`) and restore could still bring it
+   * back: purge has not begun on that entry. A trim claim holds only `source`, which has nowhere to go without the row.
+   */
+  async holdsRestorableRow(ref: ItemRef): Promise<boolean> {
+    const locator = await this.locate(ref);
+    const claim = [locator, locator?.under].find((one) => one && one.stage !== "T");
+    const entry = claim ? await this.get(claim.runId, ref) : null;
+    return entry !== null && !entry.purging && !entry.imageReleased;
+  }
+
   get(runId: RunId, ref: ItemRef): Promise<VaultEntry | null> {
     return this.kv.get<VaultEntry>(RETENTION_KV.vault(runId), itemKey(ref));
   }

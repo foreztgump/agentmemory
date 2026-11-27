@@ -186,23 +186,14 @@ async function deleteMemoryFacets(kv: StateKV, ids: readonly string[], beat: () 
 
 /**
  * `clear` commits the entry and `protected` reinstates it. Null sends it to `reinstateLocked` unjudged: it is mid-restore,
- * or its trashed row is live again.
+ * or its trashed row is live again. A trim entry restores only onto a live row, or onto one another run's vault still
+ * holds (a later stage O). With neither, the row was purged or forgotten, nothing can be restored into, and the entry is
+ * purged whatever protection says, or it would be held forever.
  */
 async function judge(pass: Pass, entry: VaultEntry, live: Live | null): Promise<Awaited<ReturnType<Protector["recheck"]>> | null> {
-  if (entry.stage === "T" && !live && !(await rowVaulted(pass.vault, entry))) return { kind: "clear" };
+  if (entry.stage === "T" && !live && !(await pass.vault.holdsRestorableRow(entry.ref))) return { kind: "clear" };
   if (entry.restoring || (entry.stage !== "T" && live)) return null;
   return pass.protect.recheck(entry);
-}
-
-/**
- * A trim entry restores only onto a live row. With none, its source has a place to go only while another run's vault
- * still holds the row (a later stage O); the locator names that claim. Without one the row was purged or forgotten,
- * nothing can be restored into, and the entry is purged whatever protection says, or it would be held forever.
- */
-async function rowVaulted(vault: Vault, entry: VaultEntry): Promise<boolean> {
-  const locator = await vault.locate(entry.ref);
-  const other = locator?.runId === entry.runId ? locator.under : locator;
-  return !!other && other.stage !== "T" && (await vault.get(other.runId, entry.ref)) !== null;
 }
 
 /** True when this call took the entry; false when a forget or a restore took it first. */

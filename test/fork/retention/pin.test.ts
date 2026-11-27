@@ -22,7 +22,7 @@ import { candidate, DIMS, keywordHits, memory, NOW, observation, openRun, rig, R
 import { at, clocked, closedRun, done, purge } from "./purge-fixtures.js";
 import { liveIds, sealedSession } from "./plan-fixtures.js";
 import { auditEntries, done as swept, indexHarness, sweep } from "./sweep-fixtures.js";
-import { anchor } from "./api-fixtures.js";
+import { anchor, ENFORCE, liveRoutes } from "./api-fixtures.js";
 
 const embed = vi.fn(async () => new Float32Array(DIMS).fill(0.5));
 const embedBatch = vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(DIMS).fill(0.5)));
@@ -145,6 +145,45 @@ describe("a pinned item survives", () => {
     expect(await vectorHits(r, 1)).toContain("p1");
     expect(await r.kv.get(RETENTION_KV.tombstones, itemKey(obs("ses_p", "p1")))).toBeNull();
     expect(await r.kv.get(RETENTION_KV.tombstones, itemKey(obs("ses_p", "p2")))).not.toBeNull();
+  });
+});
+
+describe("a pin needs something restore can bring back", () => {
+  const ref = obs("ses_t", "tt1");
+  const TRIM_RUN = "ret_trim_old" as RunId;
+  const OBS_RUN = "ret_obs_new" as RunId;
+
+  /** Run TRIM_RUN trims the row, then OBS_RUN soft deletes it; OBS_RUN's grace ends first and the purge takes the row. */
+  async function trimOnly() {
+    const r = rig();
+    const row = await seedObservation(r, observation("tt1", "ses_t"), { seed: 1 });
+    const seal = await seedSeal(r, "ses_t", 1);
+    await closedRun(r, TRIM_RUN, [await candidate(r, "T", row, seal)], { closedAt: NOW });
+    const trimmed = (await r.kv.get<typeof row>(KV.observations("ses_t"), "tt1"))!;
+    await closedRun(r, OBS_RUN, [await candidate(r, "O", trimmed, seal)], { closedAt: at(-48) });
+    const cases = await anchor(r);
+    const clock = { now: at(1) };
+    const { call } = liveRoutes(r, clock, { env: { ...ENFORCE, AM_RETENTION_RECALL_CASES: cases } });
+    expect(await call("purge", { body: { dryRun: false } })).toMatchObject({ status_code: 200, body: { purged: 1 } });
+    expect(await r.vault.get(TRIM_RUN, ref)).not.toBeNull();
+    return { r, clock, call };
+  }
+
+  it("a trim entry whose row is gone everywhere is not found: nothing could be restored, so no pin is written", async () => {
+    const { r, clock, call } = await trimOnly();
+    expect(await call("pin", { body: { ref, reason: "the raw source must survive", who: "dana" } })).toMatchObject({ status_code: 404 });
+    expect(await r.kv.get(RETENTION_KV.pins, itemKey(ref))).toBeNull();
+    clock.now = at(25);
+    expect(await call("purge", { body: { dryRun: false } })).toMatchObject({ status_code: 200, body: { purged: 1 } });
+    expect(await r.vault.get(TRIM_RUN, ref)).toBeNull();
+  });
+
+  it("an entry purge has committed is not found either: the purge finishes it whatever a pin says", async () => {
+    const r = rig();
+    const row = await seedObservation(r, observation("p1", "ses_p"), { seed: 1 });
+    await closedRun(r, RUN, [await candidate(r, "O", row, await seedSeal(r, "ses_p", 1))]);
+    await r.vault.update({ ...(await r.vault.get(RUN, obs("ses_p", "p1")))!, purging: true });
+    expect(await pinItem(r.deps, { ref: obs("ses_p", "p1"), who: "a", reason: "b" })).toEqual({ kind: "not-found" });
   });
 });
 

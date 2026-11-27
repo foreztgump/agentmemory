@@ -18,7 +18,9 @@ const sessionOf = (ref: ItemRef): Record<string, string> => (ref.kind === "obser
 
 /**
  * D3: writes the pin `Protector.judge` reads first (`mem:retention:pins`), under the item's lock. An item that is neither
- * live nor held in a vault is not found, so the scope cannot fill with pins for ids that never existed. A pin on a
+ * live nor restorable from a vault is not found, so the scope cannot fill with pins for ids that never existed, and a pin
+ * never promises what purge will not keep: a trim entry whose row is gone everywhere, or an entry purge has committed,
+ * is purged whatever a pin says. Purge and the pin share the item lock, so a pin it accepts reaches purge's recheck. A pin on a
  * demoted memory un-demotes it in the same hold, from its stored vector with no embedding call (R3), because a demote
  * is never purged and nothing else would bring it back. A pin on a vaulted item leaves it there (design 4.6): purge
  * rechecks protection at the end of grace and restores a pinned entry.
@@ -28,7 +30,7 @@ export async function pinItem(deps: RetentionDeps, req: { readonly ref: ItemRef;
   const vault = new Vault(deps.kv);
   const done = await withKeyedLock(lockOf(ref), async () => {
     const [live, claim] = await Promise.all([deps.kv.get(scopeOf(ref), ref.id), vault.locate(ref)]);
-    if (!live && !claim) return null;
+    if (!live && !(await vault.holdsRestorableRow(ref))) return null;
     const pin: Pin = { ref, who: req.who, reason: req.reason, pinnedAt: deps.now().toISOString() };
     await deps.kv.set(RETENTION_KV.pins, itemKey(ref), pin);
     const undemoted = ref.kind === "memory" && (await reinstateDemoteLocked(deps, ref.id))?.restored === true;
