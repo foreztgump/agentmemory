@@ -252,6 +252,36 @@ describe("file context index under concurrent and failed writes", () => {
     await expectSameAsLegacy(store, h, ids);
   });
 
+  it("drops a row deleted between a failed scan and the retry", async () => {
+    const store: Store = new Map();
+    const ids = seed(store, 20);
+    const h = worker(store, true);
+    await expectSameAsLegacy(store, h, ids);
+    const target = ids[ids.length - 1]!;
+    await h.kv.set(KV.sessions, "ses-late", { id: "ses-late", project: "p1", cwd: "/tmp", startedAt: "2027-03-01T00:00:00.000Z", status: "active" });
+    await h.kv.set(KV.observations("ses-late"), "obs_doomed", row("obs_doomed", "ses-late", "src/index.ts"));
+    const fresh = worker(store, true);
+    const trigger = fresh.sdk.trigger;
+    let failed = false;
+    fresh.sdk.trigger = async (req: Req) => {
+      if (!failed && req.function_id === "state::get" && req.payload.scope === KV.sessions) {
+        const value = await trigger(req);
+        if (req.payload.key === target) {
+          failed = true;
+          throw new Error("kvrocks timeout");
+        }
+        return value;
+      }
+      return trigger(req);
+    };
+    await expect(fresh.fileContext({ files: ["src/index.ts"] })).rejects.toThrow("kvrocks timeout");
+    fresh.sdk.trigger = trigger;
+    await fresh.kv.delete(KV.observations("ses-late"), "obs_doomed");
+    await fresh.kv.delete(KV.sessions, "ses-late");
+    expect(await fresh.fileContext({ files: ["src/index.ts"] })).not.toContain("title-obs_doomed");
+    await expectSameAsLegacy(store, fresh, ids);
+  });
+
   it("reads nothing on a warm call and only the changed rows after a capture", async () => {
     const store: Store = new Map();
     const ids = seed(store, 500);
