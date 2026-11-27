@@ -46,8 +46,9 @@ function sessionFields(row: unknown): Fields<SessionEntry> {
 function postingFields(row: unknown): Fields<Posting> | null {
   const { id, type, title, narrative, importance, timestamp, files } = asRecord(row);
   if (!title || !((importance as number) >= 4)) return null;
-  if (!Array.isArray(files) || !files.every((f) => typeof f === "string")) return null;
-  return { id, type, title, narrative, importance, timestamp, files: [...files] } as Fields<Posting>;
+  const paths = Array.isArray(files) ? files.filter((f): f is string => typeof f === "string") : [];
+  if (paths.length === 0) return null;
+  return { id, type, title, narrative, importance, timestamp, files: paths } as Fields<Posting>;
 }
 
 async function readByKeys(kv: StateKV, scope: string): Promise<Array<[string, unknown]>> {
@@ -93,10 +94,11 @@ class ScopeMirror<P extends Ordered> {
     private readonly load: Loader,
   ) {}
 
-  noteWrite(key: string, deleted: boolean): void {
+  /** `removed` means the key is known gone; any other write, a failed delete included, re-reads the key. */
+  noteWrite(key: string, removed: boolean): void {
     if (!this.loaded && !this.loading) return;
-    if (deleted && this.loaded) this.apply(key, null);
-    if (!deleted || this.loading || this.reading.has(key)) this.dirty.add(key);
+    if (removed && this.loaded) this.apply(key, null);
+    if (!removed || this.loading || this.reading.has(key)) this.dirty.add(key);
   }
 
   /** Rows in insertion order. A new array whenever a row changes, so identity can key caches. */
@@ -192,9 +194,10 @@ export class FileContextIndex {
     stats: ObservationStats,
   ) {
     this.sessions = new ScopeMirror<SessionEntry>(kv, KV.sessions, sessionFields, readByKeys);
-    stats.onWrite((scope, key, deleted) => {
-      if (scope === KV.sessions) this.sessions.noteWrite(key, deleted);
-      else this.postings.get(scope)?.mirror.noteWrite(key, deleted);
+    stats.onWrite((scope, key, deleted, failed) => {
+      const removed = deleted && !failed;
+      if (scope === KV.sessions) this.sessions.noteWrite(key, removed);
+      else this.postings.get(scope)?.mirror.noteWrite(key, removed);
     });
   }
 

@@ -16,7 +16,7 @@ const READY_VERSION = 2;
 const STATS = Symbol.for("agentmemory.fork.observationStats");
 
 type UpdateOp = { type: string; path: string; value?: unknown };
-export type WriteListener = (scope: string, key: string, deleted: boolean) => void;
+export type WriteListener = (scope: string, key: string, deleted: boolean, failed: boolean) => void;
 
 export function sessionOf(scope: string): string | null {
   return scope.startsWith(OBS_PREFIX) && scope.length > OBS_PREFIX.length ? scope.slice(OBS_PREFIX.length) : null;
@@ -71,16 +71,16 @@ export class ObservationStats {
 
   constructor(private readonly base: StateKV) {}
 
-  /** Calls `listener` after every set, update and delete on any scope, including when the write throws. Returns the unsubscribe function. */
+  /** Calls `listener` after every set, update and delete on any scope. `failed` means the write threw, so the row may or may not have changed. Returns the unsubscribe function. */
   onWrite(listener: WriteListener): () => void {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);
   }
 
-  private notify(scope: string, key: string, deleted: boolean): void {
+  private notify(scope: string, key: string, deleted: boolean, failed: boolean): void {
     for (const listener of this.listeners) {
       try {
-        listener(scope, key, deleted);
+        listener(scope, key, deleted, failed);
       } catch (error) {
         logger.warn("observation stats write listener failed", { error: String(error) });
       }
@@ -129,15 +129,9 @@ export class ObservationStats {
     deleted = false,
   ): Promise<T> {
     const sessionId = sessionOf(scope);
-    if (sessionId === null) {
-      try {
-        return await write();
-      } finally {
-        this.notify(scope, key, deleted);
-      }
-    }
-    return this.lock(sessionId, async () => {
-      try {
+    if (sessionId === null) return this.notifying(scope, key, deleted, write);
+    return this.lock(sessionId, () =>
+      this.notifying(scope, key, deleted, async () => {
         const before = await this.loadLocked(sessionId);
         const oldRow = await this.base.get(scope, key);
         const result = await write();
@@ -145,10 +139,19 @@ export class ObservationStats {
         const after = shift(before, contribution(oldRow), contribution(newRow));
         await this.storeLocked(sessionId, after, before.rows);
         return result;
-      } finally {
-        this.notify(scope, key, deleted);
-      }
-    });
+      }),
+    );
+  }
+
+  private async notifying<T>(scope: string, key: string, deleted: boolean, work: () => Promise<T>): Promise<T> {
+    try {
+      const result = await work();
+      this.notify(scope, key, deleted, false);
+      return result;
+    } catch (error) {
+      this.notify(scope, key, deleted, true);
+      throw error;
+    }
   }
 
   private async loadLocked(sessionId: string): Promise<Tally> {

@@ -1,5 +1,5 @@
 // Pre-tool-use hook end to end (TEE-1191): spawns the built hook once per file, as Claude Code does on a Read,
-// and times spawn to exit. Runs inside the agentmemory container, so the hook reaches the server on loopback:
+// and times spawn to close. Runs inside the agentmemory container, so the hook reaches the server on loopback:
 //
 //   docker cp bench/fork/file-context/hook-e2e.mjs <container>:/tmp/ && docker cp files.json <container>:/tmp/
 //   docker exec -w /opt/agentmemory <container> node /tmp/hook-e2e.mjs /tmp/files.json [project]
@@ -26,7 +26,7 @@ function runHook(file) {
     let out = "";
     child.stdout.on("data", (d) => (out += d));
     child.on("error", reject);
-    child.on("exit", () => resolve({ ms: performance.now() - started, injected: out.length > 0 }));
+    child.on("close", () => resolve({ ms: performance.now() - started, injected: out.length > 0 }));
     child.stdin.end(payload);
   });
 }

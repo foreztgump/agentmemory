@@ -282,6 +282,46 @@ describe("file context index under concurrent and failed writes", () => {
     await expectSameAsLegacy(store, fresh, ids);
   });
 
+  it("keeps serving an observation and a session whose delete threw", async () => {
+    const store: Store = new Map();
+    const ids = seed(store, 20);
+    const h = worker(store, true);
+    const kept = ids[ids.length - 1]!;
+    const other = ids[ids.length - 2]!;
+    await h.kv.set(KV.observations(kept), "obs_kept", row("obs_kept", kept, "src/kept.ts"));
+    await h.kv.set(KV.observations(other), "obs_other", row("obs_other", other, "src/other.ts"));
+    await expectSameAsLegacy(store, h, ids);
+    expect(await h.fileContext({ files: ["src/kept.ts", "src/other.ts"] })).toContain("title-obs_other");
+    const trigger = h.sdk.trigger;
+    h.sdk.trigger = async (req: Req) => {
+      if (req.function_id === "state::delete" && (req.payload.key === "obs_kept" || req.payload.key === other)) {
+        throw new Error("kvrocks timeout");
+      }
+      return trigger(req);
+    };
+    await expect(h.kv.delete(KV.observations(kept), "obs_kept")).rejects.toThrow("kvrocks timeout");
+    await expect(h.kv.delete(KV.sessions, other)).rejects.toThrow("kvrocks timeout");
+    h.sdk.trigger = trigger;
+    const context = await h.fileContext({ files: ["src/kept.ts", "src/other.ts"] });
+    expect(context).toContain("title-obs_kept");
+    expect(context).toContain("title-obs_other");
+    await expectSameAsLegacy(store, h, ids);
+  });
+
+  it("serves a row whose files list holds a non-string entry after its match", async () => {
+    const store: Store = new Map();
+    const ids = seed(store, 20);
+    const target = ids[ids.length - 1]!;
+    store.get(KV.observations(target))!.set("obs_mixed", { ...row("obs_mixed", target, "src/mixed.ts"), files: ["src/mixed.ts", 42, null] });
+    const h = worker(store, true);
+    const legacy = worker(store, false);
+    for (const files of [["src/mixed.ts"], ["./src/mixed.ts"], ["mixed.ts"]]) {
+      const expected = await legacy.fileContext({ files });
+      expect(expected).toContain("title-obs_mixed");
+      expect(await h.fileContext({ files })).toEqual(expected);
+    }
+  });
+
   it("reads nothing on a warm call and only the changed rows after a capture", async () => {
     const store: Store = new Map();
     const ids = seed(store, 500);

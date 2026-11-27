@@ -26,9 +26,15 @@ async function getJson<T>(path: string): Promise<T> {
 async function postTimed(path: string, body: unknown): Promise<{ ms: number; body: unknown }> {
   const started = performance.now();
   const res = await fetch(`${BASE}${path}`, { method: "POST", headers: HEADERS, body: JSON.stringify(body), signal: AbortSignal.timeout(600_000) });
-  const parsed = await res.json();
+  const text = await res.text();
   const ms = performance.now() - started;
-  if (!res.ok) throw new Error(`POST ${path} -> ${res.status}: ${JSON.stringify(parsed).slice(0, 200)}`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = undefined;
+  }
+  if (!res.ok || parsed === undefined) throw new Error(`POST ${path} -> ${res.status}: ${text.slice(0, 200)}`);
   return { ms, body: parsed };
 }
 
