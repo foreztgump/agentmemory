@@ -2,11 +2,12 @@ import { logger } from "../../logger.js";
 import { createGraphIndexReader, type GraphIndexReader } from "../../state/graph-retrieval-index.js";
 import type { StateKV } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
-import type { CompressedObservation, Memory, RetentionScore, Session } from "../../types.js";
+import type { CompressedObservation, Memory, Session } from "../../types.js";
 import type { ActiveClock } from "./clock.js";
 import { hiddenFromIndex } from "./indexable.js";
 import { mintChainProof, type Candidate, type ChainProof, type SealProof } from "./protect.js";
 import { RETENTION_KV } from "./scopes.js";
+import { retentionScore } from "./score.js";
 import { RETENTION_COLD_SCORE, RETENTION_PAGE_SIZE } from "./settings.js";
 import type { Cursor, SessionSeal, Stage, Windows } from "./types.js";
 
@@ -33,7 +34,8 @@ import type { Cursor, SessionSeal, Stage, Windows } from "./types.js";
  *  T  rows older than trimDays whose `source` is not already truncated
  *  X  forgetAfter in the past, whatever isLatest says (soft delete, then grace, instead of auto-forget's hard delete)
  *  S  isLatest=false, successor resolved (ChainProof), stopped being latest (`updatedAt`) more than supersededDays ago
- *  C  latest, not already demoted, older than coldDays, retention score below RETENTION_COLD_SCORE (a memory with no score is never cold).
+ *  C  latest, not already demoted, older than coldDays, retention score below RETENTION_COLD_SCORE. The score is computed
+ *     here from the memory and its access log (score.ts), never read from mem:retention, which nothing refreshes.
  *     Type, deliberate saves and access are the Protector's signals, so the report counts them.
  * "Older than" is the clock's cutoff rule (clock.ts): `t < clock.cutoffForActiveDays(project, days)`. A memory
  * with no `project` reads the clock of project "", which has no active days, so only a zero window ages it.
@@ -162,8 +164,9 @@ async function* planMemories(kv: StateKV, clock: ActiveClock, windows: Windows, 
   for (let start = 0; start < rest.length; start += RETENTION_PAGE_SIZE) {
     const slice = rest.slice(start, start + RETENTION_PAGE_SIZE);
     const rows = (await kv.getMany<Memory>(KV.memories, slice)).filter((row): row is Memory => row !== null);
-    const scores = await kv.getMany<RetentionScore>(KV.retentionScores, rows.filter((m) => m.isLatest).map((m) => m.id));
-    const scoreOf = new Map(rows.filter((m) => m.isLatest).map((m, i) => [m.id, scores[i]?.score]));
+    const latest = rows.filter((m) => m.isLatest);
+    const logs = await kv.getMany<unknown>(KV.accessLog, latest.map((m) => m.id));
+    const scoreOf = new Map(latest.map((m, i) => [m.id, retentionScore(m, logs[i], now)]));
     const candidates: Candidate[] = [];
     for (const row of rows) {
       const project = row.project ?? "";
@@ -174,7 +177,7 @@ async function* planMemories(kv: StateKV, clock: ActiveClock, windows: Windows, 
         successors ??= await successorIndex(kv);
         const proof = await proveChain(kv, row, successors);
         if (proof) candidates.push({ project, stage: "S", ref, row, proof, reason: reasonOf("S", project, row.updatedAt, windows.supersededDays) });
-      } else if (row.isLatest && !hiddenFromIndex(row) && older(project, row.createdAt, windows.coldDays) && (scoreOf.get(row.id) ?? Infinity) < RETENTION_COLD_SCORE) {
+      } else if (row.isLatest && !hiddenFromIndex(row) && older(project, row.createdAt, windows.coldDays) && scoreOf.get(row.id)! < RETENTION_COLD_SCORE) {
         candidates.push({ project, stage: "C", ref, row, reason: reasonOf("C", project, row.createdAt, windows.coldDays) });
       }
     }

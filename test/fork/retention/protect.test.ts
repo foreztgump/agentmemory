@@ -11,7 +11,7 @@ import { itemKey, RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import { RETENTION_IMPORTANCE_FLOOR, RETENTION_SPILL_IDS } from "../../../src/fork/retention/settings.js";
 import { KV } from "../../../src/state/schema.js";
 import type { Memory } from "../../../src/types.js";
-import { memory, NOW, observation, openRun, RUN, rig, seedMemory, seedSession } from "./move-fixtures.js";
+import { memory, NOW, observation, openRun, RECENT, RUN, rig, seedMemory, seedSession } from "./move-fixtures.js";
 import { candidatesOf, clockOf, judgeAll, pin, planAll, sealedSession, ZERO } from "./plan-fixtures.js";
 import { displace } from "../../../src/fork/retention/move.js";
 
@@ -84,7 +84,7 @@ describe("cited-by-memory", () => {
     const r = rig();
     await sealedSession(r, "ses_a", 0, { rows: [observation("shared", "ses_a"), observation("own_a", "ses_a")] });
     await sealedSession(r, "ses_b", 0, { rows: [observation("shared", "ses_b")] });
-    await seedMemory(r, memory("m_cites", { forgetAfter: undefined, sourceObservationIds: ["shared"] }));
+    await seedMemory(r, memory("m_cites", { ...RECENT, forgetAfter: undefined, sourceObservationIds: ["shared"] }));
     const { protectedBy, cleared } = await judgeAll(r, ZERO, await planned(r));
     expect(protectedBy).toEqual({ "obs:5:ses_a:shared": "cited-by-memory", "obs:5:ses_b:shared": "cited-by-memory" });
     expect(cleared.map((c) => c.ref.id)).toEqual(["own_a"]);
@@ -108,8 +108,8 @@ describe("cited-by-memory", () => {
   it("spills the cited set to the sweep scratch scope above the threshold, protects the same rows and empties it on release", async () => {
     const r = rig();
     await sealedSession(r, "ses_a", 0, { rows: ["a", "b", "c", "d", "e", "f"].map((id) => observation(id, "ses_a")) });
-    await seedMemory(r, memory("m_1", { forgetAfter: undefined, sourceObservationIds: ["a", "b", "c"] }));
-    await seedMemory(r, memory("m_2", { forgetAfter: undefined, sourceObservationIds: ["d", "e"] }));
+    await seedMemory(r, memory("m_1", { ...RECENT, forgetAfter: undefined, sourceObservationIds: ["a", "b", "c"] }));
+    await seedMemory(r, memory("m_2", { ...RECENT, forgetAfter: undefined, sourceObservationIds: ["d", "e"] }));
     await r.kv.set(RETENTION_KV.sweepScratch, "stale", 1);
     const protector = await createProtector(r.kv, ZERO, await clockOf(r), { spillIds: 2 });
     expect((await r.kv.listKeys(RETENTION_KV.sweepScratch)).sort()).toEqual(["a", "b", "c", "d", "e"]);

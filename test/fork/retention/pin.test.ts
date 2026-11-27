@@ -191,7 +191,6 @@ describe("a pin that lands after the Protector judged the item and before the mo
   it("a sweep's demote: the pin wins, the memory stays live and indexed, and a second sweep leaves it", async () => {
     const r = rig();
     await seedMemory(r, memory("mem_cold", { forgetAfter: undefined, createdAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z" }), { seed: 7 });
-    await r.kv.set(KV.retentionScores, "mem_cold", { memoryId: "mem_cold", score: 0.05 });
     const cases = await anchor(r);
     const key = itemKey(mem("mem_cold"));
     const get = r.kv.get.bind(r.kv);
@@ -266,7 +265,6 @@ describe("pinning a demoted memory", () => {
   it("a later sweep does not demote it again", async () => {
     const r = await demoted();
     await pinItem(r.deps, { ref: mem("mem_cold"), who: "owner", reason: "needed" });
-    await r.kv.set(KV.retentionScores, "mem_cold", { memoryId: "mem_cold", score: 0.05 });
     const cases = await anchor(r);
     const result = swept(await sweep(r, indexHarness(r, cases), { dryRun: false }));
     expect(result.report.perStage.C.moved).toBe(0);

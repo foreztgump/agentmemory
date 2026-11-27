@@ -143,6 +143,8 @@ An unknown job id answers 404 and a malformed one 400. A 404 for an id a 202 han
 3. During the grace period `GET report` shows `held` (rows still restorable) and `graceEndsAt`. Restore one item or a whole run with the restore route. The daily purge deletes what is still held after `graceEndsAt` and sets `purgedAt`.
 4. Pin what must never go. A pinned item is skipped by the sweep and by the purge. Pinning a demoted memory brings it back at once. Pinning an item that is already in the vault does not restore it: the purge restores it at the end of grace, or restore it now.
 
+**Cold memories (stage C).** Each sweep scores every latest memory as it plans, with upstream's retention score at its defaults (`lambda` 0.01, `sigma` 0.3), from the memory's age and its access log. You do not need to run `mem::retention-score` first. The plan no longer reads the stored scores that function writes. A memory is demoted when it is older than the `cold` window, scores below 0.15, and no protection signal holds it (a pin, `architecture` or `preference` type, a user or agent save, an insight citing it, or an access inside the cold window).
+
 Restore, pin and report keep working when retention is switched off, so the kill switch never blocks an undo. Restoring a run a sweep left unfinished also closes it, with retention on or off.
 
 ## Rebasing
