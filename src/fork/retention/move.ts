@@ -55,6 +55,7 @@ export interface DisplaceResult {
   /**
    * Why nothing moved. `unreadable`: a satellite could not be read, in practice the stored vector, so the row stays
    * live (a rejected read is not "no vector"). `row-changed`: the live row was rewritten after the plan read it.
+   * `already-demoted`: a stage C candidate whose live row was marked between the plan and this hold.
    */
   readonly skipped?: "unreadable" | "row-changed" | "gone" | "nothing-to-trim" | "already-demoted";
 }

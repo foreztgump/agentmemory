@@ -228,6 +228,16 @@ describe("un-demote", () => {
     expect(await r.kv.listKeys(RETENTION_KV.demoted)).toEqual([]);
   });
 
+  it("a null mark from imported data indexes the row instead of throwing", async () => {
+    const r = boot();
+    const row = { ...cold(), retention: null } as unknown as Memory;
+    await r.kv.set(KV.memories, "mem_cold", row);
+
+    expect(hiddenFromIndex(row)).toBe(false);
+    await rebuildKeywordIndex(r.kv);
+    expect(r.runtime.keyword.has("mem_cold")).toBe(true);
+  });
+
   it("holds mem:remember", async () => {
     const { r } = await demoted();
     let release!: () => void;

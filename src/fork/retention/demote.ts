@@ -86,6 +86,7 @@ export function reinstateDemote(deps: RetentionDeps, memoryId: string): Promise<
 }
 
 /** The records one run wrote, paged: the scope is keyed by memory id, so a run's demotes are found by scanning it. */
+// ponytail: scans the whole demoted scope per call; key records by run (or add a per-run index) if demotes grow large.
 export async function* demotedBy(kv: StateKV, runId: RunId): AsyncGenerator<DemoteRecord> {
   for await (const page of kv.iterate<DemoteRecord>(RETENTION_KV.demoted, { pageSize: RETENTION_PAGE_SIZE })) {
     for (const record of page) if (record?.runId === runId) yield record;

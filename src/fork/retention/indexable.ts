@@ -8,7 +8,7 @@ import type { Memory } from "../../types.js";
  * so neither the reconciler nor a restart re-adds a demoted memory (grounding: R8 in disk mode).
  *
  * The mark is presence, not truthiness: `demotedAt` is an ISO timestamp the sweep writes, and any value
- * other than `undefined` (an empty string included) hides the memory, so no writer un-demotes by accident.
+ * other than `undefined` (an empty string included) hides the memory. A `retention` of null, from imported data, is no mark, so no writer un-demotes by accident.
  * The mark names the memory it was written on, so a writer that copies a row into a new memory (`mem::evolve`
  * spreads the old one) does not hide the new version with the old one's mark.
  *
@@ -17,5 +17,5 @@ import type { Memory } from "../../types.js";
  */
 export function hiddenFromIndex(memory: Pick<Memory, "id" | "retention"> | null | undefined): boolean {
   const mark = memory?.retention;
-  return mark !== undefined && mark.demotedAt !== undefined && mark.memoryId === memory?.id;
+  return mark != null && mark.demotedAt !== undefined && mark.memoryId === memory?.id;
 }

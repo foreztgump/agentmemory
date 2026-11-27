@@ -81,7 +81,9 @@ export interface Protector {
    * It does not evaluate the memory-only signals, memory-type and deliberate-save: they apply at stage C only, and a
    * demote is never a vault entry (`VaultEntry` has no stage C, `ItemLocator` neither, a demote adds nothing to
    * `RunRow.held`), so purge cannot reach one. `judge` evaluates them before a demote, and `displace` takes nothing
-   * else, so a protected memory is never demoted. Importance is read for stage O from the entry's row and for stage T
+   * else, so a memory protected when judged is never demoted. A pin, citation or access that lands between `judge`
+   * and the move is not seen, and stage C has no purge-time recheck; a demote is reversible, and slice 10's pin
+   * handler un-demotes a pinned memory. Importance is read for stage O from the entry's row and for stage T
    * from the live row (a trim entry holds no row), so a row that became important during grace is not purged.
    */
   recheck(entry: VaultEntry): Promise<{ readonly kind: "clear" } | { readonly kind: "protected"; readonly signal: SignalId }>;
