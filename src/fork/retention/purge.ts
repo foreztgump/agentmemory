@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { safeAudit } from "../../functions/audit.js";
 import { logger } from "../../logger.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
-import { collectAll, type StateKV } from "../../state/kv.js";
+import type { StateKV } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
 import type { Facet } from "../../types.js";
 import { loadActiveClock, MS_PER_DAY } from "./clock.js";
@@ -82,7 +82,7 @@ interface Pass {
  *      one is reinstated, not purged (design 4.6).
  *   2. a clear entry is marked `purging`, the commit point: from then on a restore defers it and a re-run finishes
  *      it whatever protection says. Nothing before this is irreversible.
- *   3. the page's memory facets go in one pass (`deleteMemoryFacets` reads the whole facet scope). An observation's
+ *   3. the page's memory facets go in one pass (`deleteMemoryFacets` pages the facet scope once, heartbeating per page). An observation's
  *      facets and access log are keyed by the bare id another session's row may share, so they stay (satellites.ts).
  *   4. per committed entry, under its lock, stages O, S and X: `finalize` per satellite (image reference released
  *      once with `imageReleased` first, then its hold; a memory's access log and retention score), the observation
@@ -137,7 +137,7 @@ async function purgeRun(pass: Pass, run: RunRow): Promise<PurgeResult> {
       tally = sum(tally, { ...NOTHING, purged: committed.length });
       continue;
     }
-    await deleteMemoryFacets(deps.kv, committed.filter((entry) => entry.ref.kind === "memory").map((entry) => entry.ref.id));
+    await deleteMemoryFacets(deps.kv, committed.filter((entry) => entry.ref.kind === "memory").map((entry) => entry.ref.id), pass.beat);
     for (const entry of committed) {
       if (await withKeyedLock(lockOf(entry.ref), () => finish(pass, run.id, entry.ref))) tally = sum(tally, { ...NOTHING, purged: 1 });
     }
@@ -171,13 +171,17 @@ async function commit(pass: Pass, runId: RunId, ref: ItemRef): Promise<Commit> {
  * swallows a failed read or delete; this throws, so the pass stops with the entries `purging` and a re-run deletes the
  * rest. A memory id is unique, so a facet naming one whose row is not live has no other target.
  */
-async function deleteMemoryFacets(kv: StateKV, ids: readonly string[]): Promise<void> {
+async function deleteMemoryFacets(kv: StateKV, ids: readonly string[], beat: () => Promise<void>): Promise<void> {
   if (ids.length === 0) return;
-  const gone = new Set<string>();
-  for (const id of ids) if ((await kv.get(KV.memories, id)) === null) gone.add(id);
-  for (const facet of await collectAll<Facet>(kv, KV.facets)) {
-    if (facet.targetType === "memory" && gone.has(facet.targetId)) await kv.delete(KV.facets, facet.id);
+  const rows = await Promise.all(ids.map((id) => kv.get(KV.memories, id)));
+  const gone = new Set(ids.filter((_, i) => rows[i] === null));
+  if (gone.size === 0) return;
+  const doomed: string[] = [];
+  for await (const page of kv.iterate<Facet>(KV.facets, { pageSize: RETENTION_PAGE_SIZE })) {
+    await beat();
+    for (const facet of page) if (facet?.targetType === "memory" && gone.has(facet.targetId)) doomed.push(facet.id);
   }
+  await Promise.all(doomed.map((id) => kv.delete(KV.facets, id)));
 }
 
 /**
