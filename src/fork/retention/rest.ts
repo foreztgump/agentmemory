@@ -97,7 +97,8 @@ export function registerRetentionTriggers(sdk: IIIClient, secret: string | undef
       const runId = parseRunId(raw, "runId");
       return runId.ok ? ok({ runId: runId.value }) : runId;
     }, "mem::retention-report"),
-  );  sdk.registerFunction(
+  );
+  sdk.registerFunction(
     "api::retention-job",
     route("job", (req) => {
       const id = parseJobId(req.query_params?.["id"], "id");
