@@ -40,10 +40,20 @@ export class Vault {
     return this.kv.set(RETENTION_KV.vault(entry.runId), itemKey(entry.ref), entry).then(() => undefined);
   }
 
-  /** Repairs a locator lost to a crash between the two writes of `put`. */
+  /**
+   * Repairs a locator lost to a crash between the two writes of `put`. The caller holds the item's lock.
+   * The entry goes on top unless the locator's head is a later move, as when a later run displaced the key
+   * after the crash: then it goes `under`, so the stack stays newest first.
+   */
   async relocate(entry: VaultEntry): Promise<void> {
     const locator = await this.locate(entry.ref);
-    if (locator?.runId !== entry.runId && locator?.under?.runId !== entry.runId) await this.put(entry);
+    if (locator?.runId === entry.runId || locator?.under?.runId === entry.runId) return;
+    const head = locator && (await this.get(locator.runId, entry.ref));
+    if (locator && !locator.under && head && head.movedAt > entry.movedAt) {
+      await this.kv.set<ItemLocator>(RETENTION_KV.items, itemKey(entry.ref), { ...locator, under: { runId: entry.runId, stage: entry.stage } });
+      return;
+    }
+    await this.put(entry);
   }
 
   locate(ref: ItemRef): Promise<ItemLocator | null> {

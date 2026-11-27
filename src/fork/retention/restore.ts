@@ -1,5 +1,6 @@
 import { safeAudit } from "../../functions/audit.js";
-import { reinstate, type ReinstateResult } from "./move.js";
+import { withKeyedLock } from "../../state/keyed-mutex.js";
+import { lockOf, reinstate, reinstateLocked, type ReinstateResult } from "./move.js";
 import type { Protector } from "./protect.js";
 import { RunStore } from "./run-store.js";
 import type { RetentionDeps } from "./satellites.js";
@@ -73,26 +74,42 @@ export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string)
  * Restores single items, located through mem:retention:items by `itemKey(ref)` (one point read each).
  * Takes refs, not bare ids: observation ids can repeat across imported sessions. An item with two claims, a trim
  * and a later stage O, is restored newest first, so one ref gives back the whole row. Demotes: slice 8.
+ *
+ * One ref's claims are walked under its item lock, so the locator read, the stale-claim cleanup and each
+ * reinstate see one state, against `displace` and `recoverRun`. A run is visited once per ref, so a locator that
+ * keeps naming a run it already named cannot loop.
  */
 export async function restoreItems(deps: RetentionDeps, refs: readonly ItemRef[], why: string): Promise<RestoreResult> {
   const vault = new Vault(deps.kv);
   const runs = new RunStore(deps.kv, deps.now);
   let result = EMPTY;
   for (const ref of refs) {
-    for (let claim = await vault.locate(ref); claim; claim = await vault.locate(ref)) {
-      const entry = await vault.get(claim.runId, ref);
-      if (!entry) {
-        await vault.take(claim.runId, ref);
-        continue;
-      }
-      const one = outcome(await reinstate(deps, vault, entry));
+    const claimed = await withKeyedLock(lockOf(ref), () => restoreClaims(deps, vault, ref));
+    for (const { runId, one } of claimed) {
       result = add(result, one);
-      await release(runs, claim.runId, taken(one));
-      if (one.deferred) break;
+      await release(runs, runId, taken(one));
     }
   }
   await audit(deps, refs.map(itemKey), { why }, result);
   return result;
+}
+
+/** The caller holds `lockOf(ref)`; `reinstateLocked` is the variant that assumes it. */
+async function restoreClaims(deps: RetentionDeps, vault: Vault, ref: ItemRef): Promise<{ runId: RunId; one: RestoreResult }[]> {
+  const claimed: { runId: RunId; one: RestoreResult }[] = [];
+  const visited = new Set<RunId>();
+  for (let claim = await vault.locate(ref); claim && !visited.has(claim.runId); claim = await vault.locate(ref)) {
+    visited.add(claim.runId);
+    const entry = await vault.get(claim.runId, ref);
+    if (!entry) {
+      await vault.take(claim.runId, ref);
+      continue;
+    }
+    const one = outcome(await reinstateLocked(deps, vault, entry));
+    claimed.push({ runId: claim.runId, one });
+    if (one.deferred) break;
+  }
+  return claimed;
 }
 
 export interface PurgeResult {

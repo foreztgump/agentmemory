@@ -19,11 +19,19 @@ type ObservationRef = Extract<ItemRef, { kind: "observation" }>;
  * The one definition of `EntryBase.rowFingerprint`: displace writes it, reinstate and recoverRun compare it.
  * An observation hashes the summary fingerprint's field set (id, type, title, narrative, facts, files,
  * concepts; design 4.4), which excludes `source`, so the hash of the live row before a stage T rewrite
- * equals the hash after it. A memory hashes the full row.
+ * equals the hash after it. A memory hashes the full row in a canonical form (object keys sorted, arrays
+ * kept in order), so a row rebuilt with its fields in another order hashes the same.
  */
 export function fingerprintRow(row: Live): string {
-  const shape = "narrative" in row ? [row.id, row.type, row.title, row.narrative, row.facts, row.files, row.concepts] : row;
+  const shape = "narrative" in row ? [row.id, row.type, row.title, row.narrative, row.facts, row.files, row.concepts] : canonical(row);
   return createHash("sha256").update(JSON.stringify(shape)).digest("hex");
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(record).sort().map((key) => [key, canonical(record[key])]));
 }
 
 const scopeOf = (ref: ItemRef): string => (ref.kind === "memory" ? KV.memories : KV.observations(ref.sessionId));
@@ -32,7 +40,7 @@ const scopeOf = (ref: ItemRef): string => (ref.kind === "memory" ? KV.memories :
  * The lock every writer of the row holds: summarize publishes under `obs:<session>`, `mem::remember` and
  * `mem::forget` under `mem:remember`. The keyed mutex is not reentrant, so nothing inside it may call `sealSession`.
  */
-const lockOf = (ref: ItemRef): string => (ref.kind === "memory" ? "mem:remember" : `obs:${ref.sessionId}`);
+export const lockOf = (ref: ItemRef): string => (ref.kind === "memory" ? "mem:remember" : `obs:${ref.sessionId}`);
 
 const sizeOf = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 
@@ -76,10 +84,10 @@ async function attachSatellites(deps: RetentionDeps, entry: VaultEntry): Promise
  * Soft delete, trim or demote one cleared candidate. Only `Protector.clear` mints `Cleared`, so nothing
  * reaches this without its seal (T, O) or chain proof (S) and its protection verdict.
  *
- * trash (O, S, X): snapshot satellites (outside the lock; a read that rejects refuses the row), then under the
- *   item's keyed lock re-read the row (a row rewritten since the plan read it is skipped), set seal.trimmed for
- *   stage O, vault.put, delete the live row, detach satellites. The entry's rowFingerprint is `fingerprintRow`
- *   of the row as read here.
+ * trash (O, S, X): under the item's keyed lock re-read the row (a row rewritten since the plan read it is
+ *   skipped), snapshot satellites from it (a read that rejects refuses the row), set seal.trimmed for stage O,
+ *   vault.put, delete the live row, detach satellites. The entry's rowFingerprint is `fingerprintRow` of the
+ *   row as read here. The snapshot is inside the lock, so it is of the state that is deleted.
  * trim (T): vault.put({source}), rewrite the row with `source: {hookType, originalBytes, truncated: true}`
  *   (the source-budget shape); the row stays live and indexed, the summary fingerprint is unchanged.
  * demote (C): slice 8.
@@ -88,19 +96,19 @@ export async function displace(deps: RetentionDeps, vault: Vault, runId: RunId, 
   const disposition = STAGE_DISPOSITION[item.stage];
   if (disposition === "demote") throw new Error("demote is not implemented: slice 8");
   const { ref } = item;
-  let satellites: SatelliteSnapshots = {};
-  if (disposition === "trash") {
-    try {
-      satellites = await snapshotSatellites(deps, ref, item.row);
-    } catch {
-      return NOT_MOVED("unreadable");
-    }
-  }
   return withKeyedLock(lockOf(ref), async () => {
     const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
     if (!live) return NOT_MOVED("gone");
     const rowFingerprint = fingerprintRow(live);
     if (rowFingerprint !== fingerprintRow(item.row)) return NOT_MOVED("row-changed");
+    let satellites: SatelliteSnapshots = {};
+    if (disposition === "trash") {
+      try {
+        satellites = await snapshotSatellites(deps, ref, live);
+      } catch {
+        return NOT_MOVED("unreadable");
+      }
+    }
     const base = { runId, reason: item.reason, movedAt: deps.now().toISOString(), project: item.project, rowFingerprint, satellites };
     if (item.stage === "T") return trimRow(deps, vault, base, item.ref, live as CompressedObservation);
     if (item.stage === "O") await markTrimmed(deps, item.ref.sessionId, item.proof.seal);
@@ -155,25 +163,28 @@ export interface ReinstateResult {
  * move under way.
  */
 export function reinstate(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<ReinstateResult> {
+  return withKeyedLock(lockOf(entry.ref), () => reinstateLocked(deps, vault, entry));
+}
+
+/** `reinstate` for a caller that already holds `lockOf(entry.ref)`: the keyed mutex is not reentrant, so a caller holding it must not call `reinstate`. */
+export async function reinstateLocked(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<ReinstateResult> {
   const { ref } = entry;
-  return withKeyedLock(lockOf(ref), async () => {
-    const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
-    if (live && fingerprintRow(live) !== entry.rowFingerprint) {
-      await vault.take(entry.runId, ref);
-      return { restored: false, reembedNeeded: false };
-    }
-    if (entry.stage === "T" && !live) return { restored: false, reembedNeeded: false, deferred: true };
-    if (!entry.restoring) await vault.update({ ...entry, restoring: true });
-    if (entry.stage === "T") {
-      await deps.kv.set(scopeOf(ref), ref.id, { ...live, source: entry.source });
-      await vault.take(entry.runId, ref);
-      return { restored: true, reembedNeeded: false };
-    }
-    if (!live) await deps.kv.set(scopeOf(ref), ref.id, entry.row);
-    const { reembedNeeded } = await attachSatellites(deps, entry);
+  const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
+  if (live && fingerprintRow(live) !== entry.rowFingerprint) {
     await vault.take(entry.runId, ref);
-    return { restored: true, reembedNeeded };
-  });
+    return { restored: false, reembedNeeded: false };
+  }
+  if (entry.stage === "T" && !live) return { restored: false, reembedNeeded: false, deferred: true };
+  if (!entry.restoring) await vault.update({ ...entry, restoring: true });
+  if (entry.stage === "T") {
+    await deps.kv.set(scopeOf(ref), ref.id, { ...live, source: entry.source });
+    await vault.take(entry.runId, ref);
+    return { restored: true, reembedNeeded: false };
+  }
+  if (!live) await deps.kv.set(scopeOf(ref), ref.id, entry.row);
+  const { reembedNeeded } = await attachSatellites(deps, entry);
+  await vault.take(entry.runId, ref);
+  return { restored: true, reembedNeeded };
 }
 
 /** Un-demote: clear `retention.demotedAt`, reattach from `record.vector`, delete the record. Never embeds. Slice 8. */
@@ -185,7 +196,9 @@ export function reinstateDemote(deps: RetentionDeps, record: DemoteRecord): Prom
 
 /**
  * Settles a run that crashed mid-apply (R12), per disposition. Called first by every sweep that finds its
- * run row unfinished. Each entry is settled under the item's keyed lock, and `put`'s locator is repaired.
+ * run row unfinished. Each entry is settled under the item's keyed lock, and `put`'s locator is repaired
+ * under the same hold, from the entry as it is stored once the lock is held: the page was read earlier, and
+ * a restore that ran in between has changed or taken the entry (an entry that is gone is skipped).
  *  restoring: the entry was being restored; finish it (reinstate), never undo it.
  *  trash: live row present with the entry's fingerprint -> finish the move (delete row, detach); live row
  *    absent -> detach again; a live row with another fingerprint was rewritten since and stays, and the entry
@@ -204,14 +217,15 @@ export async function recoverRun(deps: RetentionDeps, vault: Vault, runId: RunId
   let finished = 0;
   let detachedAgain = 0;
   for await (const page of vault.pages(runId, RETENTION_PAGE_SIZE)) {
-    for (const entry of page) {
-      await vault.relocate(entry);
-      if (entry.restoring) {
-        await reinstate(deps, vault, entry);
-        finished++;
-        continue;
-      }
-      const settled = await withKeyedLock(lockOf(entry.ref), () => settle(deps, vault, entry));
+    for (const listed of page) {
+      const settled = await withKeyedLock(lockOf(listed.ref), async () => {
+        const entry = await vault.get(runId, listed.ref);
+        if (!entry) return "left";
+        await vault.relocate(entry);
+        if (!entry.restoring) return settle(deps, vault, entry);
+        await reinstateLocked(deps, vault, entry);
+        return "finished";
+      });
       if (settled === "finished") finished++;
       else if (settled === "detached") detachedAgain++;
     }
@@ -222,7 +236,7 @@ export async function recoverRun(deps: RetentionDeps, vault: Vault, runId: RunId
 async function settle(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<"finished" | "detached" | "left"> {
   const { ref } = entry;
   const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
-  const matches = live !== null && fingerprintRow(live) === entry.rowFingerprint;
+  const matches = live ? fingerprintRow(live) === entry.rowFingerprint : false;
   if (entry.stage === "T") {
     const source = (live as CompressedObservation | null)?.source;
     if (!matches || !source || source.truncated) return "left";

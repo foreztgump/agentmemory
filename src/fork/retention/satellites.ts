@@ -60,14 +60,13 @@ export const SATELLITES: readonly Satellite[] = [searchIndex(), captureEvent(), 
 
 type ObsEntry = Extract<VaultEntry, { ref: { kind: "observation" } }>;
 
-function indexOwnedElsewhere(deps: RetentionDeps, ref: ItemRef): boolean | Promise<boolean> {
+/** A remote keyword index answers `sessionOf` only after `prefetch`, so every check prefetches first when the port has it. */
+async function indexOwnedElsewhere(deps: RetentionDeps, ref: ItemRef): Promise<boolean> {
   if (ref.kind === "memory") return false;
   const { keyword } = deps.search();
-  const check = () => {
-    const owner = keyword.sessionOf(ref.id);
-    return owner !== undefined && owner !== ref.sessionId;
-  };
-  return keyword.prefetch ? keyword.prefetch([ref.id]).then(check) : check();
+  await keyword.prefetch?.([ref.id]);
+  const owner = keyword.sessionOf(ref.id);
+  return owner !== undefined && owner !== ref.sessionId;
 }
 
 function searchIndex(): Satellite {
@@ -81,11 +80,11 @@ function searchIndex(): Satellite {
     },
     async detach(deps, entry) {
       if (await indexOwnedElsewhere(deps, entry.ref)) return;
-      const { keyword, vector } = deps.search();
-      keyword.remove(entry.ref.id);
-      keyword.invalidateRevision(entry.ref.id);
-      vector?.remove(entry.ref.id);
-      deps.search().openPersistence().scheduleSave();
+      const runtime = deps.search();
+      runtime.keyword.remove(entry.ref.id);
+      runtime.keyword.invalidateRevision(entry.ref.id);
+      runtime.vector?.remove(entry.ref.id);
+      runtime.openPersistence().scheduleSave();
     },
     async attach(deps, entry) {
       if (entry.stage === "T") return;
