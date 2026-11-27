@@ -47,9 +47,10 @@ export function retentionHarness() {
         case "state::get": return structuredClone(store.get(p.scope)?.get(p.key) ?? null);
         case "state::set": {
           const had = scope(p.scope).has(p.key);
-          const old_value = scope(p.scope).get(p.key);
+          const old_value = structuredClone(scope(p.scope).get(p.key));
+          const new_value = structuredClone(p.value);
           scope(p.scope).set(p.key, structuredClone(p.value));
-          return had ? { old_value, new_value: structuredClone(p.value) } : { new_value: structuredClone(p.value) };
+          return had ? { old_value, new_value } : { new_value };
         }
         case "state::delete": store.get(p.scope)?.delete(p.key); return null;
         case "state::list": return [...(store.get(p.scope)?.values() ?? [])].map((v) => structuredClone(v));
