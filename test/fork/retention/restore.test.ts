@@ -221,6 +221,33 @@ describe("restoreItems", () => {
     expect(await r.vault.locate(obsRef("obs_1"))).toBeNull();
   });
 
+  it("releases the run of a claim it already restored when a later claim of the same ref fails", async () => {
+    const r = rig();
+    const A = "ret_a" as RunId;
+    const B = "ret_b" as RunId;
+    await openRun(r, A);
+    await openRun(r, B);
+    const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
+    const seal = await seedSeal(r, "ses_1", 1);
+    await displace(r.deps, r.vault, A, candidate("T", row, seal));
+    await displace(r.deps, r.vault, B, candidate("O", (await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))!, seal));
+    await r.runs.save({ ...(await r.runs.get(A))!, held: 1 });
+    await r.runs.save({ ...(await r.runs.get(B))!, held: 1 });
+    const failing = new Proxy(r.kv, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (prop !== "get") return typeof value === "function" ? value.bind(target) : value;
+        return (scope: string, key: string) =>
+          scope === RETENTION_KV.vault(A) ? Promise.reject(new Error("vault read failed")) : target.get(scope, key);
+      },
+    });
+
+    await expect(restoreItems({ ...r.deps, kv: failing }, [obsRef("obs_1")], "owner asked")).rejects.toThrow("vault read failed");
+
+    expect((await r.runs.get(B))!.held).toBe(0);
+    expect((await r.runs.get(A))!.held).toBe(1);
+  });
+
   it("restoring the trim's run while the row sits in a later run's vault keeps the raw source, and restoring that run first then finishes it", async () => {
     const r = rig();
     const A = "ret_a" as RunId;

@@ -44,6 +44,8 @@ export class Vault {
    * Repairs a locator lost to a crash between the two writes of `put`. The caller holds the item's lock.
    * The entry goes on top unless the locator's head is a later move, as when a later run displaced the key
    * after the crash: then it goes `under`, so the stack stays newest first.
+   * ponytail: two claims per ref (a trim under a later stage O); a third evicts the oldest from the locator,
+   * which leaves its entry restorable by run only. Make `under` a list if a stage can stack a third.
    */
   async relocate(entry: VaultEntry): Promise<void> {
     const locator = await this.locate(entry.ref);

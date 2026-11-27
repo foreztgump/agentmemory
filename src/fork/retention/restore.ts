@@ -83,20 +83,31 @@ export async function restoreItems(deps: RetentionDeps, refs: readonly ItemRef[]
   const vault = new Vault(deps.kv);
   const runs = new RunStore(deps.kv, deps.now);
   let result = EMPTY;
-  for (const ref of refs) {
-    const claimed = await withKeyedLock(lockOf(ref), () => restoreClaims(deps, vault, ref));
-    for (const { runId, one } of claimed) {
-      result = add(result, one);
-      await release(runs, runId, taken(one));
+  try {
+    for (const ref of refs) {
+      const claimed: Claimed[] = [];
+      try {
+        await withKeyedLock(lockOf(ref), () => restoreClaims(deps, vault, ref, claimed));
+      } finally {
+        for (const { runId, one } of claimed) {
+          result = add(result, one);
+          await release(runs, runId, taken(one));
+        }
+      }
     }
+  } finally {
+    await audit(deps, refs.map(itemKey), { why }, result);
   }
-  await audit(deps, refs.map(itemKey), { why }, result);
   return result;
 }
 
+interface Claimed {
+  readonly runId: RunId;
+  readonly one: RestoreResult;
+}
+
 /** The caller holds `lockOf(ref)`; `reinstateLocked` is the variant that assumes it. */
-async function restoreClaims(deps: RetentionDeps, vault: Vault, ref: ItemRef): Promise<{ runId: RunId; one: RestoreResult }[]> {
-  const claimed: { runId: RunId; one: RestoreResult }[] = [];
+async function restoreClaims(deps: RetentionDeps, vault: Vault, ref: ItemRef, claimed: Claimed[]): Promise<void> {
   const visited = new Set<RunId>();
   for (let claim = await vault.locate(ref); claim && !visited.has(claim.runId); claim = await vault.locate(ref)) {
     visited.add(claim.runId);
@@ -109,7 +120,6 @@ async function restoreClaims(deps: RetentionDeps, vault: Vault, ref: ItemRef): P
     claimed.push({ runId: claim.runId, one });
     if (one.deferred) break;
   }
-  return claimed;
 }
 
 export interface PurgeResult {
