@@ -72,6 +72,11 @@ export interface Protector {
   /**
    * The same signals for a vault entry, which carries no seal or chain proof and mints no `Cleared`. Purge
    * calls it with a Protector built for that pass, so it sees the current pins and citations.
+   *
+   * It does not evaluate the memory-only signals, memory-type and deliberate-save: no entry carries a subject
+   * for them, because they apply at stage C and this slice never displaces C. Slice 8 must not assume recheck
+   * covers them. Importance is read for stage O from the entry's row and for stage T from the live row (a trim
+   * entry holds no row), so a row that became important during grace is not purged.
    */
   recheck(entry: VaultEntry): Promise<{ readonly kind: "clear" } | { readonly kind: "protected"; readonly signal: SignalId }>;
   /** Hits per signal so far in this sweep, for the report (R1, R5). */
@@ -80,6 +85,12 @@ export interface Protector {
    * Empties `RETENTION_KV.sweepScratch` when this Protector spilled the cited set into it. Call it when the pass
    * ends. One spilling Protector at a time: the sweep lease admits it, and purge must not build a spilling one
    * while a sweep holds the lease.
+   *
+   * A sweep that crashes or aborts after spilling never calls it, and its scratch keys stay until the next
+   * Protector that spills clears them (`createProtector` does so at its first spill). A Protector that never
+   * spills clears nothing, and `release` on a Protector that did not spill is a no-op, so run recovery
+   * (slice 6) must clear the scope itself for a run it finds unfinished; calling `release` on a fresh
+   * Protector does not.
    */
   release(): Promise<void>;
 }
@@ -88,6 +99,10 @@ export interface Protector {
  * One Protector per sweep or purge pass. `windows` and `clock` are the run's: `supersededDays` bounds
  * which superseded memories still count as citing, `coldDays` through the clock's cutoff bounds the
  * `retrieved` signal. The sweep passes its RunRow windows, and purge passes the current settings'.
+ *
+ * Scratch lifetime: a spilling Protector writes `RETENTION_KV.sweepScratch` and `release` empties it. A crashed
+ * sweep leaves its keys until the next spilling Protector clears them. A Protector that never spills does not
+ * clear leftovers and its `release` is a no-op, so run recovery (slice 6) must clear the scope itself.
  */
 export async function createProtector(
   kv: StateKV,
@@ -102,6 +117,14 @@ export async function createProtector(
   ]);
   const counts = Object.fromEntries(SIGNAL_IDS.map((signal) => [signal, 0])) as Record<SignalId, number>;
   counts.lesson = lessons;
+
+  /** A stage O entry holds its row. A trim entry holds only `source`, so the live row is read for its current importance. */
+  async function importanceOf(entry: VaultEntry): Promise<{ importance?: number }> {
+    if (entry.stage === "O") return { importance: entry.row.importance };
+    if (entry.stage !== "T") return {};
+    const live = await kv.get<CompressedObservation>(KV.observations(entry.ref.sessionId), entry.ref.id);
+    return live ? { importance: live.importance } : {};
+  }
 
   async function protection(subject: Subject): Promise<SignalId | null> {
     const { ref, stage, project } = subject;
@@ -139,7 +162,7 @@ export async function createProtector(
         ref: entry.ref,
         stage: entry.stage,
         project: entry.project,
-        ...(entry.stage === "O" ? { importance: entry.row.importance } : {}),
+        ...(await importanceOf(entry)),
       });
       if (!signal) return { kind: "clear" };
       counts[signal]++;

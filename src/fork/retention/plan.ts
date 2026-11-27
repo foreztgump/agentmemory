@@ -1,4 +1,5 @@
-import { createGraphIndexReader } from "../../state/graph-retrieval-index.js";
+import { logger } from "../../logger.js";
+import { createGraphIndexReader, type GraphIndexReader } from "../../state/graph-retrieval-index.js";
 import type { StateKV } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
 import type { CompressedObservation, Memory, RetentionScore, Session } from "../../types.js";
@@ -85,6 +86,16 @@ async function* planSession(
     if (at < cutoffs.O.getTime()) return "O";
     return at < cutoffs.T.getTime() && row.source && !row.source.truncated ? "T" : null;
   };
+  // One verdict per id for both passes, so a graph change between them cannot yield a row twice. At most one entry per row key.
+  const verdicts = new Map<string, boolean>();
+  const citedOf = async (ids: readonly string[]): Promise<ReadonlySet<string>> => {
+    const unread = ids.filter((id) => !verdicts.has(id));
+    if (unread.length > 0) {
+      const fresh = await graphCitedIds(kv, unread);
+      for (const id of unread) verdicts.set(id, fresh.has(id));
+    }
+    return new Set(ids.filter((id) => verdicts.get(id)));
+  };
   for (const pass of ["uncited", "graph-cited"] as const) {
     if (resume?.pass === "graph-cited" && pass === "uncited") continue;
     let last = resume?.pass === pass ? resume.afterRowId : null;
@@ -95,7 +106,7 @@ async function* planSession(
         const stage = row ? eligible(row) : null;
         return row && stage ? [{ row, stage }] : [];
       });
-      const cited = await graphCitedIds(kv, planned.filter((p) => p.stage === "O").map((p) => p.row.id));
+      const cited = await citedOf(planned.filter((p) => p.stage === "O").map((p) => p.row.id));
       const candidates = planned.filter((p) => cited.has(p.row.id) === (pass === "graph-cited")).map(({ row, stage }): Candidate => {
         const ref: ObservationRef = { kind: "observation", sessionId: seal.sessionId, id: row.id };
         const window = stage === "O" ? windows.observationDays : windows.trimDays;
@@ -112,18 +123,26 @@ const GRAPH_CHUNK = 100;
 
 /**
  * Ids that a graph node or edge cites, by two posting reads each. `createGraphIndexReader` caps its reads, so
- * a chunk of GRAPH_CHUNK ids gets its own reader. An index that is not ready cites nothing; a read that fails or
- * runs out of budget counts as cited, which only moves the row later in the plan.
+ * a chunk of GRAPH_CHUNK ids gets its own reader. An index that is not ready (a null reader) cites nothing. Any
+ * other failure, a reader that cannot be created, a read that fails or one that runs out of budget, counts as
+ * cited, which only moves the row later in the plan.
  */
 export async function graphCitedIds(kv: StateKV, ids: readonly string[]): Promise<ReadonlySet<string>> {
   const cited = new Set<string>();
   for (let start = 0; start < ids.length; start += GRAPH_CHUNK) {
     const chunk = ids.slice(start, start + GRAPH_CHUNK);
-    const reader = await createGraphIndexReader(kv).catch(() => null);
+    let reader: GraphIndexReader | null;
+    try {
+      reader = await createGraphIndexReader(kv);
+    } catch (err) {
+      logger.warn("graph index reader failed, counting the chunk as cited", { ids: chunk.length, error: err instanceof Error ? err.message : String(err) });
+      for (const id of chunk) cited.add(id);
+      continue;
+    }
     if (!reader) continue;
     for (const id of chunk) {
       try {
-        const [nodes, edges] = [await reader.posting("observation", id, { limit: 1 }), await reader.posting("edgeObservation", id, { limit: 1 })];
+        const [nodes, edges] = await Promise.all([reader.posting("observation", id, { limit: 1 }), reader.posting("edgeObservation", id, { limit: 1 })]);
         if (nodes.total > 0 || edges.total > 0 || reader.exhausted) cited.add(id);
       } catch {
         cited.add(id);
