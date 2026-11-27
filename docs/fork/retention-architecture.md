@@ -128,7 +128,7 @@ The call is visible at its one caller. Other delete paths keep their behaviour, 
 | `src/state/schema.ts` | ~12 | `RETENTION_KV` re-exported under `KV` | 1 |
 | `src/types.ts` | ~8 | audit operations `retention_seal`, `_soft_delete`, `_restore`, `_purge`, `_demote`; `Memory.retention?` | 1, 8 |
 | `src/functions/summarize.ts` | ~4 | the veto call | 3 |
-| `src/functions/remember.ts` | ~4 | `afterForget` and `eraseFromVault` in `mem::forget` | 9 |
+| `src/functions/remember.ts` | ~11 | one `afterForget` call in `mem::forget`, a ref list for the rows it deletes, and the reconciliation of ids it did not find live | 9 |
 | `src/functions/search.ts` | 2 | `hiddenFromIndex` in the rebuild and in `indexRecords` | 8 |
 | `src/triggers/api.ts` | 2 | `registerRetentionTriggers` | 10 |
 
@@ -223,7 +223,7 @@ Each slice is one PR against `disk`, at most about 800 changed lines, with its t
 | 13 | First production run (owner) | R15 | Owner sets main's env; see the rollout below | none | 12, and the owner's answers below |
 
 Slice notes:
-- Slice 3 (done): `setSummarizeVeto` now throws on a second registration, and `resetSummarizeVeto` clears it for tests. See the reconciliation below.
+- Slices 1 to 4, 9 and 11 are done. Slice 3: `setSummarizeVeto` now throws on a second registration, and `resetSummarizeVeto` clears it for tests. See the reconciliation below.
 
 Rollout for slice 13, on main only. Set:
 - `AM_RETENTION=enforce`, with the D1 windows, grace 30 and the recall-cases path;
@@ -281,6 +281,18 @@ Each slice records its accepted deviations here before handing off.
 - **Index persistence.** A detach and an attach call `runtime.openPersistence().scheduleSave()` (the port, a no-op in disk mode), not `scheduleIndexSave` from `functions/search.ts`: importing that module drags `hybrid-search` and `reranker` into `tsconfig.fork.json`, whose upstream type errors fail `fork-tripwires`. `mem::forget` flushes after a delete; the sweep should flush once at settle (slice 6).
 - **Audit.** `restoreRun` and `restoreItems` write one `retention_restore` entry each, through `safeAudit`.
 - **Tests.** Crash injection counts every write to the state store, the keyword index and the vector store (`test/fork/retention/crash.ts`), so a crash lands between every two writes, finer than the named steps. `move-disk.test.ts` needs `QDRANT_URL`.
+
+**Slice 9 (explicit forget).**
+- **Contract.** `afterForget(sdk, kv, outcome)` replaces the sketch's `afterForget(kv, erased)` and `eraseFromVault`. It takes `sdk` because releasing an image reference needs it, and it takes forget's request and its not-found list, not only the ids it deleted, because an observation id means nothing without its session. It returns `trashed`, the ids forget did not find live but erased from retention's copies. `mem::forget` counts those as deleted, drops them from `notFound` and adds them to its audit entry and facet cleanup. There is no separate `eraseFromVault` export.
+- **Seam.** `remember.ts` grew by 11 lines, not 4: the import, a list of `{ id, sessionId }` for the rows forget deletes, one push into it, and one block that calls `afterForget` and reconciles the ids it erased from the vault. The call sits inside forget's own `cleanup`, so a failure shows as `cleanupFailed` and never undoes the delete. It runs in every mode and reads no retention setting: with retention off nothing is held and every lookup answers none.
+- **Vault.** Under the item lock, `afterForget` takes each claim newest first (`locate`, then `under`), so a trim under a stage O entry goes too, and lowers each run's `held`. A row forget deleted live is looked up by an unlocked point read first, so a session of thousands of rows takes the lock only for the few that retention holds. A ref forget did not find live is always locked. A demote record is deleted by memory id.
+- **Images.** A vault-only item still holds its image reference, because soft delete keeps it until purge. `afterForget` releases it once, writing `imageReleased` first, as purge will. Slice 7 must also drop the image hold when it adds `imageHolds`; erase releases the reference and nothing else.
+- **Graph (L3, R10).** `graph-stale.ts` marks nodes and edges stale through the `observation` and `edgeObservation` postings and `mutateIndexedGraphRecord`, as `cascade-update` does, in batches of 16 ids under one bounded reader that is checked with `finish()` before any write. A batch the read budget cannot cover is split. It covers the ids of rows deleted live and of rows erased from a vault. A graph item that cites a forgotten id among others goes stale whole, the same rule `cascade-update` applies on supersede. With no graph index the call does nothing. With an index that is not ready, or an id the index cannot hold, it reports `deferred`, writes an audit entry, and nothing retries. One `forget` audit entry names up to 100 of the items marked.
+- **Bare ids.** Graph postings cite bare observation ids. Forgetting one session's row marks the graph items of that id stale even when another session still holds a row with the same id. The graph cannot say which session a citation came from, and the search index and the observation-to-session index already hold one entry per id that forget removes by bare id. Stale is the safe side of an erasure. Vault entries, locators and held counts stay per session: forgetting session A's row never touches session B's vault entry for the same id.
+- **Memories.** Forgetting a memory deletes the row, both index entries, its vault claims and its demote record. It marks no graph items, because graph items cite observations and the memory's source observations are still live. This is the answer to open question 4 for now.
+- **Session count (L4, R11).** The stack's `ObservationStats` wrapper already assigns `observationCount` on every row write, so a live delete was already correct on the production store. `afterForget` assigns it again from the rows for each session it touched, which repairs earlier drift, covers a store without the wrapper, and covers a forget of a vault-only row.
+- **Not covered.** Forgetting a whole session does not look in the vaults for that session's displaced rows, and they stay restorable until purge. A crash between forget's delete and `afterForget` leaves a trim entry for a row that is gone, and purge removes it at the end of grace. Forget cannot retry a deferred graph mark.
+- **Behaviour change in `mem::forget`.** An id a run displaced no longer comes back in `notFound`. It counts in `deleted` and its audit entry lists it. A forget that marks graph items also writes one extra audit entry. Nothing else in the response changes.
 
 ## Next implementation step
 

@@ -9,6 +9,7 @@ import { unindexObservationSession } from "../state/obs-index.js";
 import { memoryToObservation, observationEmbedText, supersededAt } from "../state/memory-utils.js";
 import { deleteAccessLog } from "./access-tracker.js";
 import { deleteFacetsForTargets } from "./facets.js";
+import { afterForget } from "../fork/retention/erase.js";
 import { recordAudit } from "./audit.js";
 import { getSearchIndex, getVectorIndex, isMemoryIndexReady, scheduleIndexSave, vectorIndexAddGuarded, vectorIndexRemove, flushIndexSave } from "./search.js";
 import { getAgentId } from "../config.js";
@@ -273,6 +274,7 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
       let deleted = 0;
       const deletedMemoryIds: string[] = [];
       const deletedObservationIds: string[] = [];
+      const forgottenObservations: Array<{ id: string; sessionId: string }> = [];
       const notFound: string[] = [];
       const failures: Array<{ id: string; error: string }> = [];
       let deletedSession = false;
@@ -322,6 +324,7 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
         await markCaptureEventDeleted(kv, { ...obs, id: obsId, sessionId });
         await kv.delete(KV.observations(sessionId), obsId);
         deletedObservationIds.push(obsId);
+        forgottenObservations.push({ id: obsId, sessionId });
         getSearchIndex().remove(obsId);
         vectorIndexRemove(obsId);
         indexCleaned = true;
@@ -411,6 +414,14 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
           }
         });
       }
+
+      await cleanup("retention", async () => {
+        const gone = await afterForget(sdk, kv, { ...data, observations: forgottenObservations, memories: deletedMemoryIds, notFound });
+        deletedObservationIds.push(...gone.trashed.observationIds);
+        deletedMemoryIds.push(...gone.trashed.memoryIds);
+        deleted += gone.trashed.observationIds.length + gone.trashed.memoryIds.length;
+        for (const id of [...gone.trashed.observationIds, ...gone.trashed.memoryIds]) notFound.splice(notFound.indexOf(id), 1);
+      });
 
       if (deletedObservationIds.length > 0) {
         await deleteFacetsForTargets(kv, deletedObservationIds, {
