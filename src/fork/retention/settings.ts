@@ -8,7 +8,7 @@ import type { Windows } from "./types.js";
  *   AM_RETENTION_WINDOWS=trim:45,obs:180,sup:180,cold:365   project-active days (D1)
  *   AM_RETENTION_GRACE_DAYS=30                       (D2)
  *   AM_RETENTION_RECALL_CASES=/path/cases.json       golden recall cases (D5); none means report-only
- *   AM_RETENTION_INTERVAL_MS=604800000               weekly (D11); 0 = manual only
+ *   AM_RETENTION_INTERVAL_MS=604800000               weekly (D11); 0 = manual only; at most MAX_TIMER_MS (about 24.8 days)
  */
 export type RetentionSettings =
   | { readonly mode: "off"; readonly why: string }
@@ -47,6 +47,11 @@ export const RETENTION_SETTING_KEYS = [
 export type RetentionEnv = Partial<Record<(typeof RETENTION_SETTING_KEYS)[number], string>>;
 
 const WEEK_MS = 604_800_000;
+/**
+ * The largest delay `setInterval` honours: Node fires a longer one every 1 ms. The interval is counted from boot, so a
+ * longer one would rarely fire on a stack that restarts; such a value turns retention off instead of being chained.
+ */
+export const MAX_TIMER_MS = 2_147_483_647;
 const WINDOW_KEYS = { trim: "trimDays", obs: "observationDays", sup: "supersededDays", cold: "coldDays" } as const;
 
 type Parsed<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly why: string };
@@ -102,6 +107,7 @@ export function parseRetentionSettings(env: RetentionEnv): RetentionSettings {
   if (intervalRaw !== undefined && intervalRaw.trim() === "") return off("AM_RETENTION_INTERVAL_MS is blank");
   const intervalMs = intervalRaw === undefined ? WEEK_MS : wholeNumber(intervalRaw.trim(), 0);
   if (intervalMs === null) return off("AM_RETENTION_INTERVAL_MS must be a whole number of milliseconds (0 means manual only)");
+  if (intervalMs > MAX_TIMER_MS) return off(`AM_RETENTION_INTERVAL_MS must be at most ${MAX_TIMER_MS} (about 24.8 days)`);
 
   return {
     mode: "enforce",

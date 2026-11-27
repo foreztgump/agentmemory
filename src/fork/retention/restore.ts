@@ -44,6 +44,16 @@ export async function release(runs: RunStore, runId: RunId, taken: number, why?:
 
 const taken = (result: RestoreResult) => result.restored + result.keptLive;
 
+/**
+ * `beat` runs before each batch of writes (each page and each run row write of `restoreRun`, each ref of `restoreItems`)
+ * and throws when the caller's lease is lost, which stops the restore there; every step repeats safely.
+ */
+export interface RestoreOptions {
+  readonly beat?: () => Promise<void>;
+}
+
+const noBeat = async (): Promise<void> => {};
+
 async function audit(deps: RetentionDeps, ids: readonly string[], details: Record<string, unknown>, result: RestoreResult): Promise<void> {
   await safeAudit(deps.kv, "retention_restore", "mem::retention-restore", [...ids], { ...details, ...result });
 }
@@ -59,24 +69,33 @@ async function audit(deps: RetentionDeps, ids: readonly string[], details: Recor
  * or forget took after the page was read is skipped.
  *
  * The run's demotes are un-demoted too and count in `restored`, but not in `held`, which counts vault entries only.
+ * The audit entry is written even when the restore stops part way (a lost lease, a failed write), with what it did.
  */
-export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string): Promise<RestoreResult> {
+export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string, { beat = noBeat }: RestoreOptions = {}): Promise<RestoreResult> {
   const vault = new Vault(deps.kv);
   const runs = new RunStore(deps.kv, deps.now);
+  await beat();
   await release(runs, runId, 0, why);
   let result = EMPTY;
-  for await (const page of vault.pages(runId, RETENTION_PAGE_SIZE)) {
-    for (const listed of page) {
-      const one = await reinstate(deps, vault, listed);
+  try {
+    for await (const page of vault.pages(runId, RETENTION_PAGE_SIZE)) {
+      await beat();
+      for (const listed of page) {
+        const one = await reinstate(deps, vault, listed);
+        if (one) result = add(result, outcome(one));
+      }
+    }
+    await beat();
+    await release(runs, runId, taken(result));
+    let scanned = 0;
+    for await (const record of demotedBy(deps.kv, runId)) {
+      if (scanned++ % RETENTION_PAGE_SIZE === 0) await beat();
+      const one = await reinstateDemote(deps, record.memoryId);
       if (one) result = add(result, outcome(one));
     }
+  } finally {
+    await audit(deps, [runId], { runId, why }, result);
   }
-  await release(runs, runId, taken(result));
-  for await (const record of demotedBy(deps.kv, runId)) {
-    const one = await reinstateDemote(deps, record.memoryId);
-    if (one) result = add(result, outcome(one));
-  }
-  await audit(deps, [runId], { runId, why }, result);
   return result;
 }
 
@@ -90,12 +109,13 @@ export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string)
  * reinstate see one state, against `displace` and `recoverRun`. A run is visited once per ref, so a locator that
  * keeps naming a run it already named cannot loop.
  */
-export async function restoreItems(deps: RetentionDeps, refs: readonly ItemRef[], why: string): Promise<RestoreResult> {
+export async function restoreItems(deps: RetentionDeps, refs: readonly ItemRef[], why: string, { beat = noBeat }: RestoreOptions = {}): Promise<RestoreResult> {
   const vault = new Vault(deps.kv);
   const runs = new RunStore(deps.kv, deps.now);
   let result = EMPTY;
   try {
     for (const ref of refs) {
+      await beat();
       const claimed: Claimed[] = [];
       const demoted: ReinstateResult[] = [];
       try {
