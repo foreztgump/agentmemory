@@ -167,7 +167,9 @@ export interface ReinstateResult {
  * rewritten since, so the live row stays and the entry is dropped. A trim entry with no live row is deferred.
  *
  * `entry.restoring` is written before the first change, so recoverRun can tell a restore under way from a
- * move under way.
+ * move under way. An entry that purge has marked `purging`, or whose image reference is released (purge, or a
+ * forget that crashed after it), is deferred: its first irreversible step has begun, so purge finishes it and nothing
+ * brings the row back.
  */
 export function reinstate(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<ReinstateResult> {
   return withKeyedLock(lockOf(entry.ref), () => reinstateLocked(deps, vault, entry));
@@ -175,6 +177,7 @@ export function reinstate(deps: RetentionDeps, vault: Vault, entry: VaultEntry):
 
 /** `reinstate` for a caller that already holds `lockOf(entry.ref)`: the keyed mutex is not reentrant, so a caller holding it must not call `reinstate`. */
 export async function reinstateLocked(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<ReinstateResult> {
+  if (entry.purging || entry.imageReleased) return { restored: false, reembedNeeded: false, deferred: true };
   const { ref } = entry;
   const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
   if (live && fingerprintRow(live) !== entry.rowFingerprint) {

@@ -4,12 +4,13 @@ import { logger } from "../../logger.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import type { StateKV } from "../../state/kv.js";
 import { markGraphStale, type GraphStaleResult } from "./graph-stale.js";
+import { releaseImages as releaseImageRefs } from "./images.js";
 import { lockOf } from "./move.js";
 import { release } from "./restore.js";
 import { RunStore } from "./run-store.js";
 import { assignObservationCount } from "./satellites.js";
 import { RETENTION_KV } from "./scopes.js";
-import type { ItemRef, RunId, RunRow, VaultEntry } from "./types.js";
+import type { ItemRef, RunId, RunRow } from "./types.js";
 import { Vault } from "./vault.js";
 
 type ObservationRef = Extract<ItemRef, { kind: "observation" }>;
@@ -204,7 +205,7 @@ async function eraseCopies(sdk: IIIClient, kv: StateKV, ref: ItemRef, releaseIma
     let erased = 0;
     const takeClaim = async (runId: RunId): Promise<void> => {
       const entry = await vault.get(runId, ref);
-      if (entry && releaseImages) await releaseImageRefs(sdk, kv, vault, entry);
+      if (entry && releaseImages) await releaseImageRefs(sdk, kv, entry);
       await vault.take(runId, ref);
       if (entry) {
         erased++;
@@ -224,18 +225,6 @@ async function eraseCopies(sdk: IIIClient, kv: StateKV, ref: ItemRef, releaseIma
     }
     return { vault: erased, demote };
   });
-}
-
-/** `imageReleased` is written first, so a crash leaks one reference and never frees a file another row still uses (as at purge). */
-async function releaseImageRefs(sdk: IIIClient, kv: StateKV, vault: Vault, entry: VaultEntry): Promise<void> {
-  if (entry.stage === "T" || entry.imageReleased) return;
-  const row = entry.row as { imageData?: string; imageRef?: string };
-  const files = entry.ref.kind === "memory" ? [row.imageRef] : [row.imageData, row.imageRef];
-  const paths = [...new Set(files.filter((file): file is string => typeof file === "string" && file.length > 0))];
-  if (paths.length === 0) return;
-  await vault.update({ ...entry, imageReleased: true });
-  const { decrementImageRef } = await import("../../functions/image-refs.js");
-  for (const path of paths) await decrementImageRef(kv, sdk, path);
 }
 
 async function auditGraph(kv: StateKV, graph: GraphStaleResult, observations: number): Promise<void> {

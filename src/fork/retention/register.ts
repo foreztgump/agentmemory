@@ -3,6 +3,7 @@ import type { StateKV } from "../../state/kv.js";
 import { getEnvVar } from "../../config.js";
 import { logger } from "../../logger.js";
 import { getSearchRuntime } from "../../state/search-ports.js";
+import { runPurge } from "./purge.js";
 import { createRecallHarness } from "./recall-check.js";
 import type { RetentionDeps } from "./satellites.js";
 import { activeVectorReader } from "./vectors.js";
@@ -20,7 +21,7 @@ function retentionEnv(): RetentionEnv {
  * iii functions:
  *   mem::retention-sweep    { dryRun }            -> SweepResult
  *   mem::retention-restore  { runId } | { refs }  -> RestoreResult (refs: ItemRef[]; an observation needs its session)
- *   mem::retention-purge    {}                    -> PurgeResult
+ *   mem::retention-purge    { dryRun }            -> PurgeOutcome (dryRun defaults to true, as for the sweep)
  *   mem::retention-pin      { ref, who, reason } | { ref, unpin: true }
  *   mem::retention-report   { runId? }            -> RunReport
  * REST (src/triggers/api.ts calls registerRetentionTriggers; AGENTS.md endpoint counts and docs:sync):
@@ -53,6 +54,9 @@ export function registerRetention(sdk: IIIClient, kv: StateKV): void {
 
   sdk.registerFunction("mem::retention-sweep", async (req?: { dryRun?: unknown }) =>
     runSweep(deps, settings, harness, { dryRun: req?.dryRun !== false }),
+  );
+  sdk.registerFunction("mem::retention-purge", async (req?: { dryRun?: unknown }) =>
+    runPurge(deps, settings, { dryRun: req?.dryRun !== false }),
   );
 }
 

@@ -1,5 +1,6 @@
 import type { IIIClient } from "iii-sdk";
 import { captureEventScope, isCaptureKey, markCaptureEventDeleted } from "../../capture/event-record.js";
+import { deleteAccessLog } from "../../functions/access-tracker.js";
 import { indexObservationSession, lookupObservationSession, unindexObservationSession } from "../../state/obs-index.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import type { StateKV } from "../../state/kv.js";
@@ -8,6 +9,7 @@ import type { SearchRuntime } from "../../state/search-ports.js";
 import type { Session } from "../../types.js";
 import { sessionObservationTotals } from "../kv/observation-stats.js";
 import { docOfRecord, type IndexDoc } from "../search/doc-of-record.js";
+import { imageSatellite } from "./images.js";
 import type { ItemRef, SatelliteSnapshots, VaultEntry } from "./types.js";
 import { reattachDocument, type VectorReader } from "./vectors.js";
 
@@ -54,10 +56,15 @@ export interface Satellite {
  *  session-count    detach and attach: Session.observationCount := ObservationStats rows for the session.
  *                   Assignment converges where +1/-1 does not, and repairs drift (L4, R11).
  *
- * Slice 7 adds the rows that only purge and images need: image (snapshot, detach, attach, finalize) and
- * metadata (finalize).
+ *  image            detach: note the held reference and, when no live row is left on the file, park its embedding (images.ts).
+ *                   attach: unhold, and put a parked embedding back with no embedding call. finalize: release the
+ *                   reference once (`imageReleased` first), then drop the hold.
+ *  metadata         finalize only: the access log, and a memory's retention score. An observation id that another
+ *                   session's live row still owns keeps its access log, which is keyed by the bare id.
+ *
+ * Purge runs `finalize` for stages O, S and X; a trim entry's row is live, so it has nothing to finalize.
  */
-export const SATELLITES: readonly Satellite[] = [searchIndex(), captureEvent(), obsSessionIndex(), sessionCount()];
+export const SATELLITES: readonly Satellite[] = [searchIndex(), captureEvent(), obsSessionIndex(), sessionCount(), imageSatellite(), metadata()];
 
 type ObsEntry = Extract<VaultEntry, { ref: { kind: "observation" } }>;
 
@@ -167,6 +174,19 @@ export async function assignObservationCount(kv: StateKV, sessionId: string): Pr
 
 async function assignSessionCount(deps: RetentionDeps, entry: VaultEntry): Promise<void> {
   if (entry.ref.kind === "observation") await assignObservationCount(deps.kv, entry.ref.sessionId);
+}
+
+function metadata(): Satellite {
+  return {
+    name: "metadata",
+    appliesTo: ["observation", "memory"],
+    async finalize(deps, entry) {
+      const { ref } = entry;
+      if (ref.kind === "observation" && (await lookupObservationSession(deps.kv, ref.id)) !== null) return;
+      await deleteAccessLog(deps.kv, ref.id);
+      if (ref.kind === "memory") await deps.kv.delete(KV.retentionScores, ref.id);
+    },
+  };
 }
 
 function sessionCount(): Satellite {

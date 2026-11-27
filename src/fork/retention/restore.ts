@@ -2,7 +2,6 @@ import { safeAudit } from "../../functions/audit.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import { demotedBy, reinstateDemote, reinstateDemoteLocked } from "./demote.js";
 import { lockOf, reinstate, reinstateLocked, type ReinstateResult } from "./move.js";
-import type { Protector } from "./protect.js";
 import { RunStore } from "./run-store.js";
 import type { RetentionDeps } from "./satellites.js";
 import { itemKey } from "./scopes.js";
@@ -132,28 +131,4 @@ async function restoreClaims(deps: RetentionDeps, vault: Vault, ref: ItemRef, cl
   }
   const undemoted = ref.kind === "memory" ? await reinstateDemoteLocked(deps, ref.id) : null;
   if (undemoted) demoted.push(undemoted);
-}
-
-export interface PurgeResult {
-  readonly purged: number;
-  /** Became protected during grace (pinned, newly cited) and went back instead of being purged. */
-  readonly restoredBack: number;
-  readonly runsEmptied: number;
-}
-
-/**
- * Daily: for runs whose closedAt is older than their grace period, page the vault. Re-judge protection
- * for each entry with `protect.recheck` (design 4.6); a protected one is reinstated. Otherwise: finalize
- * satellites (image ref once, access log, score, facets, embeddings), write the observation tombstone,
- * vault.take. An emptied run's vault scope is deleted and its row keeps the counts. Audited per run (R13).
- *
- * `protect` is built by the caller once per purge pass, `createProtector(kv, settings.windows, clock)`
- * with the current settings' windows (not each run's snapshot) and a clock loaded at `now`, so the re-check
- * sees the pins, citations and accesses of today. RunRow.graceDays only bounds which runs are visited.
- */
-export function purgeExpired(deps: RetentionDeps, protect: Protector, now: Date): Promise<PurgeResult> {
-  void deps;
-  void protect;
-  void now;
-  throw new Error("not implemented");
 }
