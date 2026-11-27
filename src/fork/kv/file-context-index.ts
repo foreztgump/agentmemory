@@ -194,8 +194,7 @@ export class FileContextIndex {
     stats: ObservationStats,
   ) {
     this.sessions = new ScopeMirror<SessionEntry>(kv, KV.sessions, sessionFields, readByKeys);
-    stats.onWrite((scope, key, deleted, failed) => {
-      const removed = deleted && !failed;
+    stats.onWrite((scope, key, removed) => {
       if (scope === KV.sessions) this.sessions.noteWrite(key, removed);
       else this.postings.get(scope)?.mirror.noteWrite(key, removed);
     });

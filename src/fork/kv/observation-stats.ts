@@ -16,7 +16,7 @@ const READY_VERSION = 2;
 const STATS = Symbol.for("agentmemory.fork.observationStats");
 
 type UpdateOp = { type: string; path: string; value?: unknown };
-export type WriteListener = (scope: string, key: string, deleted: boolean, failed: boolean) => void;
+export type WriteListener = (scope: string, key: string, deleted: boolean) => void;
 
 export function sessionOf(scope: string): string | null {
   return scope.startsWith(OBS_PREFIX) && scope.length > OBS_PREFIX.length ? scope.slice(OBS_PREFIX.length) : null;
@@ -71,16 +71,16 @@ export class ObservationStats {
 
   constructor(private readonly base: StateKV) {}
 
-  /** Calls `listener` after every set, update and delete on any scope. `failed` means the write threw, so the row may or may not have changed. Returns the unsubscribe function. */
+  /** Calls `listener` after every set, update and delete on any scope. `deleted` means the delete committed; a write that threw is reported as not deleted, since the row may or may not have changed. Returns the unsubscribe function. */
   onWrite(listener: WriteListener): () => void {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);
   }
 
-  private notify(scope: string, key: string, deleted: boolean, failed: boolean): void {
+  private notify(scope: string, key: string, deleted: boolean): void {
     for (const listener of this.listeners) {
       try {
-        listener(scope, key, deleted, failed);
+        listener(scope, key, deleted);
       } catch (error) {
         logger.warn("observation stats write listener failed", { error: String(error) });
       }
@@ -146,10 +146,10 @@ export class ObservationStats {
   private async notifying<T>(scope: string, key: string, deleted: boolean, work: () => Promise<T>): Promise<T> {
     try {
       const result = await work();
-      this.notify(scope, key, deleted, false);
+      this.notify(scope, key, deleted);
       return result;
     } catch (error) {
-      this.notify(scope, key, deleted, true);
+      this.notify(scope, key, false);
       throw error;
     }
   }
