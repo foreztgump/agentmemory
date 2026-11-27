@@ -89,6 +89,6 @@ export const SCOPE_CLASS = {
   retentionImageHolds: "point-read-only",
   retentionActiveDays: "point-read-only",
   retentionSweepScratch: "paged-only",
-  // ponytail: one row per REST sweep, purge or restore call and nothing prunes them. Prune finished rows if call volume grows.
+  // ponytail: one row per REST sweep, purge or restore call and nothing prunes them. Pruning needs a paged read, so it reclasses this scope paged-only.
   retentionJobs: "point-read-only",
 } as const satisfies Record<keyof typeof KV, ScopeClass>;
