@@ -220,18 +220,16 @@ Each slice is one PR against `disk`, at most about 800 changed lines, with its t
 | 10 | REST endpoints, pins, timers, docs | R13 (end to end), the pin endpoint (D3) | Endpoint auth and field whitelist; a pinned item survives; `docs:sync` counts | `api.ts` 9 (see the slice 10 note), README and plugin counts per AGENTS.md | 6, 7 |
 | 11 | Upstream-able fixes, one commit each: L2 evict orphans, L5 auto-forget index removal, lesson recall records access | supports G2 and the near-duplicate rule in design 5.4 | One failing-then-passing test per fix | `evict.ts`, `auto-forget.ts`, `lessons.ts` | none; can run in parallel with anything |
 | 12 | Staging proof on a replica (takes the replica lock) | R1, R4, R9 and R12 at full size | Dry run on a staging copy with collection counts and index sizes before and after; memory peak sampled during a full sweep; a kill mid-sweep, then resume; a one-day grace observed at 23 h and 25 h; a forced recall loss | none (bench scripts) | 1 to 10 merged; TEE-1169 and TEE-1196 merged |
-| 13 | First production run (owner) | R15 | Owner sets main's env; see the rollout below | none | 12, and the owner's answers below |
+| 13 | First production run (owner) | R15 | Owner sets each stack's env; see the rollout below | none | 12, and the owner's answers below |
 
 Slice notes:
 - Slices 1 to 11 are done. Slice 3: `setSummarizeVeto` now throws on a second registration, and `resetSummarizeVeto` clears it for tests. See the reconciliation below.
 
-Rollout for slice 13, on main only. Set:
-- `AM_RETENTION=enforce`, with the D1 windows, grace 30 and the recall-cases path;
+Rollout for slice 13, on main and on buddy (owner, 2026-11-27). On each stack, set:
+- `AM_RETENTION=enforce`, with the D1 windows, grace 30 and that stack's own recall-cases path;
 - `AGENTMEMORY_AUDIT_RETENTION_MONTHS=13` (D8);
 - `MAX_OBS_PER_SESSION=5000` on both stacks (D9);
-- auto-forget per open question 1.
-
-Buddy keeps retention unset.
+- auto-forget stays on (open question 1).
 
 ## Open questions and risks
 
