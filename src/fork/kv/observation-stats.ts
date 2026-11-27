@@ -71,7 +71,7 @@ export class ObservationStats {
 
   constructor(private readonly base: StateKV) {}
 
-  /** Calls `listener` after every successful set, update and delete on any scope. Returns the unsubscribe function. */
+  /** Calls `listener` after every set, update and delete on any scope, also when the write or its bookkeeping threw, since the write may have landed. Returns the unsubscribe function. */
   onWrite(listener: WriteListener): () => void {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);
@@ -130,19 +130,24 @@ export class ObservationStats {
   ): Promise<T> {
     const sessionId = sessionOf(scope);
     if (sessionId === null) {
-      const result = await write();
-      this.notify(scope, key, deleted);
-      return result;
+      try {
+        return await write();
+      } finally {
+        this.notify(scope, key, deleted);
+      }
     }
     return this.lock(sessionId, async () => {
-      const before = await this.loadLocked(sessionId);
-      const oldRow = await this.base.get(scope, key);
-      const result = await write();
-      const newRow = await read();
-      const after = shift(before, contribution(oldRow), contribution(newRow));
-      await this.storeLocked(sessionId, after, before.rows);
-      this.notify(scope, key, deleted);
-      return result;
+      try {
+        const before = await this.loadLocked(sessionId);
+        const oldRow = await this.base.get(scope, key);
+        const result = await write();
+        const newRow = await read();
+        const after = shift(before, contribution(oldRow), contribution(newRow));
+        await this.storeLocked(sessionId, after, before.rows);
+        return result;
+      } finally {
+        this.notify(scope, key, deleted);
+      }
     });
   }
 

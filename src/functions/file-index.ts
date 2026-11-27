@@ -2,6 +2,8 @@ import type { IIIClient } from "iii-sdk";
 import type { CompressedObservation, Session } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV, collectAll } from "../state/kv.js";
+import { observationStatsOf } from "../fork/kv/observation-stats.js";
+import { FileContextIndex, basenameOf } from "../fork/kv/file-context-index.js";
 import { recordAudit } from "./audit.js";
 import { recordAccessBatch } from "./access-tracker.js";
 import { logger } from "../logger.js";
@@ -19,8 +21,78 @@ interface FileHistory {
   }>;
 }
 
+type SessionRef = Pick<Session, "id" | "project" | "startedAt">;
+type FileRow = Pick<CompressedObservation, "id" | "type" | "title" | "narrative" | "importance" | "timestamp" | "files">;
+
+/** The sessions to search and, per session and normalized file, the rows that may mention it in `kv.list` order. */
+interface SessionRows {
+  sessionIds: string[];
+  rowsOf: (sessionId: string, normalizedFile: string) => readonly FileRow[];
+}
+
+function recentSessions<S extends SessionRef>(sessions: readonly S[], sessionId: string, project?: string): S[] {
+  let otherSessions = sessionId ? sessions.filter((s) => s.id !== sessionId) : [...sessions];
+  if (project) {
+    otherSessions = otherSessions.filter((s) => s.project === project);
+  }
+  return otherSessions
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+    .slice(0, 15);
+}
+
+async function scannedRows(kv: StateKV, sessionId: string, project?: string): Promise<SessionRows> {
+  const sessions = recentSessions(await collectAll<Session>(kv, KV.sessions), sessionId, project);
+  const obsCache = new Map<string, CompressedObservation[]>();
+  for (const session of sessions) {
+    obsCache.set(session.id, await kv.list<CompressedObservation>(KV.observations(session.id)));
+  }
+  return { sessionIds: sessions.map((s) => s.id), rowsOf: (id) => obsCache.get(id) || [] };
+}
+
+async function indexedRows(index: FileContextIndex, sessionId: string, project?: string): Promise<SessionRows> {
+  const sessionIds = recentSessions(await index.allSessions(), sessionId, project).map((s) => s.id);
+  const postings = await index.postingsOf(sessionIds);
+  return { sessionIds, rowsOf: (id, normalizedFile) => postings.get(id)?.(basenameOf(normalizedFile)) ?? [] };
+}
+
+function fileHistory(file: string, { sessionIds, rowsOf }: SessionRows): FileHistory {
+  const history: FileHistory = { file, observations: [] };
+  const normalizedFile = file.replace(/^\.\//, "");
+
+  for (const sessionId of sessionIds) {
+    for (const obs of rowsOf(sessionId, normalizedFile)) {
+      if (!obs.files || !obs.title) continue;
+      const matches = obs.files.some(
+        (f) =>
+          f === file ||
+          f === normalizedFile ||
+          f.endsWith(`/${normalizedFile}`) ||
+          normalizedFile.endsWith(`/${f}`),
+      );
+      if (matches && obs.importance >= 4) {
+        history.observations.push({
+          sessionId,
+          obsId: obs.id,
+          type: obs.type,
+          title: obs.title,
+          narrative: obs.narrative,
+          importance: obs.importance,
+          timestamp: obs.timestamp,
+        });
+      }
+    }
+  }
+
+  history.observations.sort((a, b) => b.importance - a.importance);
+  history.observations = history.observations.slice(0, 5);
+  return history;
+}
+
 export function registerFileIndexFunction(sdk: IIIClient, kv: StateKV): void {
-  sdk.registerFunction("mem::file-context", 
+  const stats = observationStatsOf(kv);
+  const index = kv.backend === "redis" && stats ? new FileContextIndex(kv, stats) : null;
+
+  sdk.registerFunction("mem::file-context",
     async (
       data: { sessionId?: string; files?: string[]; project?: string } | undefined,
     ) => {
@@ -42,67 +114,11 @@ export function registerFileIndexFunction(sdk: IIIClient, kv: StateKV): void {
         });
         return { context: "", files: [] };
       }
-      const results: FileHistory[] = [];
 
-      const sessions = await collectAll<Session>(kv, KV.sessions);
-      let otherSessions = sessionId
-        ? sessions.filter((s) => s.id !== sessionId)
-        : sessions;
-      if (normalizedProject) {
-        otherSessions = otherSessions.filter((s) => s.project === normalizedProject);
-      }
-      otherSessions = otherSessions
-        .sort(
-          (a, b) =>
-            new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
-        )
-        .slice(0, 15);
-
-      const obsCache = new Map<string, CompressedObservation[]>();
-      for (const session of otherSessions) {
-        obsCache.set(
-          session.id,
-          await kv.list<CompressedObservation>(KV.observations(session.id)),
-        );
-      }
-
-      for (const file of files) {
-        const history: FileHistory = { file, observations: [] };
-        const normalizedFile = file.replace(/^\.\//, "");
-
-        for (const session of otherSessions) {
-          const observations = obsCache.get(session.id) || [];
-
-          for (const obs of observations) {
-            if (!obs.files || !obs.title) continue;
-            const matches = obs.files.some(
-              (f) =>
-                f === file ||
-                f === normalizedFile ||
-                f.endsWith(`/${normalizedFile}`) ||
-                normalizedFile.endsWith(`/${f}`),
-            );
-            if (matches && obs.importance >= 4) {
-              history.observations.push({
-                sessionId: session.id,
-                obsId: obs.id,
-                type: obs.type,
-                title: obs.title,
-                narrative: obs.narrative,
-                importance: obs.importance,
-                timestamp: obs.timestamp,
-              });
-            }
-          }
-        }
-
-        history.observations.sort((a, b) => b.importance - a.importance);
-        history.observations = history.observations.slice(0, 5);
-
-        if (history.observations.length > 0) {
-          results.push(history);
-        }
-      }
+      const rows = index
+        ? await indexedRows(index, sessionId, normalizedProject)
+        : await scannedRows(kv, sessionId, normalizedProject);
+      const results = files.map((file) => fileHistory(file, rows)).filter((fh) => fh.observations.length > 0);
 
       if (results.length === 0) {
         return { context: "" };

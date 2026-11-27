@@ -202,3 +202,71 @@ describe("file context index", () => {
     expect(large.filter((r) => r.includes(KV.sessions)).length).toBe(0);
   });
 });
+
+describe("file context index under concurrent and failed writes", () => {
+  const row = (id: string, sessionId: string, file: string) => ({
+    id, sessionId, timestamp: "2026-12-01T00:00:00.000Z", type: "bug", title: `title-${id}`,
+    narrative: `narrative-${id}`, importance: 9, files: [file], concepts: [], facts: [],
+  });
+
+  it("shows a write that lands while a session's rows are being read in the next call", async () => {
+    const store: Store = new Map();
+    const ids = seed(store, 20);
+    const h = worker(store, true);
+    const target = ids[ids.length - 1]!;
+    const scope = KV.observations(target);
+    const trigger = h.sdk.trigger;
+    let raced = false;
+    h.sdk.trigger = async (req: Req) => {
+      if (!raced && req.function_id === "state::list" && req.payload.scope === scope) {
+        raced = true;
+        const stale = await trigger(req);
+        await h.kv.set(scope, "obs_raced", row("obs_raced", target, "src/raced.ts"));
+        return stale;
+      }
+      return trigger(req);
+    };
+    await h.fileContext({ files: ["src/raced.ts"] });
+    h.sdk.trigger = trigger;
+    expect(raced).toBe(true);
+    expect(await h.fileContext({ files: ["src/raced.ts"] })).toContain("title-obs_raced");
+    await expectSameAsLegacy(store, h, ids);
+  });
+
+  it("shows a write whose stats bookkeeping threw in the next call", async () => {
+    const store: Store = new Map();
+    const ids = seed(store, 20);
+    const h = worker(store, true);
+    await expectSameAsLegacy(store, h, ids);
+    const target = ids[ids.length - 1]!;
+    const trigger = h.sdk.trigger;
+    h.sdk.trigger = async (req: Req) => {
+      const landed = store.get(KV.observations(target))!.has("obs_late");
+      if (landed && req.function_id === "state::set" && req.payload.scope === KV.obsStats) throw new Error("stats store down");
+      return trigger(req);
+    };
+    await expect(h.kv.set(KV.observations(target), "obs_late", row("obs_late", target, "src/index.ts"))).rejects.toThrow("stats store down");
+    h.sdk.trigger = trigger;
+    expect(store.get(KV.observations(target))!.has("obs_late")).toBe(true);
+    expect(await h.fileContext({ files: ["src/index.ts"] })).toContain("title-obs_late");
+    await expectSameAsLegacy(store, h, ids);
+  });
+
+  it("reads nothing on a warm call and only the changed rows after a capture", async () => {
+    const store: Store = new Map();
+    const ids = seed(store, 500);
+    const h = worker(store, true);
+    await h.fileContext({ files: ["src/index.ts"] });
+    h.reads.length = 0;
+    await h.fileContext({ files: ["src/index.ts", "kv.ts"] });
+    const warm = h.reads.length;
+
+    const target = ids[ids.length - 1]!;
+    await h.kv.set(KV.observations(target), "obs_capture", row("obs_capture", target, "src/index.ts"));
+    await h.kv.update(KV.sessions, target, [{ type: "set", path: "updatedAt", value: "2026-12-01T00:00:00.000Z" }]);
+    h.reads.length = 0;
+    expect(await h.fileContext({ files: ["src/index.ts"] })).toContain("title-obs_capture");
+    expect(warm).toBeLessThanOrEqual(0);
+    expect(h.reads.length).toBeLessThanOrEqual(2);
+  });
+});
