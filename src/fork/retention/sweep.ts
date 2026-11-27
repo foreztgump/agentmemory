@@ -159,7 +159,8 @@ async function recover(s: Sweep, row: RunRow): Promise<RunRow> {
   row.held = held;
   row.ranBy = s.owner;
   await beat(s);
-  return s.runs.save(row);
+  await s.runs.save(row);
+  return row;
 }
 
 async function beat(s: Sweep): Promise<void> {

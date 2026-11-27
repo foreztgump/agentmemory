@@ -1,5 +1,5 @@
 import type { IIIClient } from "iii-sdk";
-import type { StateKV } from "../../state/kv.js";
+import type { StateKV, StateSetReply } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import { logger } from "../../logger.js";
@@ -232,7 +232,7 @@ export function withObservationStats<K extends StateKV>(kv: K): K {
   const { set, update, delete: remove, get } = kv;
   wrapped[STATS] = stats;
   wrapped.set = <T>(scope: string, key: string, value: T) =>
-    stats.afterChange(scope, key, () => set.call(wrapped, scope, key, value) as Promise<T>, async () => value);
+    stats.afterChange(scope, key, () => set.call(wrapped, scope, key, value) as Promise<StateSetReply<T>>, async () => value);
   wrapped.update = <T>(scope: string, key: string, ops: UpdateOp[]) =>
     stats.afterChange(scope, key, () => update.call(wrapped, scope, key, ops) as Promise<T>, () => get.call(wrapped, scope, key));
   wrapped.delete = (scope: string, key: string) =>
