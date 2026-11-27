@@ -376,7 +376,7 @@ describe("the lease", () => {
     expect(writeCount(r)).toBe(writes);
   });
 
-  it("heartbeats once per page of a run's vault", async () => {
+  it("heartbeats once per page of a run's vault and once before each commit", async () => {
     const r = rig();
     const ids = Array.from({ length: 201 }, (_, i) => `h${i}`);
     for (const id of ids) await seedObservation(r, observation(id, "ses_h"), { indexed: false });
@@ -388,7 +388,7 @@ describe("the lease", () => {
     const beat = vi.fn(async () => {});
     const result = await purgeExpired(r.deps, protectors, at(25), { beat, pauseMs: 0 });
     expect(result).toMatchObject({ purged: 201, runsEmptied: 1 });
-    expect(beat).toHaveBeenCalledTimes(2);
+    expect(beat).toHaveBeenCalledTimes(2 + 201);
   });
 
   it("stops with lease-lost when the heartbeat finds the lease taken, and leaves every entry restorable", async () => {

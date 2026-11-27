@@ -38,7 +38,11 @@ const sum = (a: PurgeResult, b: PurgeResult): PurgeResult => ({
 });
 
 export interface PurgeOptions {
-  /** Called before every page of a run's vault; it throws when the lease is lost, and the pass stops. */
+  /**
+   * Called before every page of a run's vault, and between each entry's recheck and its commit; it throws when the lease
+   * is lost, and the pass stops. A sweep that takes the lease clears `sweepScratch`, so a spilled Protector's recheck
+   * would read an empty cited set: the beat after the recheck stops purge before it commits on that answer.
+   */
   readonly beat?: () => Promise<void>;
   /** Report what would happen: protection is checked, nothing is written. */
   readonly dryRun?: boolean;
@@ -148,6 +152,7 @@ async function commit(pass: Pass, runId: RunId, ref: ItemRef): Promise<Commit> {
   const live = (await deps.kv.get(ref.kind === "memory" ? KV.memories : KV.observations(ref.sessionId), ref.id)) !== null;
   const protectedBy = entry.restoring || (entry.stage !== "T" && live) ? null : await pass.protect.recheck(entry);
   if (protectedBy?.kind === "clear") {
+    await pass.beat();
     if (pass.dryRun) return { kind: "commit", entry };
     const marked: VaultEntry = { ...entry, purging: true };
     await vault.update(marked);
@@ -221,8 +226,8 @@ class LeaseLost extends Error {}
  * `mem::retention-purge`. Off settings return at once with no read or write. Runs due for purge are found first
  * (reads only), so a stack with none takes no lease. Otherwise the sweep's lease is held for the whole pass, because
  * a spilling Protector clears the scratch scope a sweep may be using; a busy lease returns `busy` and does nothing.
- * The lease is heartbeated before every page, and the Protector is released in a finally (not when the lease was lost:
- * the new owner may be using the scratch).
+ * The lease is heartbeated before every page and before every commit, and the Protector is released in a finally
+ * (not when the lease was lost: the new owner may be using the scratch).
  */
 export async function runPurge(deps: RetentionDeps, settings: RetentionSettings, req: PurgeRequest): Promise<PurgeOutcome> {
   if (settings.mode === "off") return { kind: "off", why: settings.why };
