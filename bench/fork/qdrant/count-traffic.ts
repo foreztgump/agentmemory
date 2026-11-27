@@ -18,7 +18,9 @@ const { values: args } = parseArgs({
   },
 });
 const minutes = Number(args.minutes);
-const KINDS = new Set(["observe", "enrich", "search", "lessons", "status"]);
+const KIND_LIST = ["observe", "enrich", "search", "lessons", "status"] as const;
+type Kind = (typeof KIND_LIST)[number];
+const KINDS = new Set<string>(KIND_LIST);
 const perMinute = Object.fromEntries(args["per-minute"]!.split(",").map((kv) => {
   const [k, v, extra] = kv.split("=");
   const n = Number(v);
@@ -31,7 +33,6 @@ const runId = Date.now().toString(36);
 const sessions = Array.from({ length: 4 }, (_, i) => `ses_traffic_${runId}_${i}`);
 const QUERIES = ["redis connection timeout", "qdrant facet", "kvrocks migration", "search worker", "hook latency", "retention sweep", "vector backfill", "status endpoint"];
 
-type Kind = "observe" | "enrich" | "search" | "lessons" | "status";
 const request = (kind: Kind, i: number): { method: string; path: string; body?: unknown } => {
   const sessionId = sessions[i % sessions.length]!;
   switch (kind) {

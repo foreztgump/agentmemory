@@ -1,6 +1,7 @@
 // TEE-1450: compares the index counts /agentmemory/status reports with Qdrant's own
-// exact counts of the docs collection, read at the same moment. Runs on the replica
-// network (replica.sh client); exits 1 when they differ.
+// exact counts of the docs collection, read right after it. The two reads are not atomic,
+// so run it with no traffic. Runs on the replica network (replica.sh client); exits 1
+// when they differ.
 //
 //   node bench/fork/qdrant/status-parity.mjs [--collection agentmemory]
 import { parseArgs } from "node:util";
@@ -21,7 +22,9 @@ const count = async (filter) => {
   return (await res.json()).result.count;
 };
 const layer = (value) => ({ must: [{ key: "layer", match: { value } }] });
-const status = await (await fetch(`${args.url}/agentmemory/status`, { headers: { authorization: `Bearer ${args.secret}` } })).json();
+const statusRes = await fetch(`${args.url}/agentmemory/status`, { headers: { authorization: `Bearer ${args.secret}` } });
+if (!statusRes.ok) throw new Error(`status endpoint answered ${statusRes.status}: ${(await statusRes.text()).slice(0, 200)}`);
+const status = await statusRes.json();
 const [observations, memories, lessons] = await Promise.all([count(layer("observation")), count(layer("memory")), count(layer("lesson"))]);
 const reported = { observationsIndexed: status.index?.observationsIndexed, memoriesIndexed: status.index?.memoriesIndexed, lessonsIndexed: status.index?.lessonsIndexed };
 const qdrant = { observationsIndexed: observations, memoriesIndexed: memories, lessonsIndexed: lessons };
