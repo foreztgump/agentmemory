@@ -91,8 +91,10 @@ async function post(name: string, path: string, body: unknown): Promise<void> {
       method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000),
     });
     const text = await response.text();
-    if (!latencies.has(name)) latencies.set(name, []);
-    latencies.get(name)!.push(performance.now() - started);
+    if (response.ok) {
+      if (!latencies.has(name)) latencies.set(name, []);
+      latencies.get(name)!.push(performance.now() - started);
+    }
     tally(name, response.ok, `${response.status} ${text}`);
   } catch (error) {
     tally(name, false, String(error));

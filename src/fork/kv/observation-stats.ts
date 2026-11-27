@@ -70,10 +70,13 @@ function shift(base: Tally, removed: Contribution, added: Contribution): Tally {
  */
 export class ObservationStats {
   private readonly listeners = new Set<WriteListener>();
-  readonly important: ImportantObservationIndex;
+  /** Null off the redis backend, whose list order the index reproduces; context scans there instead. */
+  readonly important: ImportantObservationIndex | null;
 
   constructor(private readonly base: StateKV) {
-    this.important = new ImportantObservationIndex(base, (sessionId, fn) => this.lock(sessionId, fn));
+    this.important = base.backend === "redis" && typeof base.iterate === "function"
+      ? new ImportantObservationIndex(base, (sessionId, fn) => this.lock(sessionId, fn))
+      : null;
   }
 
   /** Calls `listener` after every successful set, update and delete on any scope. Returns the unsubscribe function. */
@@ -146,7 +149,7 @@ export class ObservationStats {
       const newRow = await read();
       const after = shift(before, contribution(oldRow), contribution(newRow));
       await this.storeLocked(sessionId, after, before.rows);
-      await this.important.applyLocked(sessionId, key, oldRow, newRow, before.rows, after.rows);
+      await this.important?.applyLocked(sessionId, key, oldRow, newRow, before.rows, after.rows);
       this.notify(scope, key, deleted);
       return result;
     });
@@ -169,14 +172,14 @@ export class ObservationStats {
     for await (const page of this.base.iterate<CompressedObservation>(KV.observations(sessionId))) {
       for (const row of page) {
         tally = shift(tally, EMPTY_CONTRIBUTION, contribution(row));
-        if (!isImportantObservation(row)) continue;
+        if (!this.important || !isImportantObservation(row)) continue;
         const entry = importantEntry(row.id, row);
         if (entry) important.push(entry);
         else keyed = false;
       }
     }
     await this.storeLocked(sessionId, tally, -1);
-    await this.important.replaceLocked(sessionId, keyed ? important : null, tally.rows);
+    await this.important?.replaceLocked(sessionId, keyed ? important : null, tally.rows);
     return tally;
   }
 
@@ -247,8 +250,8 @@ export async function sessionObservationTotals(
  * scans the session as upstream does.
  */
 export async function topImportantObservations(kv: StateKV, sessionId: string, limit: number): Promise<CompressedObservation[]> {
-  const stats = observationStatsOf(kv);
-  if (stats && kv.backend === "redis" && typeof kv.iterate === "function") return stats.important.top(sessionId, limit);
+  const index = observationStatsOf(kv)?.important;
+  if (index) return index.top(sessionId, limit);
   const rows = await collectWhere<CompressedObservation>(kv, KV.observations(sessionId), isImportantObservation);
   return [...rows].sort((a, b) => b.importance - a.importance).slice(0, limit);
 }

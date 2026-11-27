@@ -28,6 +28,7 @@ const quantile = (values: number[], q: number) => {
 };
 
 if (args.compare) {
+  if (positionals.length !== 2) throw new Error("--compare takes two files: old.jsonl new.jsonl");
   const read = (path: string) => readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Line);
   const [a, b] = positionals.map(read) as [Line[], Line[]];
   const key = (l: Line) => `${l.pass}\u0000${l.project}\u0000${l.sessionId}`;
@@ -36,13 +37,22 @@ if (args.compare) {
   const differ: string[] = [];
   for (const l of a) {
     const other = byKey.get(key(l));
+    byKey.delete(key(l));
     if (other && other.status === l.status && other.body === l.body) same++;
     else differ.push(`${l.pass} ${l.project} ${l.sessionId}`);
   }
-  const nonEmpty = a.filter((l) => JSON.parse(l.body).blocks > 0).length;
+  for (const l of byKey.values()) differ.push(`only in the second file: ${l.pass} ${l.project} ${l.sessionId}`);
+  const blocksOf = (body: string) => {
+    try {
+      return Number(JSON.parse(body).blocks) || 0;
+    } catch {
+      return 0;
+    }
+  };
+  const nonEmpty = a.filter((l) => blocksOf(l.body) > 0).length;
   console.log(`compared ${a.length} calls (${nonEmpty} with context): ${same} identical, ${differ.length} differ`);
   for (const d of differ.slice(0, 20)) console.log(`  differs: ${d}`);
-  process.exit(differ.length === 0 && a.length === b.length ? 0 : 1);
+  process.exit(differ.length === 0 ? 0 : 1);
 }
 
 const base = args.url!.replace(/\/$/, "");
@@ -71,16 +81,20 @@ for (const s of sessions) {
   byProject.get(s.project)!.push(s);
 }
 const perProject = Number(args["per-project"]);
+const passes = Number(args.passes);
+if (!Number.isInteger(perProject) || perProject < 1) throw new Error(`invalid --per-project: ${args["per-project"]}`);
+if (!Number.isInteger(passes) || passes < 1) throw new Error(`invalid --passes: ${args.passes}`);
+const startedMs = (s: Session) => new Date(s.startedAt ?? 0).getTime();
 const calls: { project: string; sessionId: string }[] = [];
 for (const [project, list] of [...byProject].sort(([a], [b]) => a.localeCompare(b))) {
   calls.push({ project, sessionId: "golden-probe-none" });
-  const recent = [...list].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt))).slice(0, perProject);
+  const recent = [...list].sort((a, b) => startedMs(b) - startedMs(a)).slice(0, perProject);
   for (const s of recent) calls.push({ project, sessionId: s.id });
 }
 console.log(`context-golden: ${sessions.length} sessions, ${byProject.size} projects, ${calls.length} calls per pass`);
 
 const lines: Line[] = [];
-for (let pass = 1; pass <= Number(args.passes); pass++) {
+for (let pass = 1; pass <= passes; pass++) {
   for (const call of calls) {
     const started = performance.now();
     const response = await fetch(`${base}/agentmemory/context`, {

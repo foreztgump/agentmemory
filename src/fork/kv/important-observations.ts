@@ -4,14 +4,13 @@ import { logger } from "../../logger.js";
 import type { CompressedObservation, ImportantObservationEntry, SessionImportantObservations } from "../../types.js";
 
 /** The rows context injection may show for a session without a summary. */
-export const isImportantObservation = (o: CompressedObservation | null | undefined): boolean =>
-  Boolean(o?.title) && o!.importance >= 5;
+export const isImportantObservation = (o: unknown): o is CompressedObservation =>
+  o !== null && o !== undefined && Boolean((o as CompressedObservation).title) && (o as CompressedObservation).importance >= 5;
 
 export function importantEntry(key: unknown, row: unknown): ImportantObservationEntry | null {
-  const typed = row as CompressedObservation | null | undefined;
-  if (typeof key !== "string" || !isImportantObservation(typed)) return null;
-  const at = orderKey(typed);
-  return { key, id: idKey(typed), importance: typed!.importance, at: Number.isFinite(at) ? at : null };
+  if (typeof key !== "string" || !isImportantObservation(row)) return null;
+  const at = orderKey(row);
+  return { key, id: idKey(row), importance: row.importance, at: Number.isFinite(at) ? at : null };
 }
 
 function sameEntry(a: ImportantObservationEntry | null, b: ImportantObservationEntry | null): boolean {
@@ -73,8 +72,10 @@ function applied(
  * a session of any size. The owner (ObservationStats) calls `applyLocked` inside its per-session
  * lock on every write to `mem:obs:<session>`. A session written before the index existed has no row
  * until context first reads it, which builds the row from one paged scan; so does a session whose
- * kept entries fell below what context shows while important rows were left out. Reads check each row they fetch against its entry and rebuild the session on any
- * mismatch, so a stale entry can never inject a deleted row.
+ * kept entries fell below what context shows while important rows were left out. Reads check each
+ * row they fetch against its entry and rebuild the session on any mismatch, so a stale entry can
+ * never inject a deleted row. Reads take no lock, so like the paged scan they replace, one that
+ * races a write may miss the row being written.
  */
 export class ImportantObservationIndex {
   constructor(
@@ -135,7 +136,7 @@ export class ImportantObservationIndex {
         else keyed = false;
       }
     }
-    if (rows > 0 && keyed) await this.store(sessionId, bounded(entries));
+    await this.replaceLocked(sessionId, keyed ? entries : null, rows);
     return topImportant(kept, limit);
   }
 
