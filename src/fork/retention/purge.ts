@@ -21,7 +21,10 @@ export interface PurgeResult {
   readonly restoredBack: number;
   /** Entries whose live row had been rewritten since the move: the live row stayed, the vault copy was dropped. */
   readonly dropped: number;
-  /** Entries left in the vault: a protected trim entry whose row sits in another run's vault. */
+  /**
+   * Entries left in the vault: a protected trim entry whose row sits in another run's vault, still restorable from there.
+   * A trim entry whose row is neither live nor vaulted has nothing to restore into and is purged, protected or not.
+   */
   readonly deferred: number;
   readonly runsEmptied: number;
 }
@@ -149,7 +152,9 @@ async function commit(pass: Pass, runId: RunId, ref: ItemRef): Promise<Commit> {
   if (!entry) return { kind: "gone" };
   if (entry.purging || entry.imageReleased) return { kind: "commit", entry: { ...entry, purging: true } };
   const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
-  const protectedBy = entry.restoring || (entry.stage !== "T" && live) ? null : await pass.protect.recheck(entry);
+  const protectedBy = entry.stage === "T" && !live && !(await rowVaulted(vault, entry))
+    ? CLEAR
+    : entry.restoring || (entry.stage !== "T" && live) ? null : await pass.protect.recheck(entry);
   if (protectedBy?.kind === "clear") {
     await pass.beat();
     if (pass.dryRun) return { kind: "commit", entry };
@@ -160,6 +165,19 @@ async function commit(pass: Pass, runId: RunId, ref: ItemRef): Promise<Commit> {
   if (!pass.dryRun) return { kind: "settled", result: await reinstateLocked(deps, vault, entry) };
   const decision = reinstatement(entry, live);
   return { kind: "settled", result: { restored: decision === "restore", reembedNeeded: false, ...(decision === "deferred" ? { deferred: true } : {}) } };
+}
+
+const CLEAR = { kind: "clear" } as const;
+
+/**
+ * A trim entry restores only onto a live row. With none, its source has a place to go only while another run's vault
+ * still holds the row (a later stage O); the locator names that claim. Without one the row was purged or forgotten,
+ * nothing can be restored into, and the entry is purged whatever protection says, or it would be held forever.
+ */
+async function rowVaulted(vault: Vault, entry: VaultEntry): Promise<boolean> {
+  const locator = await vault.locate(entry.ref);
+  const other = locator?.runId === entry.runId ? locator.under : locator;
+  return !!other && other.stage !== "T" && (await vault.get(other.runId, entry.ref)) !== null;
 }
 
 /** True when this call took the entry; false when a forget or a restore took it first. */

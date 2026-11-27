@@ -247,6 +247,20 @@ describe("the T-then-O two-claim locator", () => {
     expect(await r.kv.get(KV.observations("ses_x"), "x1")).toBeNull();
   });
 
+  it("a protected trim entry whose row was purged by the later run has nothing to restore into, and is purged", async () => {
+    const { r, ref, clock, deps } = await stacked({ graceDays: 30, closedAt: NOW }, { graceDays: 1, closedAt: NOW });
+    clock.now = at(25);
+    expect(done(await purge(deps))).toMatchObject({ purged: 1, runsEmptied: 1 });
+    await pin(r, ref);
+    clock.now = at(24 * 31);
+    expect(done(await purge(deps, { dryRun: true }))).toMatchObject({ purged: 1, deferred: 0, runsEmptied: 1 });
+    expect(done(await purge(deps))).toMatchObject({ purged: 1, restoredBack: 0, deferred: 0, runsEmptied: 1 });
+    expect(await r.runs.get(A)).toMatchObject({ held: 0, purgedAt: at(24 * 31).toISOString() });
+    expect(await vaultKeys(r, A)).toEqual([]);
+    expect(await r.vault.locate(ref)).toBeNull();
+    expect(await r.kv.get(KV.observations("ses_x"), "x1")).toBeNull();
+  });
+
   it("a protected trim entry whose row sits in another run's vault is deferred, stays held, and changes nothing on the next pass", async () => {
     const { r, ref, clock, deps } = await stacked({ graceDays: 1, closedAt: NOW }, { graceDays: 30, closedAt: NOW });
     await pin(r, ref);
