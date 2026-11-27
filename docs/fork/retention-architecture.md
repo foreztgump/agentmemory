@@ -112,9 +112,9 @@ The call is visible at its one caller. Other delete paths keep their behaviour, 
 **Lessons** are never candidates. Retention does not touch the lessons collection, and TEE-1196 treats a `deleted` lesson as not indexable.
 
 **Images.**
-- Soft delete takes the image out of search only when no other live row references the file. Live references are the ref count minus `mem:retention:image-holds`.
-- In that case the embedding row moves to the vault and `images.remove` runs. TEE-1196 then sees no record and removes the entry instead of repairing it, and memory-mode vision search, which reads those rows, stops finding it.
-- `decrementImageRef` runs once, at purge (R4).
+- Soft delete takes the image out of search only when no other live row references the file. Live references are the ref count minus the holders in `mem:retention:image-holds`.
+- In that case the embedding row is parked in the hold record and `images.remove` runs. TEE-1196 then sees no record and removes the entry instead of repairing it, and memory-mode vision search, which reads those rows, stops finding it.
+- `decrementImageRef` runs once per purged item, at purge (R4), with `imageReleased` written first.
 
 **Interface depth.**
 - Five iii functions, five REST routes and three seam calls hide the vault, the satellites, both modes, the stream, the lease and the recall check.
@@ -223,7 +223,7 @@ Each slice is one PR against `disk`, at most about 800 changed lines, with its t
 | 13 | First production run (owner) | R15 | Owner sets main's env; see the rollout below | none | 12, and the owner's answers below |
 
 Slice notes:
-- Slices 1 to 6, 8, 9 and 11 are done. Slice 3: `setSummarizeVeto` now throws on a second registration, and `resetSummarizeVeto` clears it for tests. See the reconciliation below.
+- Slices 1 to 9 and 11 are done. Slice 3: `setSummarizeVeto` now throws on a second registration, and `resetSummarizeVeto` clears it for tests. See the reconciliation below.
 
 Rollout for slice 13, on main only. Set:
 - `AM_RETENTION=enforce`, with the D1 windows, grace 30 and the recall-cases path;
@@ -334,6 +334,37 @@ Each slice records its accepted deviations here before handing off.
 - **Seams.** `types.ts` 1 line. `search.ts` 2 lines and an import, in `indexRecords` and `rebuildKeywordIndex`. `doc-of-record.ts` 1 line and an import, plus its doc comment. No other upstream file changed.
 - **Behaviour to know.** `mem::remember` finds its supersede candidates through the keyword index when the index is ready and not empty, so a duplicate save does not supersede a demoted memory: both exist, and the demoted one stays hidden. With nothing indexed it scans `mem:memories` and does supersede it. `mem::consolidate` and `mem::evolve` read `mem:memories` and do see it. Graph retrieval reads a cited memory from `mem:memories` with only an `isLatest` check, so a graph node that cites a demoted memory id as evidence still resolves it (not gated by this slice).
 - **Left for later slices.** Slice 7: purge finalize of a memory entry should delete `mem:retention:demoted` for the id, because a demoted memory that was then soft deleted keeps its record. Slice 10: the pin handler.
+
+**Slice 7 (purge, grace, images, tombstones).**
+- Done: `purge.ts` (new: `purgeExpired`, `runPurge`, `dueRuns`), `images.ts` (new: the image satellite and `releaseImages`), the `image` and `metadata` rows of `SATELLITES`, `mem::retention-purge` in `register.ts`, and the forget path's use of `releaseImages`. This closes every "left for slice 7" note above: purge's Protector runs under the sweep lease, a purged memory entry deletes its demote record, `afterForget` and purge share one image release that also drops the hold. No REST route or timer (slice 10). No upstream file changed.
+- **Purge order per entry** (stages O, S, X; every step after 2 repeats safely):
+  1. `recheck` and settle, under the item lock. An entry mid-restore, or whose live row came back, goes through `reinstateLocked`. A protected entry is reinstated. Nothing before step 2 is irreversible, so a crash here leaves the entry fully restorable.
+  2. `vault.update({ purging: true })`, the commit point. From here `reinstateLocked` defers the entry (restore says `deferred`), a re-run skips the recheck and finishes it.
+  3. Once per page: `deleteFacetsForTargets` for the page's ids (it reads the whole facet scope, so it runs per page, not per entry).
+  4. Per entry, under its lock: `imageReleased: true` on the entry, then `decrementImageRef` per file, then drop the hold (the three steps of `releaseImages`, run again after a crash only for the hold); then the access log, then for a memory its retention score; then for an observation the tombstone (written only when absent) or for a memory `mem:retention:demoted`.
+  5. `vault.take` (entry, then the locator's claim). Last, as the ordering invariant (R12) requires.
+  6. After the last page: one `retention_purge` audit entry per run, then `RunRow.held := entries left` and `purgedAt` when none are left.
+  A stage T entry skips 3 and 4: it only drops the vaulted source (`take`), and its live row, index entries and locator claim for another run stay. A crash at any write leaves the entry either restorable with nothing taken from it (before step 2) or committed with only idempotent steps left (after it). The tests crash between every two writes and re-run.
+- **Held count.** `held` is assigned at the end of a run's visit, not decremented per page. A decrement could reach 0 before `purgedAt` was written, and `runsHolding` would never visit the run again. A crash after a `take` leaves `held` too high, never too low, so the run is visited again. Restore and forget still decrement (`release`).
+- **Image reference is released at most once; a crash can leak one.** `imageReleased` goes first, as `afterForget` does. A crash between the marker and the decrement leaks that reference and the file lives on, because `mem:image-refs` is a bare number and cannot hold the marker in the same write. The crash test asserts this exactly: the final count is the expected one except for a path whose marker was set and whose decrement had not completed, and the decrement never ran twice. `reinstateLocked` also defers any entry with `imageReleased`, so a forget that crashed after releasing the reference cannot be undone by a restore, and purge finishes it at the end of grace (slice 9's "not covered" case).
+- **Image hold.** `mem:retention:image-holds` is `{ holders: itemKey[], embedding? }`, not a count: a list of item keys stays correct when a detach, attach or purge is replayed after a crash, which a counter does not. Live referrers of a file are `mem:image-refs` minus `holders.length`. When a move leaves none, the `mem:image-embeddings` row is parked in the hold and `images.remove` runs; a restore of any holder puts it back with no embedding call (R3), and purge or forget of the last holder drops it with the file. `SatelliteSnapshots.imageEmbedding` is removed: the parked row lives in the hold, not in one entry, so two holders of one file restore in either order. A hold lives under a leaf lock `imgHold:<path>`; the item lock is held outside it.
+- **Contract changes.**
+  - `purgeExpired(deps, protect, now, opts?)` gains `{ beat, dryRun, pauseMs }`. `PurgeResult` moved from restore.ts to purge.ts and gains `dropped` (an entry whose live row had been rewritten: the row stays, the copy goes) and `deferred` (a protected trim entry whose row sits in another run's vault). `runPurge(deps, settings, { dryRun })` is the entry point: off returns `{ kind: "off" }` with no read or write, no run due takes no lease, a busy lease returns `{ kind: "busy" }`, a lost heartbeat returns `{ kind: "lease-lost" }`.
+  - `EntryBase.purging` is new. `RunRow.purgedAt` is new. `reinstateLocked` returns `deferred` for an entry with `purging` or `imageReleased`.
+  - `Satellite.finalize` is now used: `image` (release once, drop the hold) and `metadata` (access log, and a memory's retention score).
+  - `mem::retention-purge` takes `{ dryRun }`, true unless `false`, as the sweep does. A dry run takes the lease and builds the Protector, so it may write `sweepScratch` and the active-day cache; it writes no audit entry, no run row and nothing in the vault.
+- **Which runs are due.** `phase` done, not a dry run, `held > 0`, and `now - closedAt >= graceDays` of the run's own snapshot (24 h counts as elapsed). An unfinished run, a refused run and a purged run are never visited. A restored run's leftover deferred trim entries are purged like any other.
+- **Protection at purge.** `runPurge` builds one Protector from the current settings' windows and a clock loaded at `now`, and releases it in a finally unless the lease was lost (the new owner may be using the scratch). Pin, citation by a latest memory or an insight, access inside the cold window and importance of 8 or more restore the entry (`restoredBack`). Importance of a stage O entry is the entry's row, as slice 5 recorded, so only a trimmed row's importance can change during grace.
+- **Tombstones.** Written at purge for stage O only, keyed by `itemKey`, never deleted, never rewritten. The capture event marker from soft delete is left alone, which is what keeps a replay a `duplicate`; the test replays the capture log after a purge and after a boot rebuild. A memory gets no tombstone.
+- **Metadata.** An observation's access log is keyed by the bare id, so it is kept when the observation-to-session index still names another session's live row for that id.
+- **R13.** One `retention_purge` entry per due run and pass, with `runId`, `reason`, `graceDays`, `closedAt`, `heldBefore`, `purged`, `restoredBack`, `dropped`, `deferred` and `remaining`. It is written only when the visit changed something. `safeAudit` swallows a failure, and a crash before the entry loses that pass's counts (the tombstones and `purgedAt` stay).
+- **Behaviour to know.**
+  - A stale entry that restore or purge drops because its live row was rewritten keeps its image hold and reference. Slice 4 already left that reference; the hold stays consistent with the count.
+  - Forgetting a live row that shares an image with a vaulted holder leaves the image searchable until the holder is purged: the embedding is parked only at the move.
+  - A stage T entry whose row is in a later run's vault is purged on its own run's grace, so the raw source can go while the row is still restorable from the later run.
+  - `deleteFacetsForTargets` scans the whole facet scope once per page of 200 entries.
+- **TEE-1196 was on disk** (`CollectionReconciler`, `imageRecords`). `purge-disk.test.ts` runs the images assertions against a live Qdrant (`QDRANT_URL`): after a move a reconcile pass neither repairs the image back nor reports it extra, a restore returns it without embedding, and after purge the next pass finds nothing to repair.
+- **Left for slice 10:** the daily purge timer (call `runPurge` with `dryRun: false`, no-op when off), `POST /agentmemory/retention/purge` with a `{ dryRun }` whitelist and fail-closed auth, the purge counts in `mem::retention-report`, and the `docs:sync` counts. **Left for slice 12:** the 23 h and 25 h check on a replica with a 1-day grace, the memory peak of a purge over a full vault, the facet scan cost per page, purge against a live image store (the file leaves disk), and a sweep timer that meets a purge's lease.
 
 ## Next implementation step
 
