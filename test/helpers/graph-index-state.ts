@@ -15,7 +15,7 @@ export function createGraphIndexState(store = new Map<string, Map<string, unknow
       if (id === "state::set") {
         rows.set(payload.key, structuredClone(payload.value));
         store.set(payload.scope, rows);
-        return structuredClone(payload.value);
+        return { new_value: structuredClone(payload.value) };
       }
       if (id === "state::update") {
         const old_value = structuredClone(rows.get(payload.key) ?? null);

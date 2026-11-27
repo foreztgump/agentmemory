@@ -60,7 +60,7 @@ async function setup(provider = { name: "noop", compress: vi.fn(async () => xml)
       if (id === "state::set") {
         rows.set(payload.key, structuredClone(payload.value));
         store.set(payload.scope, rows);
-        return structuredClone(payload.value);
+        return { new_value: structuredClone(payload.value) };
       }
       throw new Error(`unexpected state call ${id}`);
     },
