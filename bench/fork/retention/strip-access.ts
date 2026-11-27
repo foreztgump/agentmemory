@@ -7,9 +7,9 @@
 //   stage.sh run bench/fork/retention/strip-access.ts --cases /private/cases.json [--after <ISO time>]
 // Run it beside `sweep.ts --enforce`. Polls Kvrocks every 100 ms. Prints when it saw the verdict and which fields it deleted.
 import { readFileSync } from "node:fs";
-import { arg, redis, sleep, text } from "./lib.js";
+import { arg, redis, requireArg, sleep, text } from "./lib.js";
 
-const cases = (JSON.parse(readFileSync(arg("cases")!, "utf8")) as { cases: Array<{ id: string; evidence: string[] }> }).cases;
+const cases = (JSON.parse(readFileSync(requireArg("cases", "stage.sh run bench/fork/retention/strip-access.ts --cases /private/cases.json [--after <ISO time>]"), "utf8")) as { cases: Array<{ id: string; evidence: string[] }> }).cases;
 const ids = [...new Set(cases.flatMap((c) => c.evidence))];
 const after = arg("after") ?? new Date().toISOString();
 const r = await redis();

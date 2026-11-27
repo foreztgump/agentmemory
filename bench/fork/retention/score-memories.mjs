@@ -8,4 +8,4 @@ import { registerWorker } from "iii-sdk";
 const sdk = registerWorker(process.env.III_ENGINE_URL ?? "ws://127.0.0.1:49134", { workerName: "s12-score", namespace: "agentmemory", invocationTimeoutMs: 600_000 });
 const result = await sdk.trigger({ function_id: "mem::retention-score", payload: { config: process.env.S12_LAMBDA ? { lambda: Number(process.env.S12_LAMBDA) } : undefined }, timeoutMs: 600_000 });
 console.log(JSON.stringify({ total: result.total, tiers: result.tiers, success: result.success }));
-process.exit(0);
+process.exit(result?.success ? 0 : 1);

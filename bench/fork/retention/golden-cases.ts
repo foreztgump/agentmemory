@@ -4,9 +4,9 @@
 // The report is the JSON that report.ts --samples (or sweep.ts --out) printed. Each case's evidence is one row from `samples`, so the run plans it.
 // Queries are the row's title words; a longer query is tried when the title alone misses. The rows are read from Kvrocks.
 import { readFileSync } from "node:fs";
-import { am, arg, redis, text } from "./lib.js";
+import { am, arg, redis, requireArg, text } from "./lib.js";
 
-const file = JSON.parse(readFileSync(arg("report")!, "utf8"));
+const file = JSON.parse(readFileSync(requireArg("report", "stage.sh run bench/fork/retention/golden-cases.ts --report /private/<file>.json [--count 8]"), "utf8"));
 const report = file.report?.perStage ? file.report : file.report.report;
 const want = Number(arg("count", "8"));
 const r = await redis();

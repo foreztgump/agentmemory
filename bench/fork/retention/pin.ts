@@ -11,11 +11,19 @@ const demoted = (await r.call("HLEN", "state:mem:retention:demoted")) as number;
 let id = arg("id");
 if (!id) {
   const reply = (await r.call("HSCAN", "state:mem:retention:demoted", "0", "COUNT", "10")) as Array<any>;
+  if (reply[1][0] === undefined) {
+    console.error("state:mem:retention:demoted is empty; nothing to pin");
+    process.exit(1);
+  }
   id = text(reply[1][0]);
 }
-const readMemory = async () => JSON.parse(text((await r.call("HGET", "state:mem:memories", id!)) as Buffer));
+// A demoted memory whose row is not in mem:memories (or a failed pin) must still print its result: read it as an empty row.
+const readMemory = async (): Promise<Record<string, unknown>> => {
+  const raw = await r.call("HGET", "state:mem:memories", id!);
+  return raw ? JSON.parse(text(raw as Buffer)) : {};
+};
 const point = async () => {
-  const found = await qdrant<Array<{ payload?: { deleted?: boolean; dense?: boolean }; vector?: number[] }>>("POST", "/collections/agentmemory/points", {
+  const found = await qdrant<Array<{ payload?: { deleted?: boolean; dense?: boolean }; vector?: number[] | { dense?: number[] } }>>("POST", "/collections/agentmemory/points", {
     ids: [pointId(id!)], with_payload: ["deleted", "dense"], with_vector: true,
   });
   const p = found[0];
@@ -32,12 +40,13 @@ const afterMemory = await readMemory();
 const recordAfter = await r.call("HGET", "state:mem:retention:demoted", id);
 // The stored vector (base64 float32) against the point's vector, which Qdrant keeps as normalised float16.
 let vectorMatches: boolean | null = null;
-if (record?.vector && afterPoint.exists && afterPoint.vector) {
+if (record?.vector && afterPoint.exists) {
   const buf = Buffer.from(record.vector, "base64");
   const stored = Array.from({ length: buf.length / 4 }, (_, i) => buf.readFloatLE(i * 4));
   const norm = Math.sqrt(stored.reduce((s, x) => s + x * x, 0)) || 1;
-  const maxDiff = Math.max(...stored.map((x, i) => Math.abs(x / norm - afterPoint.vector![i]!)));
-  vectorMatches = maxDiff < 1e-3;
+  // The collection stores a named vector, so the point answers { dense: [...] } (restore-refs.ts reads it the same way).
+  const dense = Array.isArray(afterPoint.vector) ? afterPoint.vector : (afterPoint.vector as { dense?: number[] } | undefined)?.dense;
+  vectorMatches = dense ? Math.max(...stored.map((x, i) => Math.abs(x / norm - dense[i]!))) < 1e-3 : false;
 }
 const search = await am("POST", "/agentmemory/smart-search", { query: String(afterMemory.title).split(/\s+/).slice(0, 10).join(" "), limit: 10, includeLessons: false });
 const found = (search.body?.results ?? []).findIndex((hit: { obsId: string }) => hit.obsId === id);
@@ -48,7 +57,7 @@ const result = {
   demotedMemoriesBefore: demoted, id, pinStatus: res.status, pinResponse: res.body && { kind: res.body.kind, vaulted: res.body.vaulted, undemoted: res.body.undemoted },
   before: { ...before, qdrant: beforeQ },
   after: { retention: afterMemory.retention ?? null, qdrant: afterQ, demoteRecordGone: recordAfter === null, vectorMatchesStored: vectorMatches, searchRank: found >= 0 ? found + 1 : null },
-  pass: res.status === 200 && res.body?.undemoted === true && afterPoint.exists && !(afterPoint as { deleted?: boolean }).deleted && recordAfter === null,
+  pass: res.status === 200 && res.body?.undemoted === true && afterPoint.exists && !(afterPoint as { deleted?: boolean }).deleted && recordAfter === null && vectorMatches !== false,
 };
 const out = arg("out");
 if (out) writeFileSync(out, JSON.stringify(result, null, 1));

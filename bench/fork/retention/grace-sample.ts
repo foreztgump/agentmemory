@@ -2,9 +2,9 @@
 // (restored at 23 h) and 5 in group B (purged at 25 h), and writes the grace file refs-check.ts reads.
 //   stage.sh run bench/fork/retention/grace-sample.ts --run ret_... > grace.json   (the client's /private is read-only, so the host saves the output)
 import type { VaultEntry } from "../../../src/fork/retention/types.js";
-import { am, arg, redis, text } from "./lib.js";
+import { am, redis, requireArg, text } from "./lib.js";
 
-const runId = arg("run")!;
+const runId = requireArg("run", "stage.sh run bench/fork/retention/grace-sample.ts --run ret_... > grace.json");
 const r = await redis();
 const total = (await r.call("HLEN", `state:mem:retention:vault:${runId}`)) as number;
 const picked: VaultEntry[] = [];

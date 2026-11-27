@@ -7,6 +7,7 @@
 #   stage.sh fill              start Qdrant, run search-migrate fill and verify (no embedding calls)
 #   stage.sh app               (re)create agentmemory with the S12_* settings below and wait until ready
 #   stage.sh restart-all       restart Kvrocks, Qdrant and agentmemory so each memory.peak starts fresh, wait ready
+#   stage.sh wait              wait until the running agentmemory is ready (exit 1 when it is not, with AM_IMAGE set as above)
 #   stage.sh peaks             print memory.peak (MiB) of agentmemory, kvrocks and qdrant as JSON
 #   stage.sh run <script.ts> [args]   run a bench/fork/retention script in the client container, with the store URL set
 #   stage.sh client <cmd...>   run a command in the client container (repo at /work, cases dir at /private)
@@ -28,7 +29,8 @@ export KVROCKS_MEM_LIMIT="${KVROCKS_MEM_LIMIT:-1280m}" QDRANT_MEM_LIMIT="${QDRAN
 S12_BACKUP="${S12_BACKUP:-/home/cownose/am-staging/buddy-2026-11-16}"
 mkdir -p "$S12_DIR"
 P="$REPLICA_PROJECT"
-KV="$(grep -oP '^KVROCKS_URL="\K[^"]+' "$R")"
+KV="$(grep -oP '^KVROCKS_URL="\K[^"]+' "$R")" || KV=""
+[[ -n "$KV" ]] || { echo "stage: no KVROCKS_URL line in $R" >&2; exit 1; }
 COMPOSE=(docker compose -f "$REPO/bench/fork/replica-compose.yml" -f "$REPO/bench/fork/qdrant/replica-disk.yml" -f "$HERE/replica-retention.yml" -p "$P")
 log() { echo "stage: $*" >&2; }
 
@@ -52,6 +54,7 @@ case "${1:-}" in
     docker restart "$P-agentmemory-1" >/dev/null
     READY_TIMEOUT_S=1200 "$R" wait
     ;;
+  wait) READY_TIMEOUT_S="${READY_TIMEOUT_S:-1200}" "$R" wait ;;
   peaks) printf '{"agentmemory":%s,"kvrocks":%s,"qdrant":%s}\n' "$(peak_mib agentmemory)" "$(peak_mib kvrocks)" "$(peak_mib qdrant)" ;;
   client) shift; "$R" client "$@" ;;
   run) shift; "$R" client env S12_STORE_URL="$KV" node --import tsx "$@" ;;

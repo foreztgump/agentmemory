@@ -5,9 +5,9 @@
 //   stage.sh run bench/fork/retention/restore-refs.ts --run ret_... [--n 3]
 import { pointId } from "../../../src/fork/worker/qdrant.js";
 import type { VaultEntry } from "../../../src/fork/retention/types.js";
-import { am, arg, qdrant, redis, sleep, text } from "./lib.js";
+import { am, arg, qdrant, redis, requireArg, sleep, text } from "./lib.js";
 
-const runId = arg("run")!;
+const runId = requireArg("run", "stage.sh run bench/fork/retention/restore-refs.ts --run ret_... [--n 3]");
 const want = Number(arg("n", "3"));
 const r = await redis();
 const picked: VaultEntry[] = [];
@@ -33,14 +33,14 @@ const res = await am("POST", "/agentmemory/retention/restore", { refs: picked.ma
 await sleep(10_000);
 const after = await Promise.all(picked.map((e) => point(e.ref.id)));
 const rows = picked.map((entry, i) => {
-  const buf = Buffer.from(entry.satellites.vector ?? "", "base64");
+  const buf = Buffer.from(entry.satellites?.vector ?? "", "base64");
   const stored = Array.from({ length: buf.length / 4 }, (_, k) => buf.readFloatLE(k * 4));
   const norm = Math.sqrt(stored.reduce((s, x) => s + x * x, 0)) || 1;
-  const keptVector = Boolean(entry.satellites.vector);
+  const keptVector = Boolean(entry.satellites?.vector);
   const v = after[i]!.vector;
   const maxDiff = v && keptVector ? Math.max(...stored.map((x, k) => Math.abs(x / norm - v[k]!))) : null;
   const { vector: _b, ...b } = before[i]!;
   const { vector: _a, ...a } = after[i]!;
   return { ref: `${entry.ref.kind === "observation" ? entry.ref.sessionId + "/" : ""}${entry.ref.id}`, vaultKeptVector: keptVector, before: b, after: a, maxAbsDiffToStoredNormalised: maxDiff };
 });
-console.log(JSON.stringify({ restoreStatus: res.status, restore: res.body, rows, pass: rows.length > 0 && rows.every((x) => x.after.exists && !(x.after as { deleted?: boolean }).deleted && (!x.vaultKeptVector || (x.after as { dense?: boolean }).dense === true)) }, null, 1));
+console.log(JSON.stringify({ restoreStatus: res.status, restore: res.body, rows, pass: rows.length > 0 && rows.every((x) => x.after.exists && !(x.after as { deleted?: boolean }).deleted && (!x.vaultKeptVector || ((x.after as { dense?: boolean }).dense === true && typeof x.maxAbsDiffToStoredNormalised === "number" && x.maxAbsDiffToStoredNormalised < 1e-3))) }, null, 1));

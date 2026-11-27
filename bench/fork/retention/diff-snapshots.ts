@@ -3,7 +3,12 @@
 import { readFileSync } from "node:fs";
 import { isBookkeeping } from "./lib.js";
 
-const [a, b] = process.argv.slice(2).map((p) => JSON.parse(readFileSync(p!, "utf8")));
+const paths = process.argv.slice(2);
+if (paths.length !== 2) {
+  console.error("usage: diff-snapshots.ts <before.json> <after.json>");
+  process.exit(2);
+}
+const [a, b] = paths.map((p) => JSON.parse(readFileSync(p, "utf8")));
 const user: Record<string, [number, number]> = {};
 const book: Record<string, [number, number]> = {};
 for (const family of new Set([...Object.keys(a.kv.records), ...Object.keys(b.kv.records)])) {

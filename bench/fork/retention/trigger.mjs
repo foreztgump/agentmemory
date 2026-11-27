@@ -19,4 +19,4 @@ try {
 }
 const text = JSON.stringify(out);
 console.log(text.length > Number(rawMax) ? `${text.slice(0, Number(rawMax))}...(cut, ${text.length} chars)` : text);
-process.exit(0);
+process.exit(out.ok ? 0 : 1);

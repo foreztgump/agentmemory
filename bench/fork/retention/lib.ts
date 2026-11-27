@@ -105,8 +105,9 @@ export interface QdrantCounts {
   readonly points: number;
   /** Points that are not tombstones (`deleted` is not true). */
   readonly live: number;
-  /** Live points that carry a stored vector (`dense` is true). */
-  readonly liveDense: number;
+  /** Live points that carry a stored vector (`dense` is true). Null when the count call failed (see `denseError`), never 0. */
+  readonly liveDense: number | null;
+  readonly denseError?: string;
 }
 
 const NOT_DELETED = { must_not: [{ key: "deleted", match: { value: true } }] };
@@ -118,8 +119,14 @@ export async function qdrantCounts(): Promise<Record<string, QdrantCounts>> {
   for (const name of list) {
     const count = async (filter?: unknown): Promise<number> =>
       (await qdrant<{ count: number }>("POST", `/collections/${name}/points/count`, { exact: true, ...(filter ? { filter } : {}) })).count;
-    const dense = await count({ must: [{ key: "dense", match: { value: true } }], ...NOT_DELETED }).catch(() => 0);
-    out[name] = { points: await count(), live: await count(NOT_DELETED), liveDense: dense };
+    let dense: number | null = null;
+    let denseError: string | undefined;
+    try {
+      dense = await count({ must: [{ key: "dense", match: { value: true } }], ...NOT_DELETED });
+    } catch (err) {
+      denseError = err instanceof Error ? err.message : String(err);
+    }
+    out[name] = { points: await count(), live: await count(NOT_DELETED), liveDense: dense, ...(denseError ? { denseError } : {}) };
   }
   return out;
 }
@@ -128,25 +135,44 @@ export const sleep = (ms: number): Promise<void> => new Promise((resolve) => set
 
 export function arg(name: string, fallback?: string): string | undefined {
   const at = process.argv.indexOf(`--${name}`);
-  return at >= 0 ? process.argv[at + 1] : fallback;
+  const value = at >= 0 ? process.argv[at + 1] : undefined;
+  return value === undefined || value.startsWith("--") ? fallback : value;
+}
+
+/** A required flag: prints the usage line and exits 2 when it is missing, so a script never runs with `undefined`. */
+export function requireArg(name: string, usage: string): string {
+  const value = arg(name);
+  if (value === undefined) {
+    console.error(`missing --${name}; usage: ${usage}`);
+    process.exit(2);
+  }
+  return value;
 }
 export const flag = (name: string): boolean => process.argv.includes(`--${name}`);
+
+/** The longest `runSweepRoute` waits for the run to close after the route's 504: a run killed mid-apply never closes by itself. */
+const MAX_POLL_MS = Number(process.env.S12_POLL_MAX_MS ?? 3 * 3600_000);
 
 /**
  * One sweep through the REST route. The route answers 504 after 180 s, the invocation timeout of the agentmemory worker, while
  * the sweep goes on; unless `poll` is false this waits until the newest run is closed and returns its id. `ms` is the wall time
- * from the call to the run's `closedAt`.
+ * from the call to the run's `closedAt`. After `MAX_POLL_MS` it gives up with `pollTimedOut` set and no run id.
  */
-export async function runSweepRoute(dryRun: boolean, poll = true): Promise<AmResponse & { runId?: string }> {
+export async function runSweepRoute(dryRun: boolean, poll = true): Promise<AmResponse & { runId?: string; pollTimedOut?: boolean }> {
   const started = Date.now();
   const res = await am("POST", "/agentmemory/retention/sweep", { dryRun }).catch((err): AmResponse => ({ status: 0, body: { error: String(err) }, ms: Date.now() - started }));
   let runId: string | undefined = res.body?.runId;
   if ((res.status === 504 || res.status === 0) && poll) {
     for (;;) {
       const row = (await am("GET", "/agentmemory/retention/report", undefined, 120_000).catch(() => null))?.body?.run;
-      if (row && row.phase === "done" && Date.parse(row.closedAt ?? "") >= started - 5_000) {
+      const closed = row?.phase === "done" ? Date.parse(row.closedAt ?? "") : Number.NaN;
+      if (closed >= started - 5_000) {
         runId = row.id;
-        return { ...res, runId, ms: Date.parse(row.closedAt) - started };
+        return { ...res, runId, ms: closed - started };
+      }
+      if (Date.now() - started > MAX_POLL_MS) {
+        console.error(`no closed run ${Math.round((Date.now() - started) / 1000)} s after the sweep call; newest run: ${row ? `${row.id} phase=${row.phase}` : "unreadable"}`);
+        return { ...res, runId: undefined, pollTimedOut: true, ms: Date.now() - started };
       }
       await sleep(5000);
     }

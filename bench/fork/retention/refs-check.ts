@@ -7,9 +7,9 @@ import { readFileSync } from "node:fs";
 import { pointId } from "../../../src/fork/worker/qdrant.js";
 import { itemKey } from "../../../src/fork/retention/scopes.js";
 import type { ItemRef } from "../../../src/fork/retention/types.js";
-import { arg, qdrant, redis } from "./lib.js";
+import { arg, qdrant, redis, requireArg } from "./lib.js";
 
-const file = JSON.parse(readFileSync(arg("file")!, "utf8")) as { runId: string; refs: Array<{ group: string; ref: ItemRef }> };
+const file = JSON.parse(readFileSync(requireArg("file", "stage.sh run bench/fork/retention/refs-check.ts --file /private/grace.json [--group A|B]"), "utf8")) as { runId: string; refs: Array<{ group: string; ref: ItemRef }> };
 const group = arg("group");
 const r = await redis();
 const rows = [];

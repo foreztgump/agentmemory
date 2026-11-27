@@ -5,16 +5,16 @@
 //   3. conservation: live observations + vaulted O entries equals the baseline's observations, and the same for memories
 //      (S and X), when a baseline snapshot (snapshot.ts output) is given and only retention moved rows since it;
 //   4. every vault entry has a locator in mem:retention:items naming its run;
-//   5. a sample of vaulted rows is not a live point in the docs collection (the Qdrant index agrees).
+//   5. a sample of vaulted rows (stage O, S and X) is not a live point in the docs collection (the Qdrant index agrees).
 //   stage.sh run bench/fork/retention/vault-check.ts --run ret_... [--baseline /private/baseline.json] [--sample 300]
 // Exits 1 on any violation. Prints JSON.
 import { readFileSync } from "node:fs";
 import { pointId } from "../../../src/fork/worker/qdrant.js";
 import type { VaultEntry } from "../../../src/fork/retention/types.js";
 import { itemKey } from "../../../src/fork/retention/scopes.js";
-import { am, arg, qdrant, redis, scopeCounts, text } from "./lib.js";
+import { am, arg, qdrant, redis, requireArg, scopeCounts, text } from "./lib.js";
 
-const runId = arg("run")!;
+const runId = requireArg("run", "stage.sh run bench/fork/retention/vault-check.ts --run ret_... [--baseline /private/baseline.json] [--sample 300]");
 const sampleSize = Number(arg("sample", "300"));
 const r = await redis();
 
@@ -67,7 +67,7 @@ for (const key of await vaultKeys()) {
       }
       const loc = locReplies[i] ? JSON.parse(text(locReplies[i] as Buffer)) : null;
       if (!loc || (loc.runId !== id && loc.under?.runId !== id)) stat.noLocator++;
-      if (entry.stage !== "T" && entry.ref.kind === "observation" && sample.length < sampleSize && ++o.n % 7 === 0) sample.push(entry);
+      if (entry.stage !== "T" && sample.length < sampleSize && ++o.n % 7 === 0) sample.push(entry);
     });
   }
   perRun[id] = stat;

@@ -1,9 +1,8 @@
 // R1 at full size: record the KV scope counts and the Qdrant point counts, run a dry sweep through the REST route,
-// record them again, and compare. Prints JSON; exits 1 when a user scope or an index count changed, or the report lacks a field.
+// record them again, and compare. Prints JSON; exits 1 when a user scope or an index count changed (or could not be read), or the report lacks a field.
 //   stage.sh run bench/fork/retention/dry-run.ts [--out /private/dry-run.json]
 import { writeFileSync } from "node:fs";
-import { arg, isBookkeeping, qdrantCounts, runSweepRoute, scopeCounts } from "./lib.js";
-import { am } from "./lib.js";
+import { am, arg, isBookkeeping, qdrantCounts, runSweepRoute, scopeCounts } from "./lib.js";
 import { missingReportFields } from "./report-check.js";
 
 const before = { kv: await scopeCounts(), search: await qdrantCounts() };
@@ -21,6 +20,7 @@ for (const family of new Set([...Object.keys(before.kv.records), ...Object.keys(
 const changedIndex = Object.keys({ ...before.search, ...after.search }).filter(
   (name) => JSON.stringify(before.search[name]) !== JSON.stringify(after.search[name]),
 );
+const countErrors = Object.entries({ ...before.search, ...after.search }).filter(([, c]) => c.denseError !== undefined).map(([name, c]) => `${name}: ${c.denseError}`);
 const report = sweep.body?.report ?? fetched?.report;
 const missing = missingReportFields(report);
 const userRecords = Object.entries(before.kv.records).filter(([family]) => !isBookkeeping(family));
@@ -37,13 +37,14 @@ const result = {
   indexBefore: before.search,
   indexAfter: after.search,
   indexChanged: changedIndex,
+  indexCountErrors: countErrors,
   missingReportFields: missing,
   reportSummary: report && {
     perStage: report.perStage, sealed: report.sealed, undigested: report.undigested, protectionHits: report.protectionHits,
     observationCap: report.observationCap, injectedContext: report.injectedContext, injectedContextScanned: report.injectedContextScanned,
     projects: Object.keys(report.perProject ?? {}).length,
   },
-  pass: (sweep.status === 200 || sweep.status === 504) && (fetched?.run?.outcome ?? sweep.body?.outcome) === "dry-run" && Object.keys(changedUser).length === 0 && changedIndex.length === 0 && missing.length === 0,
+  pass: (sweep.status === 200 || sweep.status === 504) && (fetched?.run?.outcome ?? sweep.body?.outcome) === "dry-run" && Object.keys(changedUser).length === 0 && changedIndex.length === 0 && countErrors.length === 0 && missing.length === 0,
   beforeKv: before.kv,
   afterKv: after.kv,
 };

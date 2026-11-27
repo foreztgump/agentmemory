@@ -19,7 +19,7 @@
 #
 # Settings (environment): AM_IMAGE (required for up, app, kvrocks, migrate and client), REPLICA_PROJECT (default amreplica),
 # REPLICA_STORE (valkey or kvrocks, default valkey), KVROCKS_MEM_LIMIT, AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, AGENTMEMORY_SCOPE_GUARD, READY_TIMEOUT_S,
-# REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container), REPLICA_COMPOSE_EXTRA (an overlay compose file).
+# REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container), REPLICA_COMPOSE_EXTRA (overlay compose files, separated by colons).
 set -euo pipefail
 
 die() { echo "replica: $*" >&2; exit 1; }
