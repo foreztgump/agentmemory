@@ -1,6 +1,5 @@
 import type { IIIClient } from "iii-sdk";
 import { captureEventScope, isCaptureKey, markCaptureEventDeleted } from "../../capture/event-record.js";
-import { deleteAccessLog } from "../../functions/access-tracker.js";
 import { indexObservationSession, lookupObservationSession, unindexObservationSession } from "../../state/obs-index.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import type { StateKV } from "../../state/kv.js";
@@ -177,7 +176,9 @@ async function assignSessionCount(deps: RetentionDeps, entry: VaultEntry): Promi
 }
 
 /**
- * Memories only. An observation's access log and facets are keyed by its bare id, which another session's live or vaulted
+ * Memories only. Each delete throws on failure, so purge leaves the entry `purging` and a re-run finishes it; upstream's
+ * `deleteAccessLog` swallows the error, which let `vault.take` run with the log still there. The lock is the one
+ * `recordAccess` and `deleteAccessLog` hold. An observation's access log and facets are keyed by its bare id, which another session's live or vaulted
  * row may share (ids repeat across imported sessions), and deleting them would strip that row's metadata.
  * ponytail: nothing says cheaply whether another row holds a bare id (the obs-session index names one session, the vault
  * is keyed by session), so purge keeps them; a bare-id holder index kept by `Vault.put` and `take` would let it delete.
@@ -187,8 +188,9 @@ function metadata(): Satellite {
     name: "metadata",
     appliesTo: ["memory"],
     async finalize(deps, entry) {
-      await deleteAccessLog(deps.kv, entry.ref.id);
-      await deps.kv.delete(KV.retentionScores, entry.ref.id);
+      const { id } = entry.ref;
+      await withKeyedLock(`mem:access:${id}`, () => deps.kv.delete(KV.accessLog, id));
+      await deps.kv.delete(KV.retentionScores, id);
     },
   };
 }

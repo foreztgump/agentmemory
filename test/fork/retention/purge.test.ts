@@ -19,9 +19,10 @@ import { resetSummarizeVeto } from "../../../src/fork/retention/veto.js";
 import type { DemoteRecord, ItemRef, ObservationTombstone, RunId } from "../../../src/fork/retention/types.js";
 import { Vault } from "../../../src/fork/retention/vault.js";
 import type { RetentionDeps } from "../../../src/fork/retention/satellites.js";
+import type { StateKV } from "../../../src/state/kv.js";
 import { KV } from "../../../src/state/schema.js";
 import type { CompressedObservation, Facet, Insight, Memory } from "../../../src/types.js";
-import { NOW, candidate, memory, observation, rig, seedMemory, seedObservation, seedSeal, vec, type Rig } from "./move-fixtures.js";
+import { NOW, candidate, memory, observation, rig, seedMemory, seedObservation, seedSeal, seedSession, vec, type Rig } from "./move-fixtures.js";
 import { pin, sealedSession } from "./plan-fixtures.js";
 import { at, clocked, closedRun, DAY, done, purge, purgeSettings, snapshot, writeCount } from "./purge-fixtures.js";
 import { auditEntries, goldenCase, indexHarness, sweep, uncapped, vaultKeys, writeCases } from "./sweep-fixtures.js";
@@ -532,6 +533,68 @@ describe("metadata keyed by a bare id another session's row may share", () => {
     expect(await r.kv.get(KV.observations("ses_b"), "dup7")).not.toBeNull();
     expect(await r.kv.get(KV.facets, "fct_obs")).not.toBeNull();
     expect(await r.kv.get(KV.facets, "fct_mem")).toBeNull();
+  });
+});
+
+describe("a memory metadata delete that fails", () => {
+  const COLD1 = purgeSettings(1, "trim:45,obs:180,sup:180,cold:1");
+  /** The same KV, except that the first delete of (scope, key) rejects. */
+  function failingOnce(kv: StateKV, scope: string, key: string): StateKV {
+    let failed = false;
+    return new Proxy(kv, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (prop !== "delete") return typeof value === "function" ? value.bind(target) : value;
+        return (s: string, k: string) => {
+          if (!failed && s === scope && k === key) {
+            failed = true;
+            return Promise.reject(new Error("transient write failure"));
+          }
+          return target.delete(s, k);
+        };
+      },
+    }) as StateKV;
+  }
+
+  async function world() {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    await seedSession(r, "ses_m");
+    for (const [n, id] of ["m1", "m2", "m3"].entries()) {
+      await seedMemory(r, memory(id, { project: "proj" }), { seed: n + 1 });
+      await r.kv.set(KV.accessLog, id, { memoryId: id, count: 1, lastAt: "2000-01-01T00:00:00.000Z", recent: [] });
+      await r.kv.set(KV.facets, `fct_${id}`, { id: `fct_${id}`, targetId: id, targetType: "memory", dimension: "topic", value: "quokka", createdAt: "2026-04-01T00:00:00.000Z" } satisfies Facet);
+    }
+    const items = [];
+    for (const id of ["m1", "m2", "m3"]) items.push(await candidate(r, "X", (await r.kv.get<Memory>(KV.memories, id))!));
+    await closedRun(r, A, items);
+    clock.now = at(25);
+    return { r, deps };
+  }
+
+  async function settled(r: Rig, deps: RetentionDeps): Promise<void> {
+    expect(done(await purge(deps, {}, COLD1))).toMatchObject({ restoredBack: 0, runsEmptied: 1 });
+    expect(await r.runs.get(A)).toMatchObject({ held: 0, purgedAt: at(25).toISOString() });
+    for (const id of ["m1", "m2", "m3"]) {
+      expect(await r.kv.get(KV.accessLog, id), id).toBeNull();
+      expect(await r.kv.get(KV.facets, `fct_${id}`), id).toBeNull();
+    }
+  }
+
+  it("of the access log stops the pass with the entry still held, and a re-run deletes it", async () => {
+    const { r, deps } = await world();
+    await expect(purge({ ...deps, kv: failingOnce(deps.kv, KV.accessLog, "m2") }, {}, COLD1)).rejects.toThrow("transient write failure");
+    expect(await r.vault.get(A, mem("m2"))).toMatchObject({ purging: true });
+    expect(await r.kv.get(KV.accessLog, "m2")).not.toBeNull();
+    await settled(r, deps);
+  });
+
+  it("of a facet stops the pass with the page's entries still held, and a re-run deletes it", async () => {
+    const { r, deps } = await world();
+    await expect(purge({ ...deps, kv: failingOnce(deps.kv, KV.facets, "fct_m2") }, {}, COLD1)).rejects.toThrow("transient write failure");
+    expect(await vaultKeys(r, A)).toHaveLength(3);
+    expect(await r.kv.get(KV.facets, "fct_m2")).not.toBeNull();
+    await settled(r, deps);
   });
 });
 
