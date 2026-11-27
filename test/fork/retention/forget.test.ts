@@ -148,7 +148,7 @@ describe("bare observation ids: graph citations carry no session", () => {
     const other = await seedObservation(r, observation("obs_x", "ses_2", { title: "other title" }));
     await seedSeal(r, "ses_2", 1);
     await openRun(r, RUN, 0);
-    await displace(r.deps, r.vault, RUN, candidate("O", other, (await r.kv.get(RETENTION_KV.seals, "ses_2"))!));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", other, (await r.kv.get(RETENTION_KV.seals, "ses_2"))!));
     await r.runs.save({ ...(await r.runs.get(RUN))!, held: 1 });
     await r.kv.set(KV.graphNodes, "n1", node("n1", ["obs_x"]));
     await r.kv.set(KV.graphNodes, "n2", node("n2", ["obs_y"]));
@@ -206,7 +206,7 @@ describe("R11: forget leaves each session's count equal to its stored rows", () 
     await seedObservation(r, observation("obs_2"));
     const seal = await seedSeal(r, "ses_1", 2);
     await openRun(r, RUN, 0);
-    await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     await r.kv.update(KV.sessions, "ses_1", [{ type: "set", path: "observationCount", value: 5 }]);
 
     await forget({ sessionId: "ses_1", observationIds: ["obs_1"] });
@@ -222,7 +222,7 @@ describe("forget during grace erases the vault copy", () => {
     await seedObservation(r, observation("obs_2"), { seed: 2 });
     const seal = await seedSeal(r, "ses_1", 2);
     await openRun(r, RUN, 0);
-    expect((await displace(r.deps, r.vault, RUN, candidate("O", row, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal))).moved).toBe(true);
     await r.runs.save({ ...(await r.runs.get(RUN))!, held: 1 });
     await r.kv.set(KV.graphNodes, "n1", node("n1", ["obs_1"]));
 
@@ -244,9 +244,9 @@ describe("forget during grace erases the vault copy", () => {
     const seal = await seedSeal(r, "ses_1", 1);
     await openRun(r, RUN, 0);
     await openRun(r, RUN2, 0);
-    expect((await displace(r.deps, r.vault, RUN, candidate("T", row, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "T", row, seal))).moved).toBe(true);
     const trimmed = (await r.kv.get(KV.observations("ses_1"), "obs_1"))!;
-    expect((await displace(r.deps, r.vault, RUN2, candidate("O", trimmed as never, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN2, await candidate(r, "O", trimmed as never, seal))).moved).toBe(true);
     for (const id of [RUN, RUN2]) await r.runs.save({ ...(await r.runs.get(id))!, held: 1 });
     expect(await r.vault.locate(obsRef("obs_1"))).toMatchObject({ runId: RUN2, under: { runId: RUN } });
 
@@ -265,7 +265,7 @@ describe("forget during grace erases the vault copy", () => {
     const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const seal = await seedSeal(r, "ses_1", 1);
     await openRun(r, RUN, 0);
-    await displace(r.deps, r.vault, RUN, candidate("T", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "T", row, seal));
     await r.runs.save({ ...(await r.runs.get(RUN))!, held: 1 });
 
     expect(await forget({ sessionId: "ses_1", observationIds: ["obs_1"] })).toMatchObject({ deleted: 1, notFound: [] });
@@ -280,8 +280,8 @@ describe("forget during grace erases the vault copy", () => {
     const expired = await seedMemory(r, memory("mem_x"), { seed: 4 });
     const old = await seedMemory(r, memory("mem_s", { isLatest: false, forgetAfter: undefined }));
     await openRun(r, RUN, 0);
-    expect((await displace(r.deps, r.vault, RUN, candidate("X", expired))).moved).toBe(true);
-    expect((await displace(r.deps, r.vault, RUN, candidate("S", old))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "X", expired))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "S", old))).moved).toBe(true);
     await r.runs.save({ ...(await r.runs.get(RUN))!, held: 2 });
 
     const first = await forget({ memoryId: "mem_x" });
@@ -314,7 +314,7 @@ describe("forget during grace erases the vault copy", () => {
     const row = await seedObservation(r, observation("obs_1", "ses_1", { imageData: "/img/a.png" }));
     const seal = await seedSeal(r, "ses_1", 1);
     await openRun(r, RUN, 0);
-    await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     await r.runs.save({ ...(await r.runs.get(RUN))!, held: 1 });
 
     await forget({ sessionId: "ses_1", observationIds: ["obs_1"] });
@@ -336,7 +336,7 @@ describe("forget during grace erases the vault copy", () => {
     const row = await seedObservation(r, observation("obs_1"));
     const seal = await seedSeal(r, "ses_1", 1);
     await openRun(r, RUN, 0);
-    await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     await r.runs.save({ ...(await r.runs.get(RUN))!, held: 1 });
 
     expect(await forget({ sessionId: "ses_1", observationIds: ["obs_nope"], memoryId: "mem_nope" })).toMatchObject({ deleted: 0, notFound: ["mem_nope", "obs_nope"] });
@@ -383,7 +383,7 @@ describe("ocr round: forget reports what it erased and what it could not", () =>
   const displaced = async (r: Awaited<ReturnType<typeof setup>>["r"], id: string, runId: RunId = RUN, sessionId = "ses_1") => {
     const row = await seedObservation(r, observation(id, sessionId));
     const seal = (await r.kv.get<never>(RETENTION_KV.seals, sessionId)) ?? (await seedSeal(r, sessionId, 4));
-    expect((await displace(r.deps, r.vault, runId, candidate("O", row, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, runId, await candidate(r, "O", row, seal))).moved).toBe(true);
   };
   const failReads = (r: Awaited<ReturnType<typeof setup>>["r"], scope: string, key?: string) => {
     const get = r.kv.get.bind(r.kv);
@@ -490,11 +490,11 @@ describe("ocr round: forgetting a whole session erases its displaced rows", () =
     const other = await seedObservation(r, observation("obs_1", "ses_2", { title: "other" }));
     const seal = await seedSeal(r, "ses_1", 4);
     const otherSeal = await seedSeal(r, "ses_2", 1);
-    expect((await displace(r.deps, r.vault, RUN, candidate("O", one, seal))).moved).toBe(true);
-    expect((await displace(r.deps, r.vault, RUN, candidate("T", two, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "O", one, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "T", two, seal))).moved).toBe(true);
     const trimmed = (await r.kv.get(KV.observations("ses_1"), "obs_2"))!;
-    expect((await displace(r.deps, r.vault, RUN2, candidate("O", trimmed as never, seal))).moved).toBe(true);
-    expect((await displace(r.deps, r.vault, RUN2, candidate("O", other, otherSeal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN2, await candidate(r, "O", trimmed as never, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN2, await candidate(r, "O", other, otherSeal))).moved).toBe(true);
     await r.runs.save({ ...(await r.runs.get(RUN))!, held: 2 });
     await r.runs.save({ ...(await r.runs.get(RUN2))!, held: 2 });
     await r.kv.set(KV.graphNodes, "n1", node("n1", ["obs_1"]));
@@ -526,7 +526,7 @@ describe("ocr round: forgetting a whole session erases its displaced rows", () =
     await openRun(r, RUN, 0);
     const row = await seedObservation(r, observation("obs_1"));
     const seal = await seedSeal(r, "ses_1", 1);
-    expect((await displace(r.deps, r.vault, RUN, candidate("O", row, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal))).moved).toBe(true);
     await r.runs.save({ ...(await r.runs.get(RUN))!, held: 1 });
     await r.kv.delete(KV.sessions, "ses_1");
 
