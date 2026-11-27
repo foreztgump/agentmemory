@@ -10,9 +10,12 @@ const file = JSON.parse(readFileSync(arg("report")!, "utf8"));
 const report = file.report?.perStage ? file.report : file.report.report;
 const want = Number(arg("count", "8"));
 const r = await redis();
-const kinds: Array<{ stage: string; take: number }> = [
-  { stage: "O", take: 3 }, { stage: "T", take: 1 }, { stage: "S", take: 1 }, { stage: "C", take: 4 }, { stage: "X", take: 1 },
-];
+// --mix O:7,T:1 overrides the per-stage take, for a stack whose report has no samples in some stages.
+const kinds: Array<{ stage: string; take: number }> = arg("mix")
+  ? arg("mix")!.split(",").map((part) => { const [stage, take] = part.split(":"); return { stage: stage!, take: Number(take) }; })
+  : [{ stage: "O", take: 3 }, { stage: "T", take: 1 }, { stage: "S", take: 1 }, { stage: "C", take: 4 }, { stage: "X", take: 1 }];
+// --max-rank 1 keeps only cases whose evidence ranks at or above it, so a case has margin before it leaves the top 10.
+const maxRank = Number(arg("max-rank", "10"));
 const cases: unknown[] = [];
 const tried: string[] = [];
 async function titleOf(stage: string, id: string): Promise<{ title: string; narrative: string } | null> {
@@ -40,7 +43,7 @@ for (const { stage, take } of kinds) {
       const res = await am("POST", "/agentmemory/smart-search", { query, limit: 10, includeLessons: false });
       const rank = (res.body?.results ?? []).findIndex((hit: { obsId: string }) => hit.obsId === evidenceId);
       tried.push(`${stage} ${id} rank=${rank}`);
-      if (rank >= 0) {
+      if (rank >= 0 && rank < maxRank) {
         cases.push({ id: `g-${stage}-${cases.length + 1}`, query, evidence: [evidenceId], golden: true, stage, rank: rank + 1 });
         got++;
         break;
