@@ -78,10 +78,11 @@ export interface Protector {
    * The same signals for a vault entry, which carries no seal or chain proof and mints no `Cleared`. Purge
    * calls it with a Protector built for that pass, so it sees the current pins and citations.
    *
-   * It does not evaluate the memory-only signals, memory-type and deliberate-save: no entry carries a subject
-   * for them, because they apply at stage C and this slice never displaces C. Slice 8 must not assume recheck
-   * covers them. Importance is read for stage O from the entry's row and for stage T from the live row (a trim
-   * entry holds no row), so a row that became important during grace is not purged.
+   * It does not evaluate the memory-only signals, memory-type and deliberate-save: they apply at stage C only, and a
+   * demote is never a vault entry (`VaultEntry` has no stage C, `ItemLocator` neither, a demote adds nothing to
+   * `RunRow.held`), so purge cannot reach one. `judge` evaluates them before a demote, and `displace` takes nothing
+   * else, so a protected memory is never demoted. Importance is read for stage O from the entry's row and for stage T
+   * from the live row (a trim entry holds no row), so a row that became important during grace is not purged.
    */
   recheck(entry: VaultEntry): Promise<{ readonly kind: "clear" } | { readonly kind: "protected"; readonly signal: SignalId }>;
   /** Hits per signal so far in this sweep, for the report (R1, R5). */

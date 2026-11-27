@@ -159,6 +159,7 @@ export interface Memory {
   agentId?: string;
   project?: string;
   origin?: Origin;
+  retention?: { demotedAt: string; runId: string; memoryId: string };
 }
 
 export interface SessionSummaryRepair {

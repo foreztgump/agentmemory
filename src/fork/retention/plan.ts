@@ -4,6 +4,7 @@ import type { StateKV } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
 import type { CompressedObservation, Memory, RetentionScore, Session } from "../../types.js";
 import type { ActiveClock } from "./clock.js";
+import { hiddenFromIndex } from "./indexable.js";
 import { mintChainProof, type Candidate, type ChainProof, type SealProof } from "./protect.js";
 import { RETENTION_KV } from "./scopes.js";
 import { RETENTION_COLD_SCORE, RETENTION_PAGE_SIZE } from "./settings.js";
@@ -32,7 +33,7 @@ import type { Cursor, SessionSeal, Stage, Windows } from "./types.js";
  *  T  rows older than trimDays whose `source` is not already truncated
  *  X  forgetAfter in the past, whatever isLatest says (soft delete, then grace, instead of auto-forget's hard delete)
  *  S  isLatest=false, successor resolved (ChainProof), stopped being latest (`updatedAt`) more than supersededDays ago
- *  C  latest, older than coldDays, retention score below RETENTION_COLD_SCORE (a memory with no score is never cold).
+ *  C  latest, not already demoted, older than coldDays, retention score below RETENTION_COLD_SCORE (a memory with no score is never cold).
  *     Type, deliberate saves and access are the Protector's signals, so the report counts them.
  * "Older than" is the clock's cutoff rule (clock.ts): `t < clock.cutoffForActiveDays(project, days)`. A memory
  * with no `project` reads the clock of project "", which has no active days, so only a zero window ages it.
@@ -173,7 +174,7 @@ async function* planMemories(kv: StateKV, clock: ActiveClock, windows: Windows, 
         successors ??= await successorIndex(kv);
         const proof = await proveChain(kv, row, successors);
         if (proof) candidates.push({ project, stage: "S", ref, row, proof, reason: reasonOf("S", project, row.updatedAt, windows.supersededDays) });
-      } else if (row.isLatest && older(project, row.createdAt, windows.coldDays) && (scoreOf.get(row.id) ?? Infinity) < RETENTION_COLD_SCORE) {
+      } else if (row.isLatest && !hiddenFromIndex(row) && older(project, row.createdAt, windows.coldDays) && (scoreOf.get(row.id) ?? Infinity) < RETENTION_COLD_SCORE) {
         candidates.push({ project, stage: "C", ref, row, reason: reasonOf("C", project, row.createdAt, windows.coldDays) });
       }
     }

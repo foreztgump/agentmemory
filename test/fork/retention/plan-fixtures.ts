@@ -60,12 +60,12 @@ export async function judgeAll(r: Rig, windows: Windows, candidates: readonly Ca
   return { judge, cleared, protectedBy };
 }
 
-/** The plan-and-move of an enforcing sweep, minus the demote of stage C (slice 8). */
+/** The plan-and-move of an enforcing sweep: every cleared candidate is displaced, a stage C one is demoted. */
 export async function planAndMove(r: Rig, windows: Windows = ZERO) {
   await openRun(r);
   const planned = candidatesOf(await planAll(r, windows));
   const outcome = await judgeAll(r, windows, planned);
-  for (const item of outcome.cleared) if (item.stage !== "C") await displace(r.deps, r.vault, RUN, item);
+  for (const item of outcome.cleared) await displace(r.deps, r.vault, RUN, item);
   return { planned, ...outcome };
 }
 
