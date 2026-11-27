@@ -71,7 +71,7 @@ export class ObservationStats {
 
   constructor(private readonly base: StateKV) {}
 
-  /** Calls `listener` after every set, update and delete on any scope, also when the write or its bookkeeping threw, since the write may have landed. Returns the unsubscribe function. */
+  /** Calls `listener` after every set, update and delete on any scope, including when the write throws. Returns the unsubscribe function. */
   onWrite(listener: WriteListener): () => void {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);

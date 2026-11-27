@@ -24,7 +24,7 @@ interface FileHistory {
 type SessionRef = Pick<Session, "id" | "project" | "startedAt">;
 type FileRow = Pick<CompressedObservation, "id" | "type" | "title" | "narrative" | "importance" | "timestamp" | "files">;
 
-/** The sessions to search and, per session and normalized file, the rows that may mention it in `kv.list` order. */
+/** Sessions to search, and per session the rows that may mention a normalized file. */
 interface SessionRows {
   sessionIds: string[];
   rowsOf: (sessionId: string, normalizedFile: string) => readonly FileRow[];

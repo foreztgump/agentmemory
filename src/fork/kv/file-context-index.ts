@@ -43,7 +43,6 @@ function sessionFields(row: unknown): Fields<SessionEntry> {
   return { id, project, startedAt } as Fields<SessionEntry>;
 }
 
-/** The rows `mem::file-context` can ever emit; rows whose `files` is not a string array are left out. */
 function postingFields(row: unknown): Fields<Posting> | null {
   const { id, type, title, narrative, importance, timestamp, files } = asRecord(row);
   if (!title || !((importance as number) >= 4)) return null;
@@ -57,7 +56,6 @@ async function readByKeys(kv: StateKV, scope: string): Promise<Array<[string, un
   return keys.map((key, i) => [key, rows[i]]);
 }
 
-/** One list when every row's id is its key, as observe writes them; otherwise a read per key. */
 async function listByKeys(kv: StateKV, scope: string): Promise<Array<[string, unknown]>> {
   const keys = await kv.listKeys(scope);
   const rows = await kv.list(scope);
@@ -73,9 +71,8 @@ async function listByKeys(kv: StateKV, scope: string): Promise<Array<[string, un
 }
 
 /**
- * An in-process copy of one scope's projected rows, in `kv.list` order on redis. It loads with one
- * scan on first use. A write the owner reports during or after the scan marks its key dirty, and
- * the next read of the copy re-reads dirty keys by key, so the write path itself reads nothing.
+ * In-process copy of one scope's rows, loaded by one scan and kept current from write notices.
+ * Dirty keys are re-read on the next `ordered()` call.
  * ponytail: rows with equal order keys that arrive after the scan sort after older ties, where the
  * engine may list them elsewhere; a total order over the row would close that if it ever mattered.
  */
@@ -102,7 +99,7 @@ class ScopeMirror<P extends Ordered> {
     if (!deleted || this.loading || this.reading.has(key)) this.dirty.add(key);
   }
 
-  /** The rows in insertion order. The array is shared and replaced, never changed, when a row changes. */
+  /** Rows in insertion order. A new array whenever a row changes, so identity can key caches. */
   async ordered(): Promise<readonly P[]> {
     if (!this.loaded) await (this.loading ??= this.scan());
     await this.sync();
@@ -185,12 +182,7 @@ class SessionPostings {
   }
 }
 
-/**
- * What `mem::file-context` reads, kept in process: every session's id, project and start time,
- * and for the most recently used sessions the rows a file lookup can emit, by file basename.
- * It follows writes through the observation-stats listener and so assumes one writer process,
- * as the redis backend's kv.update does.
- */
+/** Every session, and postings by file basename for the most recently used sessions, kept in process. Assumes one writer process. */
 export class FileContextIndex {
   private readonly sessions: ScopeMirror<SessionEntry>;
   private readonly postings = new Map<string, SessionPostings>();
@@ -206,12 +198,11 @@ export class FileContextIndex {
     });
   }
 
-  /** Every session, in the order `collectAll` returns them on redis. */
+  /** Every session, ordered as `orderLikeInsertion` orders them. */
   allSessions(): Promise<readonly SessionEntry[]> {
     return this.sessions.ordered();
   }
 
-  /** The postings of each session, keyed by session id. */
   async postingsOf(sessionIds: string[]): Promise<Map<string, PostingsByBasename>> {
     const ids = [...new Set(sessionIds)];
     const entries = ids.map((id) => this.pin(KV.observations(id)));
