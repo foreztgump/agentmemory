@@ -6,6 +6,8 @@ vi.mock("../../../src/logger.js", () => ({
   bootWarn: vi.fn(),
 }));
 
+import { logger } from "../../../src/logger.js";
+import { restoreLeased } from "../../../src/fork/retention/admin.js";
 import { hiddenFromIndex } from "../../../src/fork/retention/indexable.js";
 import { itemKey, RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import type { RecallHarness } from "../../../src/fork/retention/recall-check.js";
@@ -347,6 +349,41 @@ describe("R9: a run that hurts recall undoes itself", () => {
     const result = done(await sweep(r, flaky, { dryRun: false }));
     expect(result.outcome).toBe("restored");
     expect(result.report.why).toMatch(/search is down/);
+    expect(await liveIds(r, "ses_q")).toEqual(["q1", "q2", "q3"]);
+  });
+
+  /** Run E on staging: the after-check lost recall, then the in-sweep restore died at its start. */
+  async function failedInSweepRestore() {
+    const { r, cases } = await world();
+    let armed = false;
+    let failed = false;
+    r.h.hooks.beforeTrigger = (req) => {
+      const p = req.payload as { scope?: string; value?: { restoredBecause?: string } };
+      if (req.function_id === "state::set" && p.scope === RETENTION_KV.runs && p.value?.restoredBecause) armed = true;
+      if (armed && !failed && req.function_id === "state::list_keys" && p.scope?.startsWith("mem:retention:vault:")) {
+        failed = true;
+        throw new Error("engine connection reset");
+      }
+    };
+    await expect(sweep(r, indexHarness(r, cases), { dryRun: false })).rejects.toThrow("engine connection reset");
+    const [open] = await r.runs.unfinished();
+    expect(open).toMatchObject({ phase: "check-after", restoredBecause: expect.stringMatching(/quokka-plan/) });
+    return { r, open: open!, why: open!.restoredBecause! };
+  }
+
+  it("logs the error that ends an in-sweep restore, with its message", async () => {
+    const { open, why } = await failedInSweepRestore();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      "retention: the in-sweep restore failed",
+      expect.objectContaining({ runId: open.id, why, error: "engine connection reset" }),
+    );
+  });
+
+  it("a later restore of a run whose in-sweep restore died keeps the recall loss as its reason", async () => {
+    const { r, open, why } = await failedInSweepRestore();
+    expect(await restoreLeased(r.deps, { runId: open.id })).toMatchObject({ kind: "done", restored: 4 });
+    expect(await r.runs.get(open.id)).toMatchObject({ phase: "done", outcome: "restored", restoredBecause: why, held: 0 });
+    expect(await r.kv.get(RETENTION_KV.reports, open.id)).toMatchObject({ outcome: "restored", why, restored: { why, restored: 4 } });
     expect(await liveIds(r, "ses_q")).toEqual(["q1", "q2", "q3"]);
   });
 });
