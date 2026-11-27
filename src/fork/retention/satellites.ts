@@ -1,6 +1,7 @@
 import type { IIIClient } from "iii-sdk";
 import { captureEventScope, isCaptureKey, markCaptureEventDeleted } from "../../capture/event-record.js";
 import { indexObservationSession, lookupObservationSession, unindexObservationSession } from "../../state/obs-index.js";
+import { withKeyedLock } from "../../state/keyed-mutex.js";
 import type { StateKV } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
 import type { SearchRuntime } from "../../state/search-ports.js";
@@ -139,14 +140,24 @@ function obsSessionIndex(): Satellite {
   };
 }
 
+/**
+ * Assigns `Session.observationCount` from the stored rows; true when the count changed. A session that is gone has no count.
+ * Serialized per session under `obs-count:<sessionId>`, a leaf lock: the item lock `obs:<sessionId>` is already held by
+ * satellite detach and attach and the keyed mutex is not reentrant, while `afterForget` calls this with no lock held.
+ */
+export async function assignObservationCount(kv: StateKV, sessionId: string): Promise<boolean> {
+  return withKeyedLock(`obs-count:${sessionId}`, async () => {
+    const session = await kv.get<Session>(KV.sessions, sessionId);
+    if (!session) return false;
+    const rows = (await sessionObservationTotals(kv, sessionId)).rows;
+    if (session.observationCount === rows) return false;
+    await kv.update(KV.sessions, sessionId, [{ type: "set", path: "observationCount", value: rows }]);
+    return true;
+  });
+}
+
 async function assignSessionCount(deps: RetentionDeps, entry: VaultEntry): Promise<void> {
-  if (entry.ref.kind !== "observation") return;
-  const { sessionId } = entry.ref;
-  const rows = (await sessionObservationTotals(deps.kv, sessionId)).rows;
-  const session = await deps.kv.get<Session>(KV.sessions, sessionId);
-  if (session && session.observationCount !== rows) {
-    await deps.kv.update(KV.sessions, sessionId, [{ type: "set", path: "observationCount", value: rows }]);
-  }
+  if (entry.ref.kind === "observation") await assignObservationCount(deps.kv, entry.ref.sessionId);
 }
 
 function sessionCount(): Satellite {

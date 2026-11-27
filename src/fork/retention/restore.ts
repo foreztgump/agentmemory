@@ -37,7 +37,7 @@ const outcome = (r: ReinstateResult): RestoreResult => ({
 });
 
 /** `RunRow.held` follows the vault: the sweep adds to it, and restore and purge take away. Clamped, since the sweep owns the count. */
-async function release(runs: RunStore, runId: RunId, taken: number, why?: string): Promise<void> {
+export async function release(runs: RunStore, runId: RunId, taken: number, why?: string): Promise<void> {
   const run = await runs.get(runId);
   if (run) await runs.save({ ...run, held: Math.max(0, run.held - taken), ...(why === undefined ? {} : { restoredBecause: why }) });
 }
