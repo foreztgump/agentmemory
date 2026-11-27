@@ -17,6 +17,7 @@ import type { ItemRef } from "./types.js";
  *     is deleted, so a forgotten item cannot come back by restore. A ref that exists only in a vault (forget
  *     arrived during grace) is erased from there; forget's own not-found answer for it is replaced by
  *     "erased from trash". Observation refs carry their session: bare ids can repeat across imported sessions.
+ *     A ref can hold two claims, a trim entry under a later stage O entry (`ItemLocator.under`): erase both.
  */
 export interface ErasedIds {
   readonly observations: readonly { id: string; sessionId: string }[];

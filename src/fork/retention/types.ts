@@ -104,6 +104,12 @@ interface EntryBase {
   readonly satellites: SatelliteSnapshots;
   /** Set before the image ref is released at purge: a crash leaks one reference, never frees a shared file. */
   imageReleased?: boolean;
+  /**
+   * Written, under the item's lock, before the first change of a restore. After a crash the row can be live
+   * with the entry still held either way round (displace before its delete, or reinstate before its take), and
+   * only this flag says which one was under way, so recoverRun finishes a restore instead of undoing it.
+   */
+  restoring?: boolean;
 }
 
 export interface ObservationRowEntry extends EntryBase {
@@ -144,6 +150,12 @@ export interface DemoteRecord {
 export interface ItemLocator {
   readonly runId: RunId;
   readonly stage: Exclude<Stage, "C">;
+  /**
+   * The claim this one replaced: a trim entry and a later stage O entry for one observation share a key, and
+   * the locator names the newest while this keeps the older reachable by ref. `Vault.take` pops it back.
+   * ponytail: one level, which is all T then O can stack; a third claim on one key drops the oldest.
+   */
+  readonly under?: { readonly runId: RunId; readonly stage: Exclude<Stage, "C"> };
 }
 
 /**

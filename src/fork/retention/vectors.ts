@@ -1,6 +1,6 @@
 import type { KeywordIndexPort, SearchRuntime, VectorStorePort } from "../../state/search-ports.js";
 import type { CompressedObservation } from "../../types.js";
-import { float32ToBase64 } from "../../state/vector-index.js";
+import { base64ToFloat32, float32ToBase64 } from "../../state/vector-index.js";
 
 /**
  * Reads stored embeddings back, so trash keeps the vector and restore never re-embeds (R3).
@@ -61,13 +61,9 @@ export function reattachDocument(
   layer: "observation" | "memory",
   storedVector: string | undefined,
 ): { reembedNeeded: boolean } {
-  void keyword;
-  void vector;
-  void doc;
-  void layer;
-  void storedVector;
-  // TODO: keyword.add(doc, layer); if (vector && storedVector) vector.add(doc.id, doc.sessionId, base64ToFloat32(storedVector)).
-  //  Return reembedNeeded = Boolean(vector && !storedVector): the item had no stored vector; the
-  //  re-embed loop fills it and the report counts it.
-  throw new Error("not implemented");
+  keyword.add(doc, layer);
+  if (!vector) return { reembedNeeded: false };
+  if (storedVector === undefined) return { reembedNeeded: true };
+  vector.add(doc.id, doc.sessionId, base64ToFloat32(storedVector));
+  return { reembedNeeded: false };
 }

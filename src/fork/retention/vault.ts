@@ -22,12 +22,40 @@ import type { ItemLocator, ItemRef, RunId, RunRow, VaultEntry } from "./types.js
 export class Vault {
   constructor(private readonly kv: StateKV) {}
 
-  /** Idempotent upsert of the entry and its locator. The entry lands first, so a locator never points at nothing. */
+  /**
+   * Idempotent upsert of the entry and its locator. The entry lands first, so a locator never points at nothing.
+   * A claim by another run on the same key (a trim, then its stage O) stays reachable as `under`.
+   */
   async put(entry: VaultEntry): Promise<void> {
     const key = itemKey(entry.ref);
-    const locator: ItemLocator = { runId: entry.runId, stage: entry.stage };
+    const existing = await this.locate(entry.ref);
+    const under = existing && existing.runId !== entry.runId ? { runId: existing.runId, stage: existing.stage } : existing?.under;
+    const locator: ItemLocator = { runId: entry.runId, stage: entry.stage, ...(under ? { under } : {}) };
     await this.kv.set(RETENTION_KV.vault(entry.runId), key, entry);
     await this.kv.set(RETENTION_KV.items, key, locator);
+  }
+
+  /** Rewrites an entry in place, as when restore marks it. The locator is not touched. */
+  update(entry: VaultEntry): Promise<void> {
+    return this.kv.set(RETENTION_KV.vault(entry.runId), itemKey(entry.ref), entry).then(() => undefined);
+  }
+
+  /**
+   * Repairs a locator lost to a crash between the two writes of `put`. The caller holds the item's lock.
+   * The entry goes on top unless the locator's head is a later move, as when a later run displaced the key
+   * after the crash: then it goes `under`, so the stack stays newest first.
+   * ponytail: two claims per ref (a trim under a later stage O); a third evicts the oldest from the locator,
+   * which leaves its entry restorable by run only. Make `under` a list if a stage can stack a third.
+   */
+  async relocate(entry: VaultEntry): Promise<void> {
+    const locator = await this.locate(entry.ref);
+    if (locator?.runId === entry.runId || locator?.under?.runId === entry.runId) return;
+    const head = locator && (await this.get(locator.runId, entry.ref));
+    if (locator && !locator.under && head && head.movedAt > entry.movedAt) {
+      await this.kv.set<ItemLocator>(RETENTION_KV.items, itemKey(entry.ref), { ...locator, under: { runId: entry.runId, stage: entry.stage } });
+      return;
+    }
+    await this.put(entry);
   }
 
   locate(ref: ItemRef): Promise<ItemLocator | null> {
@@ -44,14 +72,19 @@ export class Vault {
   }
 
   /**
-   * Deletes the entry and its locator. After this the item exists only where restore or purge put it.
-   * The locator goes first, and only if it still names this run, so a crash leaves an entry that the
-   * run's paging finds again, and a later run's claim on the same item survives.
+   * Deletes the entry and its claim on the locator. After this the item exists only where restore or purge put it.
+   * The locator goes first: the head it names goes back to the claim it replaced, or the locator goes when there
+   * is none, and a claim by another run is left alone. A crash leaves an entry that the run's paging finds again.
    */
   async take(runId: RunId, ref: ItemRef): Promise<void> {
     const key = itemKey(ref);
     const locator = await this.locate(ref);
-    if (locator?.runId === runId) await this.kv.delete(RETENTION_KV.items, key);
+    if (locator?.runId === runId) {
+      if (locator.under) await this.kv.set<ItemLocator>(RETENTION_KV.items, key, locator.under);
+      else await this.kv.delete(RETENTION_KV.items, key);
+    } else if (locator?.under?.runId === runId) {
+      await this.kv.set<ItemLocator>(RETENTION_KV.items, key, { runId: locator.runId, stage: locator.stage });
+    }
     await this.kv.delete(RETENTION_KV.vault(runId), key);
   }
 
