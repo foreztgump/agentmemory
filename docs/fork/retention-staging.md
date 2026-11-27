@@ -17,6 +17,8 @@ Result in one line: **R1 passes. R12 fails on f188861 and passes with a one-line
 
 ## Findings that need a decision
 
+**Status since this run.** Findings 1 and 4 are fixed by #46 (`StateKV.set` is typed as the engine's reply, the test doubles answer the same shape, an in-sweep restore failure is logged, and the first `restoredBecause` is kept). Finding 2 is fixed by #44 (TEE-1443). Finding 6 is fixed by #45: the plan computes each memory's score itself at upstream's defaults. The R12 kill and resume has to be re-run against code with #46, and R3 against a replica with a dummy embedding provider.
+
 1. **Resume of a crashed sweep fails (R12).** `recover()` in `src/fork/retention/sweep.ts` ends with `return s.runs.save(row)`. On the real store `save` returns what `state::set` returns, `{ old_value, new_value }`, not the `RunRow`. `drive` gets an object with no `id` or `phase`, skips every phase and fails in `checkAfter` at `loadDraft(undefined)`: HTTP 500, `invocation_failed: serialization error: missing field 'key'`. The unit tests pass because their KV double returns the value. Found with a debug image that logs the stack of a `StateKV` call with no key. The fix (verified, not committed on this branch):
 
    ```diff
