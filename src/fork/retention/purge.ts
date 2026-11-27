@@ -167,7 +167,7 @@ async function commit(pass: Pass, runId: RunId, ref: ItemRef): Promise<Commit> {
 }
 
 /**
- * The facets of the page's purged memories, in one read of the facet scope. Upstream's `deleteFacetsForTargets` logs and
+ * The facets of the page's purged memories, in one paged pass over the facet scope. Upstream's `deleteFacetsForTargets` logs and
  * swallows a failed read or delete; this throws, so the pass stops with the entries `purging` and a re-run deletes the
  * rest. A memory id is unique, so a facet naming one whose row is not live has no other target.
  */
