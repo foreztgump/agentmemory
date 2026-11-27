@@ -13,6 +13,7 @@ const MAX_ID_LENGTH = 256;
 const MAX_RUN_ID_LENGTH = 100;
 const MAX_REASON_LENGTH = 500;
 const MAX_WHO_LENGTH = 100;
+const MAX_JOB_ID_LENGTH = 100;
 const RUN_ID = /^ret_[A-Za-z0-9_-]+$/;
 const JOB_ID = /^job_[A-Za-z0-9_-]+$/;
 
@@ -65,7 +66,7 @@ export function parseRunId(raw: unknown, name: string): Parsed<RunId> {
 }
 
 export function parseJobId(raw: unknown, name: string): Parsed<JobId> {
-  const id = text(raw, name, MAX_RUN_ID_LENGTH);
+  const id = text(raw, name, MAX_JOB_ID_LENGTH);
   if (!id.ok) return id;
   return JOB_ID.test(id.value) ? ok(id.value as JobId) : bad(`${name} is not a job id`);
 }

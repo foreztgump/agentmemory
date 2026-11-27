@@ -17,7 +17,8 @@ export type JobRow =
   | (JobBase & { readonly state: "failed"; readonly finishedAt: string; readonly error: string });
 
 /** A running row written by another boot reads as lost: that worker is gone and nothing will finish it. */
-export type JobView = Omit<JobRow, "bootId"> | (Omit<JobBase, "bootId"> & { readonly state: "lost" });
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+export type JobView = DistributiveOmit<JobRow, "bootId"> | (Omit<JobBase, "bootId"> & { readonly state: "lost" });
 export type JobLookup = { readonly kind: "found"; readonly job: JobView } | { readonly kind: "not-found" };
 
 async function record(kv: StateKV, row: JobRow): Promise<void> {

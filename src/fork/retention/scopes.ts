@@ -21,7 +21,7 @@ import type { ItemRef, RunId } from "./types.js";
  *                                  paging at sweep start and end. Keys are bare because sourceObservationIds
  *                                  are; an id two sessions share protects both rows, which errs toward
  *                                  keeping. The sweep lease admits one writer; a purge pass only reads it.
- *   jobs          bounded          key = job id, value = JobRow (jobs.ts): one row per REST sweep, purge or restore call
+ *   jobs          point-read-only  key = job id, value = JobRow (jobs.ts): one row per REST sweep, purge or restore call
  */
 export const RETENTION_KV = {
   vault: (runId: RunId) => `mem:retention:vault:${runId}`,

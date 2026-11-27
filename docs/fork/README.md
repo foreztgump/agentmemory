@@ -134,7 +134,7 @@ A ref is `{"kind": "memory", "id": "mem_..."}` or `{"kind": "observation", "sess
 | `failed` | The call threw. `job.error` holds the message and the log has the rest. Repeating the call is safe. |
 | `lost` | The worker restarted while the call ran. Nothing finishes it. Read the run's report and repeat the call, which resumes safely. |
 
-An unknown job id answers 404 and a malformed one 400. Job rows stay in `mem:retention:jobs`; nothing prunes them.
+An unknown job id answers 404 and a malformed one 400. A 404 for an id a 202 handed out means the call never started; repeat it. Job rows stay in `mem:retention:jobs`; nothing prunes them.
 
 **First rollout.**
 
