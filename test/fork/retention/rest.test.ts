@@ -73,16 +73,16 @@ describe("sweep and purge pass on dryRun and nothing else", () => {
   it.each(["sweep", "purge"] as const)("%s drops every field it does not know", async (route) => {
     const { call, spies } = spiedRoutes();
     await call(route, { body: { dryRun: false, windowsOverride: { trimDays: 0 }, graceDaysOverride: 0, pauseMs: 0, spillIds: 1, runId: "x" } });
-    expect(spies[route].mock.calls[0]![0]).toEqual({ dryRun: false });
+    expect(spies[route].mock.calls[0]![0]).toEqual({ dryRun: false, jobId: expect.stringMatching(/^job_/) });
   });
 
   it.each(["sweep", "purge"] as const)("%s dry-runs unless dryRun is exactly false", async (route) => {
     const { call, spies } = spiedRoutes();
     const bodies = [undefined, {}, { dryRun: true }, { dryRun: "false" }, { dryRun: 0 }, { dryRun: null }, { dryRun: [false] }];
     for (const body of bodies) await call(route, { body });
-    expect(spies[route].mock.calls.map(([payload]) => payload)).toEqual(bodies.map(() => ({ dryRun: true })));
+    expect(spies[route].mock.calls.map(([payload]) => payload)).toEqual(bodies.map(() => ({ dryRun: true, jobId: expect.stringMatching(/^job_/) })));
     await call(route, { body: { dryRun: false } });
-    expect(spies[route].mock.calls.at(-1)![0]).toEqual({ dryRun: false });
+    expect(spies[route].mock.calls.at(-1)![0]).toEqual({ dryRun: false, jobId: expect.stringMatching(/^job_/) });
   });
 
   it.each(["sweep", "purge"] as const)("%s refuses a body that is not an object", async (route) => {
@@ -161,13 +161,13 @@ describe("restore takes a run or refs, never both, and bounds the refs", () => {
   it("passes a runId alone", async () => {
     const { call, spies } = spiedRoutes();
     await call("restore", { body: { runId: "ret_abc_123", refs: undefined, extra: 1 } });
-    expect(spies.restore.mock.calls[0]![0]).toEqual({ runId: "ret_abc_123" });
+    expect(spies.restore.mock.calls[0]![0]).toEqual({ runId: "ret_abc_123", jobId: expect.stringMatching(/^job_/) });
   });
 
   it("passes whitelisted refs", async () => {
     const { call, spies } = spiedRoutes();
     await call("restore", { body: { refs: [{ ...OBS, junk: 1 }, { ...MEM, sessionId: "ses_9" }] } });
-    expect(spies.restore.mock.calls[0]![0]).toEqual({ refs: [OBS, MEM] });
+    expect(spies.restore.mock.calls[0]![0]).toEqual({ refs: [OBS, MEM], jobId: expect.stringMatching(/^job_/) });
   });
 
   it.each([

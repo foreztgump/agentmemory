@@ -1,8 +1,9 @@
 import type { RestoreRequest } from "./admin.js";
+import type { JobId } from "./jobs.js";
 import type { ItemRef, RunId } from "./types.js";
 
 /**
- * The payload parsers of `mem::retention-restore` and `mem::retention-pin`. Both boundaries use them: the REST routes
+ * The payload parsers of `mem::retention-restore`, `mem::retention-pin` and the job id. Both boundaries use them: the REST routes
  * (rest.ts) before they trigger a function, and the functions themselves (register.ts), which other workers can
  * trigger directly. A refused payload is `{ kind: "invalid", error }`, which REST answers with 400.
  */
@@ -13,6 +14,7 @@ const MAX_RUN_ID_LENGTH = 100;
 const MAX_REASON_LENGTH = 500;
 const MAX_WHO_LENGTH = 100;
 const RUN_ID = /^ret_[A-Za-z0-9_-]+$/;
+const JOB_ID = /^job_[A-Za-z0-9_-]+$/;
 
 export type Parsed<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: string };
 export const ok = <T>(value: T): Parsed<T> => ({ ok: true, value });
@@ -60,6 +62,12 @@ export function parseRunId(raw: unknown, name: string): Parsed<RunId> {
   const id = text(raw, name, MAX_RUN_ID_LENGTH);
   if (!id.ok) return id;
   return RUN_ID.test(id.value) ? ok(id.value as RunId) : bad(`${name} is not a run id`);
+}
+
+export function parseJobId(raw: unknown, name: string): Parsed<JobId> {
+  const id = text(raw, name, MAX_RUN_ID_LENGTH);
+  if (!id.ok) return id;
+  return JOB_ID.test(id.value) ? ok(id.value as JobId) : bad(`${name} is not a job id`);
 }
 
 export function parseRestore(body: Record<string, unknown>): Parsed<RestoreRequest> {
