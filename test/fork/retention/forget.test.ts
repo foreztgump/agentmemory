@@ -38,6 +38,7 @@ interface ForgetResult {
   notFound: string[];
   failed: number;
   cleanupFailed: number;
+  cleanupFailures?: Array<{ id: string; error: string }>;
 }
 
 const date = "2026-10-14T00:00:00.000Z";
@@ -375,6 +376,164 @@ describe("forgetting a whole session", () => {
     expect(await stale(KV.graphNodes, "n1")).toBe(true);
     expect(await stale(KV.graphNodes, "n2")).toBe(false);
     expect(await vectorHits(r, 17)).toEqual([]);
+  });
+});
+
+describe("ocr round: forget reports what it erased and what it could not", () => {
+  const displaced = async (r: Awaited<ReturnType<typeof setup>>["r"], id: string, runId: RunId = RUN, sessionId = "ses_1") => {
+    const row = await seedObservation(r, observation(id, sessionId));
+    const seal = (await r.kv.get<never>(RETENTION_KV.seals, sessionId)) ?? (await seedSeal(r, sessionId, 4));
+    expect((await displace(r.deps, r.vault, runId, candidate("O", row, seal))).moved).toBe(true);
+  };
+  const failReads = (r: Awaited<ReturnType<typeof setup>>["r"], scope: string, key?: string) => {
+    const get = r.kv.get.bind(r.kv);
+    r.kv.get = (async (s: string, k: string) => {
+      if (s === scope && (key === undefined || k === key)) throw new Error("state store down");
+      return get(s, k);
+    }) as never;
+  };
+
+  it("lists an id the request names twice as erased, not as not found", async () => {
+    const { r, forget } = await setup();
+    await displaced(r, "obs_1");
+    await openRun(r, RUN, 1);
+
+    const result = await forget({ sessionId: "ses_1", observationIds: ["obs_1", "obs_1"] });
+
+    expect(result).toMatchObject({ deleted: 1, notFound: [] });
+  });
+
+  it("erases the other refs and still marks graph items stale when one ref cannot be read, and reports that ref", async () => {
+    const { r, forget, stale, heldBy } = await setup();
+    await openRun(r, RUN, 0);
+    for (const id of ["obs_1", "obs_2", "obs_3"]) await displaced(r, id);
+    await seedObservation(r, observation("obs_4"));
+    await r.runs.save({ ...(await r.runs.get(RUN))!, held: 3 });
+    for (const [id, sources] of [["n1", "obs_1"], ["n2", "obs_2"], ["n3", "obs_3"], ["n4", "obs_4"]]) await r.kv.set(KV.graphNodes, id, node(id, [sources]));
+    failReads(r, RETENTION_KV.items, itemKey(obsRef("obs_2")));
+
+    const result = await forget({ sessionId: "ses_1", observationIds: ["obs_1", "obs_2", "obs_3", "obs_4"] });
+
+    expect(result).toMatchObject({ deleted: 3, notFound: ["obs_2"], cleanupFailed: 1, cleanupFailures: [{ id: "obs_2", error: "cleanup_failed" }] });
+    expect(await r.kv.get(RETENTION_KV.vault(RUN), itemKey(obsRef("obs_1")))).toBeNull();
+    expect(await r.kv.get(RETENTION_KV.vault(RUN), itemKey(obsRef("obs_3")))).toBeNull();
+    expect(await r.kv.get(RETENTION_KV.vault(RUN), itemKey(obsRef("obs_2")))).not.toBeNull();
+    expect(await heldBy(RUN)).toBe(1);
+    expect(await stale(KV.graphNodes, "n1")).toBe(true);
+    expect(await stale(KV.graphNodes, "n3")).toBe(true);
+    expect(await stale(KV.graphNodes, "n4")).toBe(true);
+    expect(await stale(KV.graphNodes, "n2")).toBe(false);
+  });
+
+  it("writes the graph audit entry and reports the session when the recount fails", async () => {
+    const { r, forget, stale } = await setup({ unwrapped: true });
+    await seedObservation(r, observation("obs_1"));
+    await seedObservation(r, observation("obs_2"));
+    await r.kv.update(KV.sessions, "ses_1", [{ type: "set", path: "observationCount", value: 9 }]);
+    await r.kv.set(KV.graphNodes, "n1", node("n1", ["obs_1"]));
+    const update = r.h.kv.update.bind(r.h.kv);
+    r.h.kv.update = (async (scope: string, ...rest: unknown[]) => {
+      if (scope === KV.sessions) throw new Error("state store down");
+      return (update as (...a: unknown[]) => unknown)(scope, ...rest);
+    }) as never;
+
+    const result = await forget({ sessionId: "ses_1", observationIds: ["obs_1"] });
+
+    expect(result).toMatchObject({ deleted: 1, cleanupFailed: 1, cleanupFailures: [{ id: "retention:recount:ses_1" }] });
+    expect(await stale(KV.graphNodes, "n1")).toBe(true);
+    const audits = await r.kv.list<AuditEntry>(currentAuditScope());
+    expect(audits.map((a) => a.details.change)).toContain("graph items marked stale by forget");
+  });
+
+  it("audits a deferred graph mark when the index is building", async () => {
+    const r0 = await setup({ graph: false });
+    await initializeGraphIndex(r0.r.kv, { status: "building" });
+    await seedObservation(r0.r, observation("obs_1"));
+    await r0.forget({ sessionId: "ses_1", observationIds: ["obs_1"] });
+    const audits = await r0.r.kv.list<AuditEntry>(currentAuditScope());
+    expect(audits.find((a) => a.details.change === "graph items marked stale by forget")).toMatchObject({ details: { deferred: true, nodes: 0 } });
+  });
+});
+
+describe("ocr round: concurrent forgets leave the session count equal to the rows", () => {
+  it("keeps the count right when two forgets of one session recount at once", async () => {
+    const { r, forget } = await setup({ unwrapped: true });
+    for (const id of ["obs_1", "obs_2", "obs_3", "obs_4"]) await seedObservation(r, observation(id));
+    await r.kv.update(KV.sessions, "ses_1", [{ type: "set", path: "observationCount", value: 9 }]);
+    const update = r.h.kv.update.bind(r.h.kv);
+    let first = true;
+    r.h.kv.update = (async (scope: string, ...rest: unknown[]) => {
+      if (scope === KV.sessions && first) {
+        first = false;
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      return (update as (...a: unknown[]) => unknown)(scope, ...rest);
+    }) as never;
+
+    await Promise.all([forget({ sessionId: "ses_1", observationIds: ["obs_1"] }), forget({ sessionId: "ses_1", observationIds: ["obs_2"] })]);
+
+    const rows = (await r.kv.list(KV.observations("ses_1"))).length;
+    expect(rows).toBe(2);
+    expect((await r.kv.get<Session>(KV.sessions, "ses_1"))?.observationCount).toBe(rows);
+  });
+});
+
+describe("ocr round: forgetting a whole session erases its displaced rows", () => {
+  it("leaves nothing restorable, lowers each run's held, and erases vaulted, stacked and live rows alike", async () => {
+    const { r, forget, stale, heldBy } = await setup();
+    await openRun(r, RUN, 0);
+    await openRun(r, RUN2, 0);
+    const one = await seedObservation(r, observation("obs_1"), { seed: 1 });
+    const two = await seedObservation(r, observation("obs_2"), { seed: 2 });
+    await seedObservation(r, observation("obs_3"), { seed: 3 });
+    await seedObservation(r, observation("obs_4"), { seed: 4 });
+    const other = await seedObservation(r, observation("obs_1", "ses_2", { title: "other" }));
+    const seal = await seedSeal(r, "ses_1", 4);
+    const otherSeal = await seedSeal(r, "ses_2", 1);
+    expect((await displace(r.deps, r.vault, RUN, candidate("O", one, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, candidate("T", two, seal))).moved).toBe(true);
+    const trimmed = (await r.kv.get(KV.observations("ses_1"), "obs_2"))!;
+    expect((await displace(r.deps, r.vault, RUN2, candidate("O", trimmed as never, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN2, candidate("O", other, otherSeal))).moved).toBe(true);
+    await r.runs.save({ ...(await r.runs.get(RUN))!, held: 2 });
+    await r.runs.save({ ...(await r.runs.get(RUN2))!, held: 2 });
+    await r.kv.set(KV.graphNodes, "n1", node("n1", ["obs_1"]));
+    await r.kv.set(KV.graphNodes, "n2", node("n2", ["obs_2"]));
+    await r.kv.set(KV.graphNodes, "n3", node("n3", ["obs_3"]));
+    r.h.stateOps.length = 0;
+
+    const result = await forget({ sessionId: "ses_1" });
+
+    expect(result).toMatchObject({ success: true, notFound: [], cleanupFailed: 0 });
+    expect(result.deleted).toBe(2 + 2 + 1);
+    for (const id of ["obs_1", "obs_2"]) {
+      expect(await r.vault.get(RUN, obsRef(id))).toBeNull();
+      expect(await r.vault.get(RUN2, obsRef(id))).toBeNull();
+      expect(await r.vault.locate(obsRef(id))).toBeNull();
+    }
+    expect(await restoreItems(r.deps, [obsRef("obs_1"), obsRef("obs_2"), obsRef("obs_3")], "test")).toMatchObject({ restored: 0, keptLive: 0 });
+    expect([await heldBy(RUN), await heldBy(RUN2)]).toEqual([0, 1]);
+    expect(await r.vault.get(RUN2, obsRef("obs_1", "ses_2"))).not.toBeNull();
+    expect(await r.vault.locate(obsRef("obs_1", "ses_2"))).toEqual({ runId: RUN2, stage: "O" });
+    expect((await r.kv.list(KV.observations("ses_1"))).length).toBe(0);
+    for (const id of ["n1", "n2", "n3"]) expect(await stale(KV.graphNodes, id)).toBe(true);
+    expect(await keywordHits(r, "zebra")).toEqual([]);
+    expect(r.h.stateOps.filter((op) => op.startsWith("state::list ") && op.includes("mem:retention:vault:"))).toEqual([]);
+  });
+
+  it("keeps notFound right when the session row is gone but its displaced rows are erased", async () => {
+    const { r, forget } = await setup();
+    await openRun(r, RUN, 0);
+    const row = await seedObservation(r, observation("obs_1"));
+    const seal = await seedSeal(r, "ses_1", 1);
+    expect((await displace(r.deps, r.vault, RUN, candidate("O", row, seal))).moved).toBe(true);
+    await r.runs.save({ ...(await r.runs.get(RUN))!, held: 1 });
+    await r.kv.delete(KV.sessions, "ses_1");
+
+    const result = await forget({ sessionId: "ses_1" });
+
+    expect(result).toMatchObject({ deleted: 1, notFound: ["ses_1"] });
+    expect(await r.vault.get(RUN, obsRef("obs_1"))).toBeNull();
   });
 });
 

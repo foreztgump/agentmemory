@@ -1,3 +1,4 @@
+import { logger } from "../../logger.js";
 import type { StateKV } from "../../state/kv.js";
 import { pinGraphState } from "../../state/graph-generation.js";
 import {
@@ -19,9 +20,16 @@ type Kind = "node" | "edge";
 type Hit = { readonly kind: Kind; readonly id: string };
 type Found = Map<string, Hit>;
 
-const BATCH = 16;
-const ATTEMPTS = 3;
 const POSTINGS: readonly (readonly [GraphPostingKind, Kind])[] = [["observation", "node"], ["edgeObservation", "edge"]];
+const ATTEMPTS = 3;
+const READER_READS = 4096;
+/** `GraphIndexReader` counts 2 reads up front and keeps 2 for `finish()`. */
+const READER_RESERVED_READS = 4;
+const POSTING_PAGE = 128;
+/** A full page of one posting: its root, then one read per entry. */
+const READS_PER_POSTING = 1 + POSTING_PAGE;
+/** 15: the most ids whose postings can all be full pages (4092 / 258) without the reader running out and the batch being split. */
+const BATCH = Math.floor((READER_READS - READER_RESERVED_READS) / (POSTINGS.length * READS_PER_POSTING));
 
 /**
  * Marks every graph node and edge that cites one of `observationIds` stale, through the graph retrieval index's
@@ -42,12 +50,15 @@ export async function markGraphStale(kv: StateKV, observationIds: readonly strin
   let deferred = indexable.length < ids.length;
   if (indexable.length > 0) {
     try {
-      if (await getGraphIndexStatus(await pinGraphState(kv))) {
+      const status = await getGraphIndexStatus(await pinGraphState(kv));
+      if (status && status.status !== "ready") deferred = true;
+      else if (status) {
         for (let start = 0; start < indexable.length; start += BATCH) {
           if (!(await markBatch(kv, indexable.slice(start, start + BATCH), marked))) deferred = true;
         }
       }
-    } catch {
+    } catch (err) {
+      logger.warn("markGraphStale deferred", { error: err instanceof Error ? err.message : String(err) });
       deferred = true;
     }
   }
@@ -73,7 +84,7 @@ async function markBatch(kv: StateKV, ids: readonly string[], marked: Found, att
 
 /** `null`: the read was cut short or the graph changed under it. */
 async function discover(kv: StateKV, ids: readonly string[]): Promise<Found | null | "unavailable"> {
-  const reader = await createGraphIndexReader(kv, { maxReads: 4096 });
+  const reader = await createGraphIndexReader(kv, { maxReads: READER_READS });
   if (!reader) return "unavailable";
   const found: Found = new Map();
   for (const id of ids) {
@@ -85,7 +96,7 @@ async function discover(kv: StateKV, ids: readonly string[]): Promise<Found | nu
 async function collect(reader: GraphIndexReader, posting: GraphPostingKind, kind: Kind, id: string, found: Found): Promise<boolean> {
   let cursor: string | null = null;
   do {
-    const page: Awaited<ReturnType<GraphIndexReader["posting"]>> = await reader.posting(posting, id, { cursor, limit: 128 });
+    const page: Awaited<ReturnType<GraphIndexReader["posting"]>> = await reader.posting(posting, id, { cursor, limit: POSTING_PAGE });
     for (const citing of page.ids) found.set(`${kind}:${citing}`, { kind, id: citing });
     if (reader.exhausted) return false;
     cursor = page.cursor;

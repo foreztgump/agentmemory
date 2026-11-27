@@ -420,7 +420,10 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
         deletedObservationIds.push(...gone.trashed.observationIds);
         deletedMemoryIds.push(...gone.trashed.memoryIds);
         deleted += gone.trashed.observationIds.length + gone.trashed.memoryIds.length;
-        for (const id of [...gone.trashed.observationIds, ...gone.trashed.memoryIds]) notFound.splice(notFound.indexOf(id), 1);
+        const erased = new Set([...gone.trashed.observationIds, ...gone.trashed.memoryIds]);
+        const stillMissing = notFound.filter((id) => !erased.has(id));
+        notFound.splice(0, notFound.length, ...stillMissing);
+        for (const id of gone.failures) cleanupFailures.push({ id, error: "cleanup_failed" });
       });
 
       if (deletedObservationIds.length > 0) {

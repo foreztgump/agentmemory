@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../../../src/logger.js", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { markGraphStale } from "../../../src/fork/retention/graph-stale.js";
+import { logger } from "../../../src/logger.js";
 import { initializeGraphIndex } from "../../../src/state/graph-retrieval-index.js";
 import { KV } from "../../../src/state/schema.js";
 import type { GraphEdge, GraphNode } from "../../../src/types.js";
@@ -59,6 +60,42 @@ describe("markGraphStale", () => {
     const state = createGraphIndexState();
     await initializeGraphIndex(state.kv, { status: "building" });
     expect(await markGraphStale(state.kv, ["obs_1"])).toMatchObject({ marked: 0, deferred: true });
+  });
+
+  it("defers, and changes nothing, when the index is paused", async () => {
+    const state = await ready();
+    await state.kv.set(KV.graphNodes, "a", node("a", ["obs_1"]));
+    const control = (await state.kv.get<Record<string, unknown>>(KV.graphRetrievalControl, "current"))!;
+    await state.kv.set(KV.graphRetrievalControl, "current", { ...control, status: "paused", error: "paused for the test" });
+    expect(await markGraphStale(state.kv, ["obs_1"])).toMatchObject({ marked: 0, deferred: true });
+    expect((await state.kv.get<GraphNode>(KV.graphNodes, "a"))?.stale).toBeUndefined();
+  });
+
+  it("logs the error at warn when the index cannot be read, and defers", async () => {
+    const state = await ready();
+    vi.mocked(logger.warn).mockClear();
+    state.intercept(async (id, payload) => {
+      if (id === "state::get" && payload.scope === KV.graphRetrievalControl) throw new Error("state store down");
+    });
+    expect(await markGraphStale(state.kv, ["obs_1"])).toMatchObject({ marked: 0, deferred: true });
+    expect(logger.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ error: expect.stringContaining("state store down") }));
+  });
+
+  it("reads a fully cited batch once: a full page in every posting of its ids fits the reader's budget, so it is not split", async () => {
+    const { kv, calls } = await ready();
+    const ids = Array.from({ length: 16 }, (_, n) => `obs_${n}`);
+    for (let n = 0; n < 128; n++) {
+      await kv.set(KV.graphNodes, `hub_${n}`, node(`hub_${n}`, ids));
+      await kv.set(KV.graphEdges, `link_${n}`, edge(`link_${n}`, ids));
+    }
+    calls.length = 0;
+
+    const result = await markGraphStale(kv, ids);
+
+    const firstWrite = calls.findIndex((call) => call.id !== "state::get");
+    const discoveryRoots = calls.slice(0, firstWrite).filter((call) => call.scope === KV.graphRetrievalData && call.key?.includes(":root:")).length;
+    expect(result).toMatchObject({ nodes: 128, edges: 128, deferred: false });
+    expect(discoveryRoots).toBe(15 * 2);
   });
 
   it("defers an id the index cannot hold, and still marks the others", async () => {
