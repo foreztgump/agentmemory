@@ -145,6 +145,8 @@ An unknown job id answers 404 and a malformed one 400. A 404 for an id a 202 han
 
 Restore, pin and report keep working when retention is switched off, so the kill switch never blocks an undo. Restoring a run a sweep left unfinished also closes it, with retention on or off.
 
+The staging proof on a full-size replica of buddy (what the routes cost, what a restore takes, what failed) is in [retention-staging.md](retention-staging.md). The sweep and restore routes answer 504 after 180 s on a full store while the work goes on, so poll `GET report` for the result.
+
 ## Rebasing
 
 See [rebase-runbook.md](rebase-runbook.md).

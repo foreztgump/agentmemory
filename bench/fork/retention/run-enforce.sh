@@ -3,13 +3,17 @@
 # a before snapshot (KV scope counts, Qdrant point counts), a 1 s memory sampler, the sweep through the REST route, an after
 # snapshot, the peaks, the audit entries of the run and the vault check.
 #
-#   bench/fork/retention/run-enforce.sh <out-dir> <tag> [--strip-access]
+#   bench/fork/retention/run-enforce.sh <out-dir> <tag> [--strip-access] [--dry]
 #
-# --strip-access runs strip-access.ts beside the sweep, to force R9 (see that script). The caller sets the S12_* settings.
+# --strip-access runs strip-access.ts beside the sweep, to force R9 (see that script). --dry runs a dry sweep instead (no vault check).
+# S12_DIRECT=1 triggers the sweep with trigger.mjs inside the container instead of the REST route, which answers 504 after 180 s
+# and hides the function's result; the function's own result or error goes to <tag>-direct.json. The caller sets the S12_* settings.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S="$HERE/stage.sh"; M="$HERE/sample-mem.sh"
-D="$1"; tag="$2"; strip="${3:-}"
+D="$1"; tag="$2"; shift 2
+strip=""; dry=""
+for a in "$@"; do [[ "$a" == --strip-access ]] && strip=$a; [[ "$a" == --dry ]] && dry=$a; done
 mkdir -p "$D"
 export REPLICA_PROJECT="${REPLICA_PROJECT:-tee1158s12}"
 rel="bench/fork/retention"
@@ -22,7 +26,13 @@ t0=$(date -Is)
 if [[ "$strip" == --strip-access ]]; then
   "$S" run $rel/strip-access.ts --cases /private/cases.json --after "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$D/$tag-strip.json" 2> "$D/$tag-strip.err" &
 fi
-"$S" run $rel/sweep.ts --enforce > "$D/$tag-sweep.json" 2> "$D/$tag-sweep.err"
+mode=--enforce; payload='{"dryRun":false}'; [[ -n "$dry" ]] && { mode=--dry; payload='{"dryRun":true}'; }
+if [[ "${S12_DIRECT:-}" == 1 ]]; then
+  docker cp "$HERE/trigger.mjs" "$REPLICA_PROJECT-agentmemory-1:/opt/agentmemory/trigger.mjs"
+  docker exec -w /opt/agentmemory "$REPLICA_PROJECT-agentmemory-1" node trigger.mjs mem::retention-sweep "$payload" 3000 2>/dev/null | grep -v '^\[' > "$D/$tag-direct.json"
+  mode=--latest
+fi
+"$S" run $rel/sweep.ts $mode > "$D/$tag-sweep.json" 2> "$D/$tag-sweep.err"
 t1=$(date -Is)
 touch "$D/$tag-mem.tsv.stop"; wait "$sampler" 2>/dev/null || true
 echo "start $t0 end $t1" > "$D/$tag-times.txt"
@@ -30,6 +40,7 @@ echo "start $t0 end $t1" > "$D/$tag-times.txt"
 "$M" summary "$D/$tag-mem.tsv" > "$D/$tag-mem-summary.jsonl"
 "$S" run $rel/snapshot.ts > "$D/$tag-after.json"
 runId="$(jq -r .runId "$D/$tag-sweep.json")"
+if [[ -n "$dry" ]]; then echo done >> "$D/$tag-times.txt"; exit 0; fi
 "$S" run $rel/audit.ts --run "$runId" > "$D/$tag-audit.json" 2>&1
 "$S" run $rel/vault-check.ts --run "$runId" --baseline "/private/$tag-before.json" > "$D/$tag-vault-check.json" 2> "$D/$tag-vault-check.err"
 echo "vault-check rc=$?" >> "$D/$tag-times.txt"

@@ -4,7 +4,7 @@
 // Without --id it takes the first memory in mem:retention:demoted. Prints the memory's state before and after.
 import { writeFileSync } from "node:fs";
 import { pointId } from "../../../src/fork/worker/qdrant.js";
-import { am, arg, qdrant, redis, text } from "./lib.js";
+import { am, arg, qdrant, redis, sleep, text } from "./lib.js";
 
 const r = await redis();
 const demoted = (await r.call("HLEN", "state:mem:retention:demoted")) as number;
@@ -25,6 +25,8 @@ const recordRaw = await r.call("HGET", "state:mem:retention:demoted", id);
 const record = recordRaw ? JSON.parse(text(recordRaw as Buffer)) : null;
 const before = { memory: (({ id, title, retention }) => ({ id, title, retention }))(await readMemory()), qdrant: await point(), demoteRecord: record && { runId: record.runId, demotedAt: record.demotedAt, hasVector: Boolean(record.vector) } };
 const res = await am("POST", "/agentmemory/retention/pin", { ref: { kind: "memory", id }, reason: "TEE-1158 slice 12 staging pin on a demoted memory", who: "staging" });
+// The index write rides the docs outbox; give it time to land before reading the point.
+await sleep(10_000);
 const afterPoint = await point();
 const afterMemory = await readMemory();
 const recordAfter = await r.call("HGET", "state:mem:retention:demoted", id);

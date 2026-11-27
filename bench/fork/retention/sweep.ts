@@ -1,11 +1,12 @@
 // One sweep through the REST route, timed. Prints a JSON summary (not the 20-sample lists).
-//   stage.sh run bench/fork/retention/sweep.ts --dry|--enforce [--out /private/<name>.json]
+//   stage.sh run bench/fork/retention/sweep.ts --dry|--enforce|--latest [--no-poll] [--out /private/<name>.json]
 // When the HTTP call fails (a proxy timeout, a killed container), the script polls the report until the newest run is done.
 import { writeFileSync } from "node:fs";
 import { am, arg, flag, runSweepRoute } from "./lib.js";
 
 const dryRun = !flag("enforce");
-const res = await runSweepRoute(dryRun, !flag("no-poll"));
+// --latest: do not call the route, summarise the newest run (a sweep that was triggered another way, as run-enforce.sh does with S12_DIRECT=1).
+const res = flag("latest") ? { status: 200, ms: 0, body: {}, runId: undefined } : await runSweepRoute(dryRun, !flag("no-poll"));
 const runId = res.runId;
 if (res.status !== 200) console.error(`sweep call answered ${res.status}: ${JSON.stringify(res.body).slice(0, 300)}`);
 const reportCall = await am("GET", runId ? `/agentmemory/retention/report?runId=${runId}` : "/agentmemory/retention/report", undefined, 120_000).catch(() => null);

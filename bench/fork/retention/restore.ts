@@ -2,7 +2,8 @@
 // slice 4: "a restore of a full run under the lease, and whether the renewal interval holds").
 //   stage.sh run bench/fork/retention/restore.ts --run ret_... [--out /private/restore.json]
 // Every 2 s it reads the lease from Kvrocks (owner and heartbeatAt), and every 20 s it makes the calls that must be refused
-// while the restore holds the lease: a sweep, a purge and a second restore. It reports the owners seen, the longest gap
+// while the restore holds the lease: a sweep, a purge and a second restore. The purge is a real one (dryRun false), which is safe
+// only while no run's grace has ended, and which must answer busy if the lease works. It reports the owners seen, the longest gap
 // between two heartbeats (the stale limit is 300 s, the renewal timer fires every 100 s and the restore beats per batch),
 // and the statuses of the competing calls.
 import { writeFileSync } from "node:fs";
@@ -38,7 +39,7 @@ async function compete(): Promise<void> {
   while (!done) {
     for (const [call, path, body] of [
       ["sweep dry run", "/agentmemory/retention/sweep", { dryRun: true }],
-      ["purge dry run", "/agentmemory/retention/purge", { dryRun: true }],
+      ["purge (enforcing)", "/agentmemory/retention/purge", { dryRun: false }],
       ["second restore", "/agentmemory/retention/restore", { runId }],
     ] as const) {
       const res = await am("POST", path, body, 60_000).catch((err) => ({ status: 0, body: String(err), ms: 0 }));
@@ -50,16 +51,32 @@ async function compete(): Promise<void> {
 const watcher = watch();
 const competitor = compete();
 const res = await am("POST", "/agentmemory/retention/restore", { runId });
+// The route answers 504 at 180 s (the worker's invocation timeout) while the restore goes on holding the lease, so the wall time
+// runs to the moment the lease is gone and the run's held count is zero. The audit entry the restore writes at its end dates it.
+const httpMs = res.ms;
+if (res.status === 504 || res.status === 0) {
+  for (;;) {
+    const row = (await am("GET", `/agentmemory/retention/report?runId=${runId}`, undefined, 120_000).catch(() => null))?.body?.run;
+    const lease = await r.call("HGET", "state:mem:retention:control", "lease");
+    if (!lease && row && row.held === 0) break;
+    await sleep(2000);
+  }
+}
+const wallMs = Date.now() - started;
 done = true;
 await Promise.all([watcher, competitor]);
 const lease = await r.call("HGET", "state:mem:retention:control", "lease");
 const report = (await am("GET", `/agentmemory/retention/report?runId=${runId}`)).body;
+const audit = (await am("GET", "/agentmemory/audit?operation=retention_restore&limit=20")).body?.entries?.find((e: any) => e.details?.runId === runId || (e.targetIds ?? []).includes(runId));
 r.close();
 const gaps = beats.slice(1).map((t, i) => t - beats[i]!);
 const result = {
   httpStatus: res.status,
-  wallMs: res.ms,
+  httpMs,
+  wallMs,
   restore: res.body,
+  restoreAudit: audit && { at: audit.timestamp, ...audit.details },
+  startedAt: new Date(started).toISOString(),
   runAfter: { phase: report?.run?.phase, outcome: report?.run?.outcome, held: report?.run?.held, restoredBecause: report?.run?.restoredBecause },
   leaseOwnersSeen: [...owners],
   leaseOwnerPrefixes: [...owners].map((o) => o.split("-")[0]),
