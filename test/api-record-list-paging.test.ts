@@ -28,7 +28,7 @@ function rig() {
       const rows = store.get(payload.scope) ?? new Map<string, unknown>();
       store.set(payload.scope, rows);
       if (id === "state::get") return rows.get(payload.key!) ?? null;
-      if (id === "state::set") { rows.set(payload.key!, payload.value); return payload.value; }
+      if (id === "state::set") { rows.set(payload.key!, payload.value); return { new_value: payload.value }; }
       if (id === "state::list_keys") return { keys: [...rows.keys()] };
       if (id === "state::list") { listed.push(payload.scope); return [...rows.values()]; }
       throw new Error(`unexpected state call ${id}`);

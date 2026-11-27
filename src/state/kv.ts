@@ -17,6 +17,9 @@ type UpdateOp = { type: string; path: string; value?: unknown }
 
 type UpdateResult = { old_value: unknown; new_value: unknown; errors: unknown[] }
 
+/** What iii's state::set replies (iii-sdk StateSetResult, dist/state.d.mts): the write, not the stored value. */
+export type StateSetReply<T> = { old_value?: T; new_value: T } | null
+
 const LOCAL_UPDATE_OPS = new Set(['set', 'remove', 'merge'])
 const UNSAFE_PATHS = new Set(['__proto__', 'constructor', 'prototype'])
 const ORDER_FIELDS = ['createdAt', 'timestamp', 'startedAt', 'updatedAt'] as const
@@ -162,9 +165,9 @@ export class StateKV {
     return result
   }
 
-  async set<T = unknown>(scope: string, key: string, value: T): Promise<T> {
+  async set<T = unknown>(scope: string, key: string, value: T): Promise<StateSetReply<T>> {
     return this.mutate(scope, key, (resolvedScope) =>
-      this.sdk.trigger<{ scope: string; key: string; value: T }, T>({
+      this.sdk.trigger<{ scope: string; key: string; value: T }, StateSetReply<T>>({
         function_id: 'state::set',
         payload: { scope: resolvedScope, key, value },
       }),
