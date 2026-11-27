@@ -4,9 +4,8 @@ import { deleteFacetsForTargets } from "../../functions/facets.js";
 import { logger } from "../../logger.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import type { StateKV } from "../../state/kv.js";
-import { KV } from "../../state/schema.js";
 import { loadActiveClock, MS_PER_DAY } from "./clock.js";
-import { lockOf, reinstateLocked, type ReinstateResult } from "./move.js";
+import { lockOf, reinstatement, reinstateLocked, scopeOf, type Live, type ReinstateResult } from "./move.js";
 import { createProtector, type Protector } from "./protect.js";
 import { RunStore } from "./run-store.js";
 import { SATELLITES, type RetentionDeps } from "./satellites.js";
@@ -44,7 +43,7 @@ export interface PurgeOptions {
    * would read an empty cited set: the beat after the recheck stops purge before it commits on that answer.
    */
   readonly beat?: () => Promise<void>;
-  /** Report what would happen: protection is checked, nothing is written. */
+  /** Report what would happen, with the counts an enforcing pass would return: protection is checked, nothing is written. */
   readonly dryRun?: boolean;
   /** Tests only: the pause between pages, RETENTION_PAGE_PAUSE_MS otherwise. */
   readonly pauseMs?: number;
@@ -140,7 +139,7 @@ async function purgeRun(pass: Pass, run: RunRow): Promise<PurgeResult> {
     }
     if (pass.pauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pass.pauseMs));
   }
-  return pass.dryRun ? tally : closeRun(pass, run, tally, remaining);
+  return closeRun(pass, run, tally, remaining);
 }
 
 /** Under the item's lock: settles an entry that must not be purged, or marks it `purging`. */
@@ -149,7 +148,7 @@ async function commit(pass: Pass, runId: RunId, ref: ItemRef): Promise<Commit> {
   const entry = await vault.get(runId, ref);
   if (!entry) return { kind: "gone" };
   if (entry.purging || entry.imageReleased) return { kind: "commit", entry: { ...entry, purging: true } };
-  const live = (await deps.kv.get(ref.kind === "memory" ? KV.memories : KV.observations(ref.sessionId), ref.id)) !== null;
+  const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
   const protectedBy = entry.restoring || (entry.stage !== "T" && live) ? null : await pass.protect.recheck(entry);
   if (protectedBy?.kind === "clear") {
     await pass.beat();
@@ -158,11 +157,9 @@ async function commit(pass: Pass, runId: RunId, ref: ItemRef): Promise<Commit> {
     await vault.update(marked);
     return { kind: "commit", entry: marked };
   }
-  if (pass.dryRun) {
-    const deferred = protectedBy === null || (entry.stage === "T" && !live);
-    return { kind: "settled", result: { restored: !deferred, reembedNeeded: false, deferred } };
-  }
-  return { kind: "settled", result: await reinstateLocked(deps, vault, entry) };
+  if (!pass.dryRun) return { kind: "settled", result: await reinstateLocked(deps, vault, entry) };
+  const decision = reinstatement(entry, live);
+  return { kind: "settled", result: { restored: decision === "restore", reembedNeeded: false, ...(decision === "deferred" ? { deferred: true } : {}) } };
 }
 
 /** True when this call took the entry; false when a forget or a restore took it first. */
@@ -185,10 +182,12 @@ async function tombstone(pass: Pass, runId: RunId, sessionId: string, key: strin
   await pass.deps.kv.set<ObservationTombstone>(RETENTION_KV.tombstones, key, { sessionId, runId, deletedAt: pass.now.toISOString(), summarySessionId: sessionId });
 }
 
+/** A dry run computes the same result and writes nothing. */
 async function closeRun(pass: Pass, run: RunRow, tally: PurgeResult, remaining: number): Promise<PurgeResult> {
   const fresh = (await pass.runs.get(run.id)) ?? run;
   const emptied = remaining === 0;
   if (tally.purged + tally.restoredBack + tally.dropped === 0 && fresh.held === remaining) return tally;
+  if (pass.dryRun) return { ...tally, runsEmptied: emptied ? 1 : 0 };
   await safeAudit(pass.deps.kv, "retention_purge", "mem::retention-purge", [run.id], {
     runId: run.id,
     reason: `grace period of ${run.graceDays} day(s) elapsed`,

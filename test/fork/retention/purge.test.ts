@@ -18,6 +18,7 @@ import { itemKey, RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import { resetSummarizeVeto } from "../../../src/fork/retention/veto.js";
 import type { DemoteRecord, ItemRef, ObservationTombstone, RunId } from "../../../src/fork/retention/types.js";
 import { Vault } from "../../../src/fork/retention/vault.js";
+import type { RetentionDeps } from "../../../src/fork/retention/satellites.js";
 import { KV } from "../../../src/state/schema.js";
 import type { CompressedObservation, Insight, Memory } from "../../../src/types.js";
 import { NOW, candidate, memory, observation, rig, seedMemory, seedObservation, seedSeal, vec, type Rig } from "./move-fixtures.js";
@@ -451,6 +452,54 @@ describe("off and dry run", () => {
     expect(stable(live)).toBe(before);
     expect(await live.h.call("mem::retention-purge", { dryRun: false })).toMatchObject({ kind: "done", dryRun: false, purged: 2, runsEmptied: 1 });
     expect(await vaultKeys(live, A)).toEqual([]);
+  });
+});
+
+describe("a dry run reports what the enforcing pass then does", () => {
+  /** Dry run first, then the real pass on the same state: same counts, and the dry run wrote nothing outside retention's bookkeeping. */
+  async function both(r: Rig, deps: RetentionDeps) {
+    const before = stable(r);
+    const dry = done(await purge(deps, { dryRun: true }));
+    expect(stable(r)).toBe(before);
+    const real = done(await purge(deps));
+    return { dry, real };
+  }
+
+  it("a recaptured row: both drop the vault copy", async () => {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    const [row] = await movedObservations(r, ["rc1"]);
+    await r.kv.set(KV.observations("ses_p"), "rc1", { ...row!, title: "recaptured" });
+    clock.now = at(25);
+    const { dry, real } = await both(r, deps);
+    expect(real).toMatchObject({ purged: 0, dropped: 1, deferred: 0, runsEmptied: 1 });
+    expect(dry).toEqual({ ...real, dryRun: true });
+  });
+
+  it("an entry mid-restore: both finish the restore", async () => {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    await movedObservations(r, ["rs1"]);
+    const entry = (await r.vault.get(A, obs("ses_p", "rs1")))!;
+    await r.vault.update({ ...entry, restoring: true });
+    clock.now = at(25);
+    const { dry, real } = await both(r, deps);
+    expect(real).toMatchObject({ purged: 0, restoredBack: 1, deferred: 0, runsEmptied: 1 });
+    expect(dry).toEqual({ ...real, dryRun: true });
+  });
+
+  it("a protected trim entry whose live row was rewritten: both drop it", async () => {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    const row = await seedObservation(r, observation("rt1", "ses_t"), { seed: 1 });
+    await closedRun(r, A, [await candidate(r, "T", row, await seedSeal(r, "ses_t", 1))]);
+    const trimmed = (await r.kv.get<CompressedObservation>(KV.observations("ses_t"), "rt1"))!;
+    await r.kv.set(KV.observations("ses_t"), "rt1", { ...trimmed, title: "rewritten after the trim" });
+    await pin(r, obs("ses_t", "rt1"));
+    clock.now = at(25);
+    const { dry, real } = await both(r, deps);
+    expect(real).toMatchObject({ purged: 0, restoredBack: 0, dropped: 1, runsEmptied: 1 });
+    expect(dry).toEqual({ ...real, dryRun: true });
   });
 });
 
