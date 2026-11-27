@@ -200,12 +200,16 @@ async function tombstone(pass: Pass, runId: RunId, sessionId: string, key: strin
   await pass.deps.kv.set<ObservationTombstone>(RETENTION_KV.tombstones, key, { sessionId, runId, deletedAt: pass.now.toISOString(), summarySessionId: sessionId });
 }
 
-/** A dry run computes the same result and writes nothing. */
+/**
+ * Audits the visit when it changed something or deferred an entry, and saves the run row when it changed something.
+ * A visit that did neither writes nothing, so a repeated pass is silent. A dry run computes the same result and writes nothing.
+ */
 async function closeRun(pass: Pass, run: RunRow, tally: PurgeResult, remaining: number): Promise<PurgeResult> {
   const fresh = (await pass.runs.get(run.id)) ?? run;
-  const emptied = remaining === 0;
-  if (tally.purged + tally.restoredBack + tally.dropped === 0 && fresh.held === remaining) return tally;
-  if (pass.dryRun) return { ...tally, runsEmptied: emptied ? 1 : 0 };
+  const changed = tally.purged + tally.restoredBack + tally.dropped > 0 || fresh.held !== remaining;
+  const emptied = changed && remaining === 0;
+  const result = { ...tally, runsEmptied: emptied ? 1 : 0 };
+  if (pass.dryRun || (!changed && tally.deferred === 0)) return result;
   await safeAudit(pass.deps.kv, "retention_purge", "mem::retention-purge", [run.id], {
     runId: run.id,
     reason: `grace period of ${run.graceDays} day(s) elapsed`,
@@ -218,8 +222,8 @@ async function closeRun(pass: Pass, run: RunRow, tally: PurgeResult, remaining: 
     deferred: tally.deferred,
     remaining,
   });
-  await pass.runs.save({ ...fresh, held: remaining, ...(emptied ? { purgedAt: pass.now.toISOString() } : {}) });
-  return { ...tally, runsEmptied: emptied ? 1 : 0 };
+  if (changed) await pass.runs.save({ ...fresh, held: remaining, ...(emptied ? { purgedAt: pass.now.toISOString() } : {}) });
+  return result;
 }
 
 export interface PurgeRequest {

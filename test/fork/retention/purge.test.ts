@@ -42,6 +42,9 @@ afterEach(() => {
 const stable = (r: Rig): string =>
   JSON.stringify(JSON.parse(snapshot(r)).filter(([scope, rows]: [string, unknown[]]) => rows.length > 0 && scope !== RETENTION_KV.control && scope !== RETENTION_KV.activeDays));
 
+/** `stable` without the audit log. */
+const withoutAudit = (r: Rig): string => JSON.stringify(JSON.parse(stable(r)).filter(([scope]: [string]) => !scope.startsWith("mem:audit")));
+
 async function movedObservations(r: Rig, ids: readonly string[], opts: { session?: string; closedAt?: Date; graceDays?: number; runId?: RunId } = {}): Promise<CompressedObservation[]> {
   const session = opts.session ?? "ses_p";
   const rows = [];
@@ -261,17 +264,39 @@ describe("the T-then-O two-claim locator", () => {
     expect(await r.kv.get(KV.observations("ses_x"), "x1")).toBeNull();
   });
 
-  it("a protected trim entry whose row sits in another run's vault is deferred, stays held, and changes nothing on the next pass", async () => {
+  it("a protected trim entry whose row sits in another run's vault is deferred, stays held, and each pass audits only the deferral", async () => {
     const { r, ref, clock, deps } = await stacked({ graceDays: 1, closedAt: NOW }, { graceDays: 30, closedAt: NOW });
     await pin(r, ref);
     clock.now = at(25);
+    const before = withoutAudit(r);
     expect(done(await purge(deps))).toMatchObject({ purged: 0, restoredBack: 0, deferred: 1, runsEmptied: 0 });
+    expect(withoutAudit(r)).toBe(before);
     expect(await vaultKeys(r, A)).toHaveLength(1);
     expect(await r.runs.get(A)).toMatchObject({ held: 1 });
     expect((await r.runs.get(A))!.purgedAt).toBeUndefined();
-    const before = stable(r);
     done(await purge(deps));
-    expect(stable(r)).toBe(before);
+    expect(withoutAudit(r)).toBe(before);
+    const audited = auditEntries(r).filter((e) => e.operation === "retention_purge");
+    expect(audited.map((e) => e.details)).toEqual([0, 1].map(() => expect.objectContaining({ runId: A, purged: 0, deferred: 1, remaining: 1, heldBefore: 1 })));
+  });
+
+  it("audits every due run a pass visits, the one that only deferred as well as the one it emptied", async () => {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    await movedObservations(r, ["a1"], { session: "ses_a", runId: "ret_plain" as RunId });
+    const row = await seedObservation(r, observation("x1", "ses_x"), { seed: 2 });
+    const seal = await seedSeal(r, "ses_x", 1);
+    await closedRun(r, A, [await candidate(r, "T", row, seal)]);
+    const trimmedRow = (await r.kv.get<CompressedObservation>(KV.observations("ses_x"), "x1"))!;
+    await closedRun(r, B, [await candidate(r, "O", trimmedRow, seal)], { graceDays: 30 });
+    await pin(r, obs("ses_x", "x1"));
+    clock.now = at(25);
+    expect(done(await purge(deps))).toMatchObject({ purged: 1, deferred: 1, runsEmptied: 1 });
+    const audited = auditEntries(r).filter((e) => e.operation === "retention_purge").map((e) => e.details as { runId: string; deferred: number });
+    expect(audited.map(({ runId, deferred }) => ({ runId, deferred })).sort((a, b) => a.runId.localeCompare(b.runId))).toEqual([
+      { runId: A, deferred: 1 },
+      { runId: "ret_plain", deferred: 0 },
+    ]);
   });
 });
 
