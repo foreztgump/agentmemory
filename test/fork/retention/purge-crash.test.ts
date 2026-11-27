@@ -128,7 +128,7 @@ describe("a crash between every two writes of a purge", () => {
     const w = await build();
     const before = writeCount(w.r);
     await purgeExpired(w.deps, await w.protector(), at(25), { pauseMs: 0 });
-    expect(writeCount(w.r) - before).toBeGreaterThan(40);
+    expect(writeCount(w.r) - before).toBeGreaterThan(30);
   });
 
   it("leaves an entry either fully restorable or fully committed, and never under-counts `held`", async () => {
@@ -146,7 +146,6 @@ describe("a crash between every two writes of a purge", () => {
         if (!entry) {
           if (held.stage !== "T") expect(await w.r.kv.get(RETENTION_KV.tombstones, itemKey(held.ref)) !== null || held.ref.kind === "memory", at).toBe(true);
           if (held.path) expect(completed.get(held.path) ?? 0, at).toBe(1);
-          if (held.name === "c_plain") expect(await w.r.kv.get(KV.accessLog, "c_plain"), at).toBeNull();
           if (held.name === "m_x") {
             expect(await w.r.kv.get(RETENTION_KV.demoted, "m_x"), at).toBeNull();
             expect(await w.r.kv.get(KV.retentionScores, "m_x"), at).toBeNull();
@@ -164,7 +163,7 @@ describe("a crash between every two writes of a purge", () => {
       }
       for (const id of [A, B]) expect(runs[id]!.held, `crash ${n}, held of ${id}`).toBeGreaterThanOrEqual(present[id]!);
     }
-    expect(crashes).toBeGreaterThan(40);
+    expect(crashes).toBeGreaterThan(30);
   });
 
   it("restores exactly the entries purge had not committed, and brings back nothing that is gone", async () => {
@@ -218,7 +217,7 @@ describe("a crash between every two writes of a purge", () => {
       expect(await w.r.kv.listKeys(RETENTION_KV.tombstones), label).toHaveLength(4);
       expect(await w.r.kv.get(KV.memories, "m_x"), label).toBeNull();
       expect(await w.r.kv.get(RETENTION_KV.demoted, "m_x"), label).toBeNull();
-      expect(await w.r.kv.get(KV.accessLog, "c_plain"), label).toBeNull();
+      expect(await w.r.kv.get(KV.accessLog, "c_plain"), `${label}, an observation's bare-id access log is kept`).not.toBeNull();
       expect(await w.r.kv.get(KV.accessLog, "m_x"), label).toBeNull();
       expect(await w.r.kv.get(KV.retentionScores, "m_x"), label).toBeNull();
       const trimmedRow = await w.r.kv.get<CompressedObservation>(KV.observations("ses_c"), "c_trim");
@@ -245,7 +244,7 @@ describe("a crash between every two writes of a purge", () => {
       expect(writeCount(w.r), label).toBe(writes);
       expect(total(completed), label).toBeLessThanOrEqual(2);
     }
-    expect(crashes).toBeGreaterThan(40);
+    expect(crashes).toBeGreaterThan(30);
   });
 
   it("completes the same whether or not it is ever interrupted", async () => {

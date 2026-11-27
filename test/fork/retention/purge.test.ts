@@ -20,7 +20,7 @@ import type { DemoteRecord, ItemRef, ObservationTombstone, RunId } from "../../.
 import { Vault } from "../../../src/fork/retention/vault.js";
 import type { RetentionDeps } from "../../../src/fork/retention/satellites.js";
 import { KV } from "../../../src/state/schema.js";
-import type { CompressedObservation, Insight, Memory } from "../../../src/types.js";
+import type { CompressedObservation, Facet, Insight, Memory } from "../../../src/types.js";
 import { NOW, candidate, memory, observation, rig, seedMemory, seedObservation, seedSeal, vec, type Rig } from "./move-fixtures.js";
 import { pin, sealedSession } from "./plan-fixtures.js";
 import { at, clocked, closedRun, DAY, done, purge, purgeSettings, snapshot, writeCount } from "./purge-fixtures.js";
@@ -491,6 +491,47 @@ describe("off and dry run", () => {
     expect(stable(live)).toBe(before);
     expect(await live.h.call("mem::retention-purge", { dryRun: false })).toMatchObject({ kind: "done", dryRun: false, purged: 2, runsEmptied: 1 });
     expect(await vaultKeys(live, A)).toEqual([]);
+  });
+});
+
+describe("metadata keyed by a bare id another session's row may share", () => {
+  const facet = (id: string, targetId: string, targetType: "observation" | "memory") =>
+    ({ id, targetId, targetType, dimension: "topic", value: "quokka", createdAt: "2026-04-01T00:00:00.000Z" }) satisfies Facet;
+  const COLD1 = purgeSettings(1, "trim:45,obs:180,sup:180,cold:1");
+
+  it("keeps the access log that session B's vaulted row shares, so restoring B gives it back with its log", async () => {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    const log = { memoryId: "dup1", count: 3, lastAt: "2025-01-01T00:00:00.000Z", recent: [1, 2, 3] };
+    await r.kv.set(KV.accessLog, "dup1", log);
+    const a = await seedObservation(r, observation("dup1", "ses_a"), { seed: 1 });
+    const b = await seedObservation(r, observation("dup1", "ses_b"), { seed: 2 });
+    await closedRun(r, A, [await candidate(r, "O", a, await seedSeal(r, "ses_a", 1))]);
+    await closedRun(r, B, [await candidate(r, "O", b, await seedSeal(r, "ses_b", 1))], { graceDays: 30 });
+    clock.now = at(25);
+    expect(done(await purge(deps, {}, COLD1))).toMatchObject({ purged: 1 });
+    expect(await r.kv.get(KV.accessLog, "dup1")).toEqual(log);
+    expect(await restoreItems(deps, [obs("ses_b", "dup1")], "inside B's grace")).toMatchObject({ restored: 1 });
+    expect(await r.kv.get(KV.accessLog, "dup1")).toEqual(log);
+  });
+
+  it("keeps the facet of session B's live row with the same id, and deletes a purged memory's facet", async () => {
+    const r = rig();
+    const { clock, deps } = clocked(r);
+    await seedObservation(r, observation("dup7", "ses_b"), { seed: 2 });
+    const a = await seedObservation(r, observation("dup7", "ses_a"), { seed: 1 });
+    await seedMemory(r, memory("m_gone"), { seed: 3 });
+    await r.kv.set(KV.facets, "fct_obs", facet("fct_obs", "dup7", "observation"));
+    await r.kv.set(KV.facets, "fct_mem", facet("fct_mem", "m_gone", "memory"));
+    await closedRun(r, A, [
+      await candidate(r, "O", a, await seedSeal(r, "ses_a", 1)),
+      await candidate(r, "X", (await r.kv.get<Memory>(KV.memories, "m_gone"))!),
+    ]);
+    clock.now = at(25);
+    expect(done(await purge(deps, {}, COLD1))).toMatchObject({ purged: 2 });
+    expect(await r.kv.get(KV.observations("ses_b"), "dup7")).not.toBeNull();
+    expect(await r.kv.get(KV.facets, "fct_obs")).not.toBeNull();
+    expect(await r.kv.get(KV.facets, "fct_mem")).toBeNull();
   });
 });
 

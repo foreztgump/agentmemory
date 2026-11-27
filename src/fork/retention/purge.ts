@@ -81,9 +81,10 @@ interface Pass {
  *      one is reinstated, not purged (design 4.6).
  *   2. a clear entry is marked `purging`, the commit point: from then on a restore defers it and a re-run finishes
  *      it whatever protection says. Nothing before this is irreversible.
- *   3. the page's facets go in one pass (`deleteFacetsForTargets` reads the whole facet scope).
+ *   3. the page's memory facets go in one pass (`deleteFacetsForTargets` reads the whole facet scope). An observation's
+ *      facets and access log are keyed by the bare id another session's row may share, so they stay (satellites.ts).
  *   4. per committed entry, under its lock, stages O, S and X: `finalize` per satellite (image reference released
- *      once with `imageReleased` first, then its hold; access log, retention score), the observation tombstone (never
+ *      once with `imageReleased` first, then its hold; a memory's access log and retention score), the observation tombstone (never
  *      deleted; the capture event marker from soft delete is left alone, so a replay stays a duplicate) or the demote
  *      record of a memory, and last `vault.take`, which also pops the locator. A stage T entry only drops its vaulted
  *      source; its live row stays.
@@ -135,8 +136,8 @@ async function purgeRun(pass: Pass, run: RunRow): Promise<PurgeResult> {
       tally = sum(tally, { ...NOTHING, purged: committed.length });
       continue;
     }
-    const facetTargets = committed.filter((entry) => entry.stage !== "T").map((entry) => entry.ref.id);
-    if (facetTargets.length > 0) await deleteFacetsForTargets(deps.kv, facetTargets, { targetTypes: ["memory", "observation"] });
+    const facetTargets = committed.filter((entry) => entry.ref.kind === "memory").map((entry) => entry.ref.id);
+    if (facetTargets.length > 0) await deleteFacetsForTargets(deps.kv, facetTargets, { targetTypes: ["memory"] });
     for (const entry of committed) {
       if (await withKeyedLock(lockOf(entry.ref), () => finish(pass, run.id, entry.ref))) tally = sum(tally, { ...NOTHING, purged: 1 });
     }

@@ -59,8 +59,8 @@ export interface Satellite {
  *  image            detach: note the held reference and, when no live row is left on the file, park its embedding (images.ts).
  *                   attach: unhold, and put a parked embedding back with no embedding call. finalize: release the
  *                   reference once (`imageReleased` first), then drop the hold.
- *  metadata         finalize only: the access log, and a memory's retention score. An observation id that another
- *                   session's live row still owns keeps its access log, which is keyed by the bare id.
+ *  metadata         memories only, finalize only: the access log and the retention score. An observation's
+ *                   access log is keyed by the bare id another session's row may share, so purge keeps it.
  *
  * Purge runs `finalize` for stages O, S and X; a trim entry's row is live, so it has nothing to finalize.
  */
@@ -176,15 +176,19 @@ async function assignSessionCount(deps: RetentionDeps, entry: VaultEntry): Promi
   if (entry.ref.kind === "observation") await assignObservationCount(deps.kv, entry.ref.sessionId);
 }
 
+/**
+ * Memories only. An observation's access log and facets are keyed by its bare id, which another session's live or vaulted
+ * row may share (ids repeat across imported sessions), and deleting them would strip that row's metadata.
+ * ponytail: nothing says cheaply whether another row holds a bare id (the obs-session index names one session, the vault
+ * is keyed by session), so purge keeps them; a bare-id holder index kept by `Vault.put` and `take` would let it delete.
+ */
 function metadata(): Satellite {
   return {
     name: "metadata",
-    appliesTo: ["observation", "memory"],
+    appliesTo: ["memory"],
     async finalize(deps, entry) {
-      const { ref } = entry;
-      if (ref.kind === "observation" && (await lookupObservationSession(deps.kv, ref.id)) !== null) return;
-      await deleteAccessLog(deps.kv, ref.id);
-      if (ref.kind === "memory") await deps.kv.delete(KV.retentionScores, ref.id);
+      await deleteAccessLog(deps.kv, entry.ref.id);
+      await deps.kv.delete(KV.retentionScores, entry.ref.id);
     },
   };
 }
