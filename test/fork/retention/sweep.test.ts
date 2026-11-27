@@ -6,12 +6,15 @@ vi.mock("../../../src/logger.js", () => ({
   bootWarn: vi.fn(),
 }));
 
+import { hiddenFromIndex } from "../../../src/fork/retention/indexable.js";
 import { itemKey, RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import type { RecallHarness } from "../../../src/fork/retention/recall-check.js";
 import { LEASE_STALE_MS } from "../../../src/fork/retention/run-store.js";
 import type { RunId, RunRow } from "../../../src/fork/retention/types.js";
+import { setEmbeddingProvider } from "../../../src/functions/search.js";
 import { KV } from "../../../src/state/schema.js";
-import { memory, NOW, observation, rig, seedMemory, vec, type Rig } from "./move-fixtures.js";
+import type { EmbeddingProvider, Memory } from "../../../src/types.js";
+import { DIMS, memory, NOW, observation, rig, seedMemory, vec, type Rig } from "./move-fixtures.js";
 import { liveIds, pin, sealedSession } from "./plan-fixtures.js";
 import { auditEntries, done, goldenCase, indexHarness, indexSizes, sweep, uncapped, userData, vaultKeys, writeCases } from "./sweep-fixtures.js";
 
@@ -164,18 +167,123 @@ describe("an enforcing run", () => {
     expect(row.cursor).not.toBeNull();
   });
 
-  it("leaves stage C alone and counts it in the report", async () => {
+  it("demotes the cold memory through displace and counts it in stage C", async () => {
     const { r, cases } = await world();
     const result = done(await sweep(r, indexHarness(r, cases), { dryRun: false }));
-    expect(result.report.perStage.C).toMatchObject({ count: 1, moved: 0 });
-    expect(result.report.demoteSkipped).toBe(1);
-    expect(await r.kv.get(KV.memories, "m_cold")).not.toBeNull();
+    expect(result.report.perStage.C).toMatchObject({ count: 1, moved: 1 });
+    expect(result.report).not.toHaveProperty("demoteSkipped");
+    expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "m_cold"))).toBe(true);
   });
 
   it("increments RunRow.held itself and keeps it equal to the entries the run holds", async () => {
     const { r, cases } = await world();
     const result = done(await sweep(r, indexHarness(r, cases), { dryRun: false }));
     expect((await r.vault.runsHolding()).map((run) => run.id)).toEqual([result.runId]);
+  });
+});
+
+describe("stage C: an enforcing run demotes a cold memory in place", () => {
+  const GLACIER = (over: Partial<Memory> = {}) => memory("m_cold", { forgetAfter: undefined, title: "glacier memory", content: "glacier retreat notes", ...over });
+
+  async function world(): Promise<{ r: Rig; protectedCases: string }> {
+    const r = rig();
+    await sealedSession(r, "ses_q", 0, { rows: [QUOKKA("q1", "ses_q"), observation("q2", "ses_q")] });
+    await sealedSession(r, "ses_keep", 0, { rows: [QUOKKA("k1", "ses_keep")] });
+    await pin(r, { kind: "observation", sessionId: "ses_keep", id: "k1" });
+    await seedMemory(r, memory("m_expired"));
+    await seedMemory(r, GLACIER(), { seed: 7 });
+    await r.kv.set(KV.retentionScores, "m_cold", { memoryId: "m_cold", score: 0.05 });
+    return { r, protectedCases: writeCases({ cases: [goldenCase("pinned", "quokka", ["k1"])] }) };
+  }
+
+  it("marks it, takes it out of both indexes, counts it as moved and leaves held to the vault", async () => {
+    const { r, protectedCases } = await world();
+    await uncapped(r);
+    expect(await r.runtime.keyword.search("glacier", 10)).not.toEqual([]);
+    expect(r.runtime.vector.readVectors(["m_cold"]).size).toBe(1);
+    const result = done(await sweep(r, indexHarness(r, protectedCases), { dryRun: false }));
+    expect(result.outcome).toBe("kept");
+    const row = await r.kv.get<Memory>(KV.memories, "m_cold");
+    expect(hiddenFromIndex(row)).toBe(true);
+    expect(row).toMatchObject({ id: "m_cold", retention: { runId: result.runId, memoryId: "m_cold" } });
+    expect(await r.runtime.keyword.search("glacier", 10)).toEqual([]);
+    expect(r.runtime.vector.readVectors(["m_cold"]).size).toBe(0);
+    expect(await r.kv.get(RETENTION_KV.demoted, "m_cold")).toMatchObject({ runId: result.runId, memoryId: "m_cold" });
+    expect(result.report.perStage.C).toMatchObject({ count: 1, moved: 1 });
+    const run = (await r.runs.get(result.runId))!;
+    expect(run.counters.C.moved).toBe(1);
+    expect(run.counters.C.bytes).toBeGreaterThan(0);
+    expect(run.held).toBe(3);
+    expect((await vaultKeys(r, result.runId)).length).toBe(3);
+    expect(await vaultKeys(r, result.runId)).not.toContain(itemKey({ kind: "memory", id: "m_cold" }));
+  });
+
+  it("audits stage C as retention_demote with the real counts", async () => {
+    const { r, protectedCases } = await world();
+    await uncapped(r);
+    const result = done(await sweep(r, indexHarness(r, protectedCases), { dryRun: false }));
+    const demotes = auditEntries(r).filter((entry) => entry.targetIds.includes(result.runId) && entry.operation === "retention_demote");
+    expect(demotes).toHaveLength(1);
+    expect(demotes[0]!.details).toMatchObject({ stage: "C", runId: result.runId, dryRun: false, planned: 1, moved: 1, protectedHits: 0, restored: false });
+    expect(demotes[0]!.details["bytes"]).toBe((await r.runs.get(result.runId))!.counters.C.bytes);
+    expect(demotes[0]!.details["bytes"]).toBeGreaterThan(0);
+  });
+
+  it("is not held back by the first run's cap on observations", async () => {
+    const { r, protectedCases } = await world();
+    const result = done(await sweep(r, indexHarness(r, protectedCases), { dryRun: false }));
+    expect(result.report.observationCap).toBe(0);
+    expect(result.report.perStage.O.moved).toBe(0);
+    expect(result.report.perStage.C.moved).toBe(1);
+    expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "m_cold"))).toBe(true);
+  });
+
+  it("leaves a protected cold memory live", async () => {
+    const { r, protectedCases } = await world();
+    await uncapped(r);
+    await seedMemory(r, GLACIER({ id: "m_saved", origin: { channel: "user" } as Memory["origin"] }), { seed: 9 });
+    await r.kv.set(KV.retentionScores, "m_saved", { memoryId: "m_saved", score: 0.05 });
+    const result = done(await sweep(r, indexHarness(r, protectedCases), { dryRun: false }));
+    expect(result.report.perStage.C).toMatchObject({ count: 2, moved: 1 });
+    expect((await r.runs.get(result.runId))!.counters.C).toMatchObject({ planned: 2, moved: 1, protectedHits: 1 });
+    expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "m_saved"))).toBe(false);
+  });
+
+  it("un-demotes it from its stored vector when a golden case loses its evidence, with no embedding call", async () => {
+    const { r } = await world();
+    await uncapped(r);
+    const provider = { name: "spy", dimensions: DIMS, embed: vi.fn(async () => new Float32Array(DIMS)), embedBatch: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(DIMS))) };
+    setEmbeddingProvider(provider as unknown as EmbeddingProvider);
+    const data = userData(r);
+    const sizes = indexSizes(r);
+    const cases = writeCases({ cases: [goldenCase("glacier", "glacier", ["m_cold"]), goldenCase("pinned", "quokka", ["k1"])] });
+    const result = done(await sweep(r, indexHarness(r, cases), { dryRun: false }));
+    setEmbeddingProvider(null);
+    expect(result.outcome).toBe("restored");
+    expect(result.report.why).toMatch(/glacier/);
+    const row = await r.kv.get<Memory>(KV.memories, "m_cold");
+    expect(hiddenFromIndex(row)).toBe(false);
+    expect(row).not.toHaveProperty("retention");
+    expect((await r.runtime.keyword.search("glacier", 10)).map((hit) => hit.obsId)).toEqual(["m_cold"]);
+    expect(r.runtime.vector.readVectors(["m_cold"]).get("m_cold")).toEqual(vec(7));
+    expect(await r.kv.listKeys(RETENTION_KV.demoted)).toEqual([]);
+    expect(userData(r)).toEqual(data);
+    expect(indexSizes(r)).toEqual(sizes);
+    expect(provider.embed).not.toHaveBeenCalled();
+    expect(provider.embedBatch).not.toHaveBeenCalled();
+    expect(await r.runs.get(result.runId)).toMatchObject({ outcome: "restored", held: 0 });
+  });
+
+  it("changes nothing in a dry run, whatever is cold", async () => {
+    const { r } = await world();
+    const before = { data: userData(r), sizes: indexSizes(r) };
+    const result = done(await sweep(r, indexHarness(r), { dryRun: true }));
+    expect(result.report.perStage.C).toMatchObject({ count: 1, moved: 0 });
+    expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "m_cold"))).toBe(false);
+    expect(await r.kv.listKeys(RETENTION_KV.demoted)).toEqual([]);
+    expect(userData(r)).toEqual(before.data);
+    expect(indexSizes(r)).toEqual(before.sizes);
+    expect(r.runtime.vector.readVectors(["m_cold"]).size).toBe(1);
   });
 });
 
@@ -304,8 +412,25 @@ describe("R12, resume half", () => {
     await sealedSession(r, "ses_keep", 0, { rows: [QUOKKA("k1", "ses_keep")] });
     await pin(r, { kind: "observation", sessionId: "ses_keep", id: "k1" });
     await seedMemory(r, memory("m_expired"));
+    await seedMemory(r, memory("m_cold", { forgetAfter: undefined, title: "glacier memory", content: "glacier retreat notes" }), { seed: 7 });
+    await r.kv.set(KV.retentionScores, "m_cold", { memoryId: "m_cold", score: 0.05 });
     await uncapped(r);
     return writeCases({ cases: [goldenCase("pinned", "quokka", ["k1"])] });
+  }
+
+  /** A demote is whole or not there: marked, recorded and out of both indexes, or unmarked, unrecorded and in both. */
+  async function demoteIsWhole(r: Rig, runId: RunId): Promise<"demoted" | "live"> {
+    const marked = hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "m_cold"));
+    const recorded = (await r.kv.get(RETENTION_KV.demoted, "m_cold")) !== null;
+    const inKeyword = (await r.runtime.keyword.search("glacier", 10)).length > 0;
+    const inVector = r.runtime.vector.readVectors(["m_cold"]).size > 0;
+    expect(await r.kv.get(RETENTION_KV.demoted, "m_cold")).toSatisfy((record: { runId?: string } | null) => record === null || record.runId === runId);
+    if (marked) {
+      expect({ recorded, inKeyword, inVector }, "a marked memory is half-demoted").toEqual({ recorded: true, inKeyword: false, inVector: false });
+      return "demoted";
+    }
+    expect({ recorded, inKeyword, inVector }, "an unmarked memory is half-demoted").toEqual({ recorded: false, inKeyword: true, inVector: true });
+    return "live";
   }
 
   const items = SESSIONS.flatMap((session) => [0, 1, 2, 3].map((i) => ({ session, id: `${session}_o${i}` })));
@@ -357,7 +482,9 @@ describe("R12, resume half", () => {
       expect(await liveIds(r, "ses_keep")).toEqual(["k1"]);
       const row = (await r.runs.get(open.id))!;
       expect(row.held).toBe((await vaultKeys(r, open.id)).length);
-      expect(row).toMatchObject({ held: 13, counters: { O: { moved: 12 }, X: { moved: 1 } } });
+      expect(row).toMatchObject({ held: 13, counters: { O: { moved: 12 }, X: { moved: 1 }, C: { moved: 1 } } });
+      expect(await demoteIsWhole(r, open.id)).toBe("demoted");
+      expect(result.report.perStage.C.moved).toBe(1);
       expect(await r.runs.unfinished()).toEqual([]);
     }
     expect(resumed).toBeGreaterThan(20);

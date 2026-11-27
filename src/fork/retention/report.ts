@@ -42,8 +42,6 @@ export interface RunReport {
   readonly injectedContextScanned: number;
   /** Rows not moved because the backend could not read their vector back (vectors.ts). */
   readonly vectorUnreadable: number;
-  /** Stage C candidates planned but not demoted: the demote stage is not built yet. */
-  readonly demoteSkipped: number;
   /** Stage O cap of this run (10% of observations on a stack's first enforcing run), null when uncapped. */
   readonly observationCap: number | null;
   readonly recall?: {
@@ -122,7 +120,6 @@ export function createReportBuilder(runId: RunId, dryRun: boolean): ReportBuilde
       injectedContext: injected,
       injectedContextScanned: scanned,
       vectorUnreadable: 0,
-      demoteSkipped: 0,
       observationCap: null,
     }),
   };

@@ -6,6 +6,7 @@ import { generateId, KV } from "../../state/schema.js";
 import type { Session } from "../../types.js";
 import { sessionObservationTotals } from "../kv/observation-stats.js";
 import { loadActiveClock, type ActiveClock } from "./clock.js";
+import { demotedBy } from "./demote.js";
 import { displace, recoverRun } from "./move.js";
 import { planCandidates } from "./plan.js";
 import { clearSweepScratch, createProtector, type Protector } from "./protect.js";
@@ -56,7 +57,6 @@ interface Sweep {
   resumed: boolean;
   lost: boolean;
   unreadable: number;
-  demoteSkipped: number;
   clock?: ActiveClock;
   protector?: Protector;
 }
@@ -78,7 +78,7 @@ interface Sweep {
  *      report and write it. Dry run ends here (R1: no live write, only mem:retention:* bookkeeping and audit).
  *   4. check-before: no golden case, or an unreadable case file -> outcome "refused", report only. Else score.
  *   5. apply: re-stream from `cursor`, displace each Cleared item, stage O up to the run's `observationCap`,
- *      stage C skipped and counted (slice 8). `held`, counters and the cursor are saved after every batch,
+ *      stage C demoted through `displace` (no vault entry, so no `held`). `held`, counters and the cursor are saved after every batch,
  *      empty ones included, then the sweep pauses.
  *   6. settle: `harness.settle()`.
  *   7. check-after: score and judge. A "restore" verdict, or a check that cannot run, calls `restoreRun` with
@@ -96,7 +96,7 @@ export async function runSweep(deps: RetentionDeps, settings: RetentionSettings,
   if (!lease.held) return { kind: "busy", heldBy: lease.heldBy };
   const s: Sweep = {
     deps, settings, harness, runs, vault: new Vault(deps.kv), owner, pauseMs: req.pauseMs ?? RETENTION_PAGE_PAUSE_MS,
-    resumed: false, lost: false, unreadable: 0, demoteSkipped: 0,
+    resumed: false, lost: false, unreadable: 0,
   };
   try {
     return await drive(s, await openRun(s, req));
@@ -147,6 +147,8 @@ async function recover(s: Sweep, row: RunRow): Promise<RunRow> {
       held++;
     }
   }
+  // A demote holds no vault entry; its record in mem:retention:demoted is what a stage C count comes from.
+  for await (const record of demotedBy(s.deps.kv, row.id)) if (!record.restoring) moved.C++;
   for (const stage of STAGES) row.counters[stage].moved = moved[stage];
   row.held = held;
   row.ranBy = s.owner;
@@ -284,16 +286,12 @@ async function applyPhase(s: Sweep, row: RunRow): Promise<void> {
     for (const candidate of batch.candidates) {
       const verdict = await protector.judge(candidate);
       if (verdict.kind === "protected") continue;
-      if (STAGE_DISPOSITION[candidate.stage] === "demote") {
-        s.demoteSkipped++;
-        continue;
-      }
       if (candidate.stage === "O" && row.observationCap !== null && row.counters.O.moved >= row.observationCap) continue;
       const result = await displace(s.deps, s.vault, row.id, verdict.item);
       if (result.moved) {
         row.counters[candidate.stage].moved++;
         row.counters[candidate.stage].bytes += result.bytes;
-        row.held++;
+        if (STAGE_DISPOSITION[candidate.stage] !== "demote") row.held++;
       } else if (result.skipped === "unreadable") {
         s.unreadable++;
       }
@@ -302,7 +300,7 @@ async function applyPhase(s: Sweep, row: RunRow): Promise<void> {
     await s.runs.save(row);
     await pause(s);
   }
-  await patchDraft(s, row.id, { vectorUnreadable: s.unreadable, demoteSkipped: s.demoteSkipped });
+  await patchDraft(s, row.id, { vectorUnreadable: s.unreadable });
 }
 
 async function checkAfter(s: Sweep, row: RunRow): Promise<SweepResult> {
@@ -344,7 +342,6 @@ async function finish(s: Sweep, row: RunRow, outcome: FinalOutcome, reason: stri
     resumed: s.resumed || draft.resumed,
     observationCap: row.observationCap,
     vectorUnreadable: Math.max(s.unreadable, draft.vectorUnreadable),
-    demoteSkipped: Math.max(s.demoteSkipped, draft.demoteSkipped),
     perStage: Object.fromEntries(STAGES.map((stage) => [stage, { ...draft.perStage[stage], moved: row.counters[stage].moved }])) as RunReport["perStage"],
   };
   await s.deps.kv.set(RETENTION_KV.reports, row.id, report);
