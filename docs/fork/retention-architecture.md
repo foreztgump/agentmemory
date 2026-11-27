@@ -364,6 +364,8 @@ Each slice records its accepted deviations here before handing off.
   - A stage T entry whose row is in a later run's vault is purged on its own run's grace, so the raw source can go while the row is still restorable from the later run.
   - `deleteFacetsForTargets` scans the whole facet scope once per page of 200 entries.
 - **TEE-1196 was on disk** (`CollectionReconciler`, `imageRecords`). `purge-disk.test.ts` runs the images assertions against a live Qdrant (`QDRANT_URL`): after a move a reconcile pass neither repairs the image back nor reports it extra, a restore returns it without embedding, and after purge the next pass finds nothing to repair.
+- **Interrogate fix round.**
+  - `reinstate` reads the entry again under the item lock and returns `null` when it is gone, so `restoreRun` no longer passes the page's copy. A restore that read its page and then waited while purge finished an entry used to bring the row back with its image, access log and tombstone already settled, and rewrite the vault key purge had taken. A gone entry counts in nothing and lowers no `held`; a `purging` or `imageReleased` one is deferred as before.
 - **Left for slice 10:** the daily purge timer (call `runPurge` with `dryRun: false`, no-op when off), `POST /agentmemory/retention/purge` with a `{ dryRun }` whitelist and fail-closed auth, the purge counts in `mem::retention-report`, and the `docs:sync` counts. **Left for slice 12:** the 23 h and 25 h check on a replica with a 1-day grace, the memory peak of a purge over a full vault, the facet scan cost per page, purge against a live image store (the file leaves disk), and a sweep timer that meets a purge's lease.
 
 ## Next implementation step

@@ -237,14 +237,14 @@ describe("reinstate", () => {
     expect(await keywordHits(r, "zebra")).toEqual(["obs_2"]);
   });
 
-  it("is idempotent: finishing an entry whose row already came back adds nothing twice", async () => {
+  it("is idempotent: a second reinstate of an entry the first one took finds it gone and adds nothing twice", async () => {
     const { r, row, seal } = await stageO();
     await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     const entry = (await r.vault.get(RUN, ref("obs_1")))!;
     await reinstate(r.deps, r.vault, entry);
     const again = await reinstate(r.deps, r.vault, entry);
 
-    expect(again.restored).toBe(true);
+    expect(again).toBeNull();
     expect(await keywordHits(r, "zebra")).toEqual(["obs_1", "obs_2"]);
     expect((await r.kv.get<Session>(KV.sessions, "ses_1"))?.observationCount).toBe(2);
     expect(await r.vault.get(RUN, ref("obs_1"))).toBeNull();

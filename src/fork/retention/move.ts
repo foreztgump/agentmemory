@@ -170,9 +170,17 @@ export interface ReinstateResult {
  * move under way. An entry that purge has marked `purging`, or whose image reference is released (purge, or a
  * forget that crashed after it), is deferred: its first irreversible step has begun, so purge finishes it and nothing
  * brings the row back.
+ *
+ * `listed` is only a key: the entry is read again once the lock is held, because a caller that read it from a page
+ * may have waited while a purge, forget or other restore changed or took it. A stale copy would bring back a row
+ * whose image, access log and tombstone are settled, and rewrite a vault key purge already took. Null when the
+ * entry is gone.
  */
-export function reinstate(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<ReinstateResult> {
-  return withKeyedLock(lockOf(entry.ref), () => reinstateLocked(deps, vault, entry));
+export function reinstate(deps: RetentionDeps, vault: Vault, listed: VaultEntry): Promise<ReinstateResult | null> {
+  return withKeyedLock(lockOf(listed.ref), async () => {
+    const entry = await vault.get(listed.runId, listed.ref);
+    return entry ? reinstateLocked(deps, vault, entry) : null;
+  });
 }
 
 /** `reinstate` for a caller that already holds `lockOf(entry.ref)`: the keyed mutex is not reentrant, so a caller holding it must not call `reinstate`. */

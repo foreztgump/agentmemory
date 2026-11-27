@@ -55,7 +55,8 @@ async function audit(deps: RetentionDeps, ids: readonly string[], details: Recor
  * A trim and a later stage O for one observation share a key. The locator keeps both (see `ItemLocator.under`),
  * and restore by run restores the entries of that run only: the stage O run first puts the trimmed row back,
  * and the trim run then gives the source back. A trim entry restored while the row sits in a later run's
- * vault is deferred, not dropped.
+ * vault is deferred, not dropped. Each entry is read again under its item lock (`reinstate`), so one that a purge
+ * or forget took after the page was read is skipped.
  *
  * The run's demotes are un-demoted too and count in `restored`, but not in `held`, which counts vault entries only.
  */
@@ -65,7 +66,10 @@ export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string)
   await release(runs, runId, 0, why);
   let result = EMPTY;
   for await (const page of vault.pages(runId, RETENTION_PAGE_SIZE)) {
-    for (const entry of page) result = add(result, outcome(await reinstate(deps, vault, entry)));
+    for (const listed of page) {
+      const one = await reinstate(deps, vault, listed);
+      if (one) result = add(result, outcome(one));
+    }
   }
   await release(runs, runId, taken(result));
   for await (const record of demotedBy(deps.kv, runId)) {
