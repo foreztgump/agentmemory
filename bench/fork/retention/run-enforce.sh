@@ -31,6 +31,7 @@ rel="bench/fork/retention"
 "$S" restart-all > "$D/$tag-restart.log" 2>&1
 "$S" peaks > "$D/$tag-boot-peaks.json"
 "$S" run $rel/snapshot.ts > "$D/$tag-before.json"
+trap 'touch "$D/$tag-mem.tsv.stop"' EXIT
 "$M" run "$D/$tag-mem.tsv" &
 sampler=$!
 t0=$(date -Is)
@@ -65,6 +66,7 @@ runId="$(jq -r .runId "$D/$tag-sweep.json")"
 [[ "$(jq -r .phase "$D/$tag-sweep.json")" == done ]] || { echo "run $runId did not close (phase $(jq -r .phase "$D/$tag-sweep.json"), pollTimedOut $(jq -r .pollTimedOut "$D/$tag-sweep.json"))" | tee -a "$D/$tag-times.txt" >&2; rc=4; }
 if [[ -n "$dry" ]]; then echo done >> "$D/$tag-times.txt"; exit "$rc"; fi
 "$S" run $rel/audit.ts --run "$runId" > "$D/$tag-audit.json" 2>&1
+echo "audit rc=$?" >> "$D/$tag-times.txt"
 "$S" run $rel/vault-check.ts --run "$runId" --baseline "/private/$tag-before.json" > "$D/$tag-vault-check.json" 2> "$D/$tag-vault-check.err"
 echo "vault-check rc=$?" >> "$D/$tag-times.txt"
 "$S" run $rel/diff-snapshots.ts "/private/$tag-before.json" "/private/$tag-after.json" > "$D/$tag-diff.json"

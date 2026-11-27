@@ -20,3 +20,4 @@ for (const operation of ["retention_seal", "retention_soft_delete", "retention_d
 }
 rows.sort((a, b) => String(a.at).localeCompare(String(b.at)));
 console.log(JSON.stringify({ runId, entries: rows.length, incomplete: truncated, rows }, null, 1));
+process.exit(truncated.length === 0 ? 0 : 1);

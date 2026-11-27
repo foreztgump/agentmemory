@@ -48,6 +48,7 @@ if (record?.vector && afterPoint.exists) {
   const dense = Array.isArray(afterPoint.vector) ? afterPoint.vector : (afterPoint.vector as { dense?: number[] } | undefined)?.dense;
   vectorMatches = dense ? Math.max(...stored.map((x, i) => Math.abs(x / norm - dense[i]!))) < 1e-3 : false;
 }
+const memoryMissing = Object.keys(afterMemory).length === 0;
 const search = await am("POST", "/agentmemory/smart-search", { query: String(afterMemory.title).split(/\s+/).slice(0, 10).join(" "), limit: 10, includeLessons: false });
 const found = (search.body?.results ?? []).findIndex((hit: { obsId: string }) => hit.obsId === id);
 r.close();
@@ -56,7 +57,7 @@ const { vector: _a, ...beforeQ } = before.qdrant as Record<string, unknown>;
 const result = {
   demotedMemoriesBefore: demoted, id, pinStatus: res.status, pinResponse: res.body && { kind: res.body.kind, vaulted: res.body.vaulted, undemoted: res.body.undemoted },
   before: { ...before, qdrant: beforeQ },
-  after: { retention: afterMemory.retention ?? null, qdrant: afterQ, demoteRecordGone: recordAfter === null, vectorMatchesStored: vectorMatches, searchRank: found >= 0 ? found + 1 : null },
+  after: { retention: afterMemory.retention ?? null, qdrant: afterQ, demoteRecordGone: recordAfter === null, vectorMatchesStored: vectorMatches, searchRank: memoryMissing ? null : found >= 0 ? found + 1 : null, memoryRowMissing: memoryMissing },
   pass: res.status === 200 && res.body?.undemoted === true && afterPoint.exists && !(afterPoint as { deleted?: boolean }).deleted && recordAfter === null && vectorMatches !== false,
 };
 const out = arg("out");

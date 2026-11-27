@@ -7,7 +7,7 @@
 // between two heartbeats (the stale limit is 300 s, the renewal timer fires every 100 s and the restore beats per batch),
 // and the statuses of the competing calls.
 import { writeFileSync } from "node:fs";
-import { am, arg, redis, requireArg, sleep, text, type AmResponse } from "./lib.js";
+import { am, arg, MAX_POLL_MS, redis, requireArg, sleep, text, type AmResponse } from "./lib.js";
 
 const runId = requireArg("run", "stage.sh run bench/fork/retention/restore.ts --run ret_... [--out /private/restore.json]");
 const r = await redis();
@@ -54,10 +54,10 @@ const res = await am("POST", "/agentmemory/retention/restore", { runId }).catch(
 // The route answers 504 at 180 s (the worker's invocation timeout) while the restore goes on holding the lease, so the wall time
 // runs to the moment the lease is gone and the run's held count is zero. The audit entry the restore writes at its end dates it.
 const httpMs = res.ms;
-// A dead restore worker leaves `held` above 0 for good, so the wait stops after S12_POLL_MAX_MS and the result says `settled: false`.
+// A dead restore worker leaves `held` above 0 for good, so the wait stops after MAX_POLL_MS (S12_POLL_MAX_MS, 3 h) and the result says `settled: false`.
 let settled = true;
 if (res.status === 504 || res.status === 0) {
-  const settleDeadline = started + Number(process.env.S12_POLL_MAX_MS ?? 3 * 3600_000);
+  const settleDeadline = started + MAX_POLL_MS;
   for (;;) {
     const row = (await am("GET", `/agentmemory/retention/report?runId=${runId}`, undefined, 120_000).catch(() => null))?.body?.run;
     const lease = await r.call("HGET", "state:mem:retention:control", "lease");

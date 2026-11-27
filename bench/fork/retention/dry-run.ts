@@ -20,7 +20,9 @@ for (const family of new Set([...Object.keys(before.kv.records), ...Object.keys(
 const changedIndex = Object.keys({ ...before.search, ...after.search }).filter(
   (name) => JSON.stringify(before.search[name]) !== JSON.stringify(after.search[name]),
 );
-const countErrors = Object.entries({ ...before.search, ...after.search }).filter(([, c]) => c.denseError !== undefined).map(([name, c]) => `${name}: ${c.denseError}`);
+const countErrors = (["before", "after"] as const).flatMap((side) =>
+  Object.entries((side === "before" ? before : after).search).filter(([, c]) => c.denseError !== undefined).map(([name, c]) => `${side} ${name}: ${c.denseError}`),
+);
 const report = sweep.body?.report ?? fetched?.report;
 const missing = missingReportFields(report);
 const userRecords = Object.entries(before.kv.records).filter(([family]) => !isBookkeeping(family));
@@ -44,7 +46,7 @@ const result = {
     observationCap: report.observationCap, injectedContext: report.injectedContext, injectedContextScanned: report.injectedContextScanned,
     projects: Object.keys(report.perProject ?? {}).length,
   },
-  pass: (sweep.status === 200 || sweep.status === 504) && (fetched?.run?.outcome ?? sweep.body?.outcome) === "dry-run" && Object.keys(changedUser).length === 0 && changedIndex.length === 0 && countErrors.length === 0 && missing.length === 0,
+  pass: !sweep.pollTimedOut && sweep.runId !== undefined && (sweep.status === 200 || sweep.status === 504) && (fetched?.run?.outcome ?? sweep.body?.outcome) === "dry-run" && Object.keys(changedUser).length === 0 && changedIndex.length === 0 && countErrors.length === 0 && missing.length === 0,
   beforeKv: before.kv,
   afterKv: after.kv,
 };

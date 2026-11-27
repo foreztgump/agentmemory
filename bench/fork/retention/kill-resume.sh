@@ -79,15 +79,17 @@ while :; do
   sleep 15
 done
 t_done=$(now)
-echo "second sweep closed the run $(awk "BEGIN{print $t_done-$t_start}") s after the restart; total $(awk "BEGIN{print $t_done-$t0}") s" | tee -a "$D/$tag-kill.txt"
+phase2="$(jq -r .phase "$D/$tag-second-sweep.json")"
+echo "second sweep ended (http=$status, phase=$phase2) $(awk "BEGIN{print $t_done-$t_start}") s after the restart; total $(awk "BEGIN{print $t_done-$t0}") s" | tee -a "$D/$tag-kill.txt"
 touch "$D/$tag-mem.tsv.stop"; [[ -n "$sampler" ]] && { wait "$sampler" 2>/dev/null || true; }; sleep 2
 "$S" peaks > "$D/$tag-peaks.json"
 "$M" summary "$D/$tag-mem.tsv" > "$D/$tag-mem-summary.jsonl"
 runId="$(jq -r .runId "$D/$tag-second-sweep.json")"
 [[ "$runId" == ret_* ]] || { echo "no run id in the second sweep's summary" | tee -a "$D/$tag-kill.txt" >&2; exit 4; }
-echo "second sweep http=$status phase=$(jq -r .phase "$D/$tag-second-sweep.json") outcome=$(jq -r .outcome "$D/$tag-second-sweep.json") resumed=$(jq -r .resumed "$D/$tag-second-sweep.json")" | tee -a "$D/$tag-kill.txt"
+echo "second sweep http=$status phase=$phase2 outcome=$(jq -r .outcome "$D/$tag-second-sweep.json") resumed=$(jq -r .resumed "$D/$tag-second-sweep.json")" | tee -a "$D/$tag-kill.txt"
 "$S" run $rel/snapshot.ts > "$D/$tag-after.json"
 "$S" run $rel/audit.ts --run "$runId" > "$D/$tag-audit.json" 2>&1
+echo "audit rc=$?" >> "$D/$tag-kill.txt"
 "$S" run $rel/vault-check.ts --run "$runId" --baseline "/private/$tag-before.json" > "$D/$tag-vault-check.json" 2> "$D/$tag-vault-check.err"
 echo "vault-check rc=$?" >> "$D/$tag-kill.txt"
 "$S" run $rel/diff-snapshots.ts "/private/$tag-before.json" "/private/$tag-after.json" > "$D/$tag-diff.json"
@@ -95,5 +97,5 @@ docker cp "$HERE/trigger.mjs" "$P-agentmemory-1:/opt/agentmemory/trigger.mjs"
 for i in 1 2 3; do
   docker exec -w /opt/agentmemory "$P-agentmemory-1" node trigger.mjs state::list_keys "{\"scope\":\"mem:retention:vault:$runId\"}" 2000 2>/dev/null | grep -v '^\[' | jq -c '{ok,ms,error}' >> "$D/$tag-listkeys.log"
 done
+[[ "$phase2" == done ]] || { echo "the resumed run did not close (phase $phase2)" | tee -a "$D/$tag-kill.txt" >&2; exit 1; }
 echo done >> "$D/$tag-kill.txt"
-[[ "$(jq -r .phase "$D/$tag-second-sweep.json")" == done ]] || { echo "the resumed run did not close (phase is not done)" >&2; exit 1; }

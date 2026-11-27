@@ -151,7 +151,7 @@ export function requireArg(name: string, usage: string): string {
 export const flag = (name: string): boolean => process.argv.includes(`--${name}`);
 
 /** The longest `runSweepRoute` waits for the run to close after the route's 504: a run killed mid-apply never closes by itself. */
-const MAX_POLL_MS = Number(process.env.S12_POLL_MAX_MS ?? 3 * 3600_000);
+export const MAX_POLL_MS = Number(process.env.S12_POLL_MAX_MS ?? 3 * 3600_000);
 
 /**
  * One sweep through the REST route. The route answers 504 after 180 s, the invocation timeout of the agentmemory worker, while
