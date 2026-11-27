@@ -231,8 +231,8 @@ Buddy's owner decides buddy's rows. All windows count project-active days.
 | # | Decision |
 |---|---|
 | D1 main | trim raw `source` after **45** project-active days; observations 180; superseded memories 180; cold memories demoted at 365 |
-| D1 buddy | pending buddy's owner (until then retention stays off on buddy) |
-| D2 | grace **30 days** on main; buddy pending its owner |
+| D1 buddy | same as main: trim 45, observations 180, superseded 180, cold demoted at 365 (owner, 2026-11-27) |
+| D2 | grace **30 days** on main and on buddy (buddy: owner, 2026-11-27) |
 | D3 | all protection signals of section 6; pin endpoint yes; no MCP pin tool (tool count unchanged) |
 | D4 | **enforce from the first sweep** (no report-only weeks). Every run still writes its dry-run style report, soft-deletes into the 30-day trash, runs the recall check before and after with automatic restore, and the first enforcing run is capped at 10% of observations (section 7.5) |
 | D5 | stop threshold 2 points recall@10, or any golden case losing its evidence |

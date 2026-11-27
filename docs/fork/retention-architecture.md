@@ -235,11 +235,19 @@ Buddy keeps retention unset.
 
 ## Open questions and risks
 
-1. **Owner.** Once retention is on, should auto-forget be turned off on main (`AUTO_FORGET_ENABLED=false`), as design 8 recommends? Its TTL and observation clauses hard-delete with no grace. Should buddy, where retention stays off, keep it?
-2. **Owner.** Which golden recall cases does main's recall check use, and may that private file be mounted on the NR1 stack? Without cases, every run is report-only. That would conflict with D4's "enforce from the first sweep".
-3. **Owner.** Trash is not part of `/export`. Is it acceptable that a stack rebuilt from an export loses the 30-day restore window? Kvrocks-level backups keep it.
+1. **Decided (owner, 2026-11-19).** Auto-forget stays on, on both stacks, alongside retention. Design 8's recommendation to turn it off is not taken.
+2. **Decided (owner, 2026-11-19).** Main gets its own private golden recall set, built from main's data the way buddy's was for TEE-1155, mounted on main's NR1 stack only.
+3. **Decided (owner, 2026-11-19).** Leaving the trash out of `/export` is acceptable. Restores that need the trash come from the nightly Kvrocks backup.
 4. **Risk.** A writer that rebuilds a `Memory` object from scratch could drop `retention.demotedAt` and so un-demote a memory. Slice 8 pins this against `mem::remember`, consolidate and import.
 5. **Risk.** The 10% cap counts stage O only, because R15 names observations. Memory stages are uncapped.
+
+**Owner decisions, 2026-11-27.**
+- Buddy uses main's windows and grace: trim raw `source` at 45 project-active days, observations 180, superseded memories 180, cold memories demoted at 365, grace 30 days. Retention turns on for buddy as well as main.
+- Deliberate save keeps the narrow reading: a latest memory with `origin.channel` user or agent is never demoted; a consolidated or imported memory can be.
+- AC6 means graph items from deleted observations. Forgetting a memory marks no graph items.
+- Sessions without a project never age. Accepted; the first run reports how many there are.
+- Observations keep their bare-id access log and facets at purge. Accepted.
+- Pinning a vaulted item does not restore it at once; purge restores it at the end of grace. Accepted.
 
 ## Implementation reconciliation
 
