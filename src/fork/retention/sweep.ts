@@ -335,7 +335,10 @@ async function checkAfter(s: Sweep, row: RunRow): Promise<SweepResult> {
 
 /** `restoreRun` changes the run row (`held`, `restoredBecause`), so the row is read again; the index is settled once more so the restored documents have landed. */
 async function restoreAll(s: Sweep, row: RunRow, why: string, patch: Partial<RunReport> = {}): Promise<SweepResult> {
-  const result = await restoreRun(s.deps, row.id, why, { beat: () => beat(s) });
+  const result = await restoreRun(s.deps, row.id, why, { beat: () => beat(s) }).catch((err: unknown) => {
+    if (!(err instanceof LeaseLost)) logger.error("retention: the in-sweep restore failed", { runId: row.id, why, error: messageOf(err) });
+    throw err;
+  });
   const fresh = (await s.runs.get(row.id)) ?? row;
   await beat(s);
   await s.harness.settle();

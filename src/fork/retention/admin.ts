@@ -77,11 +77,12 @@ export async function restoreLeased(deps: RetentionDeps, req: RestoreRequest, sc
  * then `restoreRun`, then the run row and its report, if the run got that far, are closed the way a sweep closes a restored run.
  */
 async function restoreUnfinished(deps: RetentionDeps, runs: RunStore, run: RunRow, beat: () => Promise<void>): Promise<RestoreResult> {
-  const why = `${REQUESTED}; the run had stopped in phase ${run.phase}`;
+  const requested = `${REQUESTED}; the run had stopped in phase ${run.phase}`;
+  const why = run.restoredBecause ?? requested;
   await recoverRun(deps, new Vault(deps.kv), run.id);
   await beat();
   await clearSweepScratch(deps.kv);
-  const result = await restoreRun(deps, run.id, why, { beat });
+  const result = await restoreRun(deps, run.id, requested, { beat });
   await beat();
   const fresh = (await runs.get(run.id)) ?? run;
   const report = await deps.kv.get<RunReport>(RETENTION_KV.reports, run.id);
