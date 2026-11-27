@@ -88,8 +88,10 @@ function count(tally: Tally, p: CountedPayload | undefined, sign: 1 | -1): void 
   }
 }
 
+const SCALARS = ["docs", "vectors", "memories", "lessons", "missingVectors", "live", "dlDocs", "dlTotal"] as const;
+
 function sameTally(a: Tally, b: Tally): boolean {
-  const scalar = (["docs", "vectors", "memories", "lessons", "missingVectors", "live", "dlDocs", "dlTotal"] as const).every((k) => a[k] === b[k]);
+  const scalar = SCALARS.every((k) => a[k] === b[k]);
   return scalar && a.sessions.size === b.sessions.size && [...a.sessions].every(([id, n]) => b.sessions.get(id) === n);
 }
 
@@ -149,8 +151,8 @@ export class CorpusCounts {
     const quiet = this.writes === 0;
     const tally = await readTally(this.qdrant);
     if (!quiet || this.writes > 0 || generation !== this.generation) {
-      // ponytail: under back-to-back writes from boot no read is kept and each one reads Qdrant, as before TEE-1450; a write lock would bound it.
-      if (this.kept) this.kept.at = Date.now();
+      // A read a write straddled may mix states, so it is not kept; the kept tally is exact by deltas and stays due its resync.
+      // ponytail: under back-to-back writes from boot nothing is kept and each read reads Qdrant, as before TEE-1450; a write lock would bound it.
       return this.kept?.tally ?? tally;
     }
     if (this.kept && !sameTally(this.kept.tally, tally)) {
@@ -162,5 +164,5 @@ export class CorpusCounts {
 }
 
 function summary(t: Tally) {
-  return { docs: t.docs, vectors: t.vectors, memories: t.memories, lessons: t.lessons, missingVectors: t.missingVectors, live: t.live, dlDocs: t.dlDocs, dlTotal: t.dlTotal, sessions: t.sessions.size };
+  return { ...Object.fromEntries(SCALARS.map((k) => [k, t[k]])), sessions: t.sessions.size };
 }

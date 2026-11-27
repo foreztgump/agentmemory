@@ -18,9 +18,12 @@ const { values: args } = parseArgs({
   },
 });
 const minutes = Number(args.minutes);
+const KINDS = new Set(["observe", "enrich", "search", "lessons", "status"]);
 const perMinute = Object.fromEntries(args["per-minute"]!.split(",").map((kv) => {
-  const [k, v] = kv.split("=");
-  return [k!, Number(v)];
+  const [k, v, extra] = kv.split("=");
+  const n = Number(v);
+  if (!k || !KINDS.has(k) || extra !== undefined || !Number.isFinite(n) || n < 0) throw new Error(`bad --per-minute entry ${JSON.stringify(kv)}`);
+  return [k, n];
 }));
 const rand = mulberry32(1450);
 const corpus = new Corpus(20_000);
@@ -88,6 +91,7 @@ for (const { at, kind, i } of schedule) {
 await Promise.all(pending);
 const summary = Object.fromEntries(Object.entries(results).map(([k, r]) => {
   const ms = r.ms.sort((a, b) => a - b);
-  return [k, { ok: r.ok, failed: r.failed, p50: Math.round(ms[Math.floor(ms.length / 2)] ?? 0), p95: Math.round(ms[Math.floor(ms.length * 0.95)] ?? 0) }];
+  const at = (q: number) => (ms.length ? Math.round(ms[Math.min(ms.length - 1, Math.floor(ms.length * q))]!) : null);
+  return [k, { ok: r.ok, failed: r.failed, samples: ms.length, p50: at(0.5), p95: at(0.95) }];
 }));
 console.log(JSON.stringify({ started: new Date(started).toISOString(), ended: new Date().toISOString(), minutes, perMinute, summary }, null, 2));
