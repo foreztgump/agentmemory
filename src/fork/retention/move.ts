@@ -6,7 +6,7 @@ import { demoteLocked, MEMORY_LOCK, recoverDemotes } from "./demote.js";
 import { hiddenFromIndex } from "./indexable.js";
 import type { Cleared } from "./protect.js";
 import { SATELLITES, type RetentionDeps } from "./satellites.js";
-import { RETENTION_KV } from "./scopes.js";
+import { itemKey, RETENTION_KV } from "./scopes.js";
 import { RETENTION_PAGE_SIZE } from "./settings.js";
 import {
   STAGE_DISPOSITION,
@@ -56,8 +56,10 @@ export interface DisplaceResult {
    * Why nothing moved. `unreadable`: a satellite could not be read, in practice the stored vector, so the row stays
    * live (a rejected read is not "no vector"). `row-changed`: the live row was rewritten after the plan read it.
    * `already-demoted`: a stage C candidate whose live row was marked between the plan and this hold.
+   * `pinned`: a pin landed after the Protector judged the item. `pinItem` writes under the same lock, so whichever runs
+   * second sees the other: a pin first stops the move here, a move first leaves the pin to un-demote or to purge's recheck.
    */
-  readonly skipped?: "unreadable" | "row-changed" | "gone" | "nothing-to-trim" | "already-demoted";
+  readonly skipped?: "unreadable" | "row-changed" | "gone" | "nothing-to-trim" | "already-demoted" | "pinned";
 }
 
 const NOT_MOVED = (skipped: NonNullable<DisplaceResult["skipped"]>): DisplaceResult => ({ moved: false, bytes: 0, skipped });
@@ -88,6 +90,7 @@ async function attachSatellites(deps: RetentionDeps, entry: VaultEntry): Promise
  * Soft delete, trim or demote one cleared candidate. Only `Protector.clear` mints `Cleared`, so nothing
  * reaches this without its seal (T, O) or chain proof (S) and its protection verdict.
  *
+ * Every stage first re-reads, under the item's keyed lock, the pin `Protector.judge` read before it: a pinned item is never moved.
  * trash (O, S, X): under the item's keyed lock re-read the row (a row rewritten since the plan read it is
  *   skipped), snapshot satellites from it (a read that rejects refuses the row), set seal.trimmed for stage O,
  *   vault.put, delete the live row, detach satellites. The entry's rowFingerprint is `fingerprintRow` of the
@@ -102,8 +105,9 @@ export async function displace(deps: RetentionDeps, vault: Vault, runId: RunId, 
   const disposition = STAGE_DISPOSITION[item.stage];
   const { ref } = item;
   return withKeyedLock(lockOf(ref), async () => {
-    const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
+    const [live, pin] = await Promise.all([deps.kv.get<Live>(scopeOf(ref), ref.id), deps.kv.get(RETENTION_KV.pins, itemKey(ref))]);
     if (!live) return NOT_MOVED("gone");
+    if (pin) return NOT_MOVED("pinned");
     const rowFingerprint = fingerprintRow(live);
     if (rowFingerprint !== fingerprintRow(item.row)) return NOT_MOVED("row-changed");
     if (item.stage === "C" && hiddenFromIndex(live as Memory)) return NOT_MOVED("already-demoted");

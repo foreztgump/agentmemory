@@ -146,6 +146,55 @@ describe("a pinned item survives", () => {
   });
 });
 
+describe("a pin that lands after the Protector judged the item and before the move", () => {
+  it("a sweep's demote: the pin wins, the memory stays live and indexed, and a second sweep leaves it", async () => {
+    const r = rig();
+    await seedMemory(r, memory("mem_cold", { forgetAfter: undefined, createdAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z" }), { seed: 7 });
+    await r.kv.set(KV.retentionScores, "mem_cold", { memoryId: "mem_cold", score: 0.05 });
+    const cases = await anchor(r);
+    const key = itemKey(mem("mem_cold"));
+    const get = r.kv.get.bind(r.kv);
+    let pinReads = 0;
+    let pinned: unknown = null;
+    (r.kv as { get: unknown }).get = async (scope: string, k: string) => {
+      const value = await get(scope, k);
+      if (scope === RETENTION_KV.pins && k === key && ++pinReads === 2) pinned = await pinItem(r.deps, { ref: mem("mem_cold"), who: "owner", reason: "keep it" });
+      return value;
+    };
+    const first = swept(await sweep(r, indexHarness(r, cases), { dryRun: false }));
+    expect(pinned).toMatchObject({ kind: "pinned", undemoted: false });
+    expect(first.report.perStage.C.moved).toBe(0);
+    expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "mem_cold"))).toBe(false);
+    expect(r.runtime.keyword.has("mem_cold")).toBe(true);
+    expect(swept(await sweep(r, indexHarness(r, await anchor(r)), { dryRun: false })).report.perStage.C.moved).toBe(0);
+    expect(await r.kv.get(RETENTION_KV.demoted, "mem_cold")).toBeNull();
+  });
+
+  async function judgedThenPinned(stage: "T" | "O" | "S" | "X" | "C") {
+    const r = rig();
+    await openRun(r);
+    if (stage === "T" || stage === "O") {
+      const row = await seedObservation(r, observation("o1", "ses_a"), { seed: 1 });
+      const item = await candidate(r, stage, row, await seedSeal(r, "ses_a", 1));
+      await pinItem(r.deps, { ref: obs("ses_a", "o1"), who: "owner", reason: "keep" });
+      return { r, item, ref: obs("ses_a", "o1") };
+    }
+    const row = await seedMemory(r, memory("m1", { forgetAfter: stage === "X" ? "2026-02-01T00:00:00.000Z" : undefined }), { seed: 1 });
+    const item = await candidate(r, stage, row);
+    await pinItem(r.deps, { ref: mem("m1"), who: "owner", reason: "keep" });
+    return { r, item, ref: mem("m1") };
+  }
+
+  it.each(["T", "O", "S", "X", "C"] as const)("stage %s: displace sees the pin under the item lock and moves nothing", async (stage) => {
+    const { r, item, ref } = await judgedThenPinned(stage);
+    const before = await r.kv.get(ref.kind === "memory" ? KV.memories : KV.observations(ref.sessionId), ref.id);
+    expect(await displace(r.deps, r.vault, RUN, item)).toEqual({ moved: false, bytes: 0, skipped: "pinned" });
+    expect(await r.kv.get(ref.kind === "memory" ? KV.memories : KV.observations(ref.sessionId), ref.id)).toEqual(before);
+    expect(await r.vault.locate(ref)).toBeNull();
+    expect(r.runtime.keyword.has(ref.id)).toBe(true);
+  });
+});
+
 describe("pinning a demoted memory", () => {
   async function demoted() {
     const runtime = createSearchRuntime({ kv: {} as never, embeddingProvider: provider }, "memory");
