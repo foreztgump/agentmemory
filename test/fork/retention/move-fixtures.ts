@@ -33,6 +33,9 @@ export function observation(id: string, sessionId = "ses_1", over: Partial<Compr
   };
 }
 
+/** A memory created the day before NOW: its retention score is far above the cold tier, so stage C leaves it alone. */
+export const RECENT = { createdAt: "2026-08-31T00:00:00.000Z", updatedAt: "2026-08-31T00:00:00.000Z" } as const;
+
 export function memory(id: string, over: Partial<Memory> = {}): Memory {
   return {
     id, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", type: "fact", title: `memory ${id}`,

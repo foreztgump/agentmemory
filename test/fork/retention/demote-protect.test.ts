@@ -20,7 +20,6 @@ const coldRow = (id: string, over: Partial<Memory> = {}) => memory(id, { forgetA
 
 async function seedCold(r: Rig, id: string, seed: number, over: Partial<Memory> = {}) {
   await seedMemory(r, coldRow(id, over), { seed });
-  await r.kv.set(KV.retentionScores, id, { memoryId: id, score: 0.01, salience: 0.1, temporalDecay: 0.1, reinforcementBoost: 0, lastAccessed: two, accessCount: 1 });
 }
 
 describe("protection before a demote", () => {

@@ -15,7 +15,7 @@ import { RETENTION_PAGE_SIZE } from "../../../src/fork/retention/settings.js";
 import { RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import { KV } from "../../../src/state/schema.js";
 import type { Memory } from "../../../src/types.js";
-import { memory, NOW, observation, openRun, RUN, rig, seedMemory, seedSession } from "./move-fixtures.js";
+import { memory, NOW, observation, openRun, RECENT, RUN, rig, seedMemory, seedSession } from "./move-fixtures.js";
 import {
   candidatesOf, clockOf, judgeAll, liveIds, pin, planAll, planAndMove, sealedSession, ZERO,
 } from "./plan-fixtures.js";
@@ -93,13 +93,10 @@ describe("R5: each protected item survives an enforcing plan-and-move, under its
     await sealedSession(r, "ses_p", 0, { rows });
     await pin(r, { kind: "observation", sessionId: "ses_p", id: "o_pinned" });
     const two = "2024-09-01T00:00:00.000Z";
-    await seedMemory(r, memory("m_citer", { forgetAfter: undefined, sourceObservationIds: ["o_cited"] }));
+    await seedMemory(r, memory("m_citer", { ...RECENT, forgetAfter: undefined, sourceObservationIds: ["o_cited"] }));
     await seedMemory(r, memory("m_cold", { forgetAfter: undefined, createdAt: two, updatedAt: two, origin: { channel: "agent", capturedAt: two } }));
     await seedMemory(r, memory("m_arch", { forgetAfter: undefined, createdAt: two, updatedAt: two, type: "architecture" }));
     await seedMemory(r, memory("m_plain", { forgetAfter: undefined, createdAt: two, updatedAt: two }));
-    for (const id of ["m_cold", "m_arch", "m_plain"]) {
-      await r.kv.set(KV.retentionScores, id, { memoryId: id, score: 0.01, salience: 0.1, temporalDecay: 0.1, reinforcementBoost: 0, lastAccessed: two, accessCount: 1 });
-    }
     await r.kv.set(KV.accessLog, "m_cold", { memoryId: "m_cold", count: 1, lastAt: two, recent: [] });
     await r.kv.set(KV.lessons, "les_1", { id: "les_1", content: "never force push", context: "", confidence: 0.9, reinforcements: 1, source: "manual", sourceIds: [], tags: [], createdAt: two, updatedAt: two, decayRate: 0.1 });
 
@@ -267,17 +264,14 @@ describe("stages X and C", () => {
     const r = rig();
     await seedMemory(r, memory("m_expired"));
     await seedMemory(r, memory("m_old_expired", { isLatest: false }));
-    await seedMemory(r, memory("m_future", { forgetAfter: "2027-01-01T00:00:00.000Z" }));
+    await seedMemory(r, memory("m_future", { ...RECENT, forgetAfter: "2027-01-01T00:00:00.000Z" }));
     expect(candidatesOf(await planAll(r, ZERO)).map((c) => [c.stage, c.ref.id])).toEqual([["X", "m_expired"], ["X", "m_old_expired"]]);
   });
 
-  it("plans a cold memory as stage C only with a score below the cold tier", async () => {
+  it("plans a latest memory as stage C only when its score is below the cold tier", async () => {
     const r = rig();
-    for (const [id, score] of [["m_cold", 0.01], ["m_warm", 0.5]] as const) {
-      await seedMemory(r, memory(id, { forgetAfter: undefined }));
-      await r.kv.set(KV.retentionScores, id, { memoryId: id, score, salience: 0, temporalDecay: 0, reinforcementBoost: 0, lastAccessed: "", accessCount: 0 });
-    }
-    await seedMemory(r, memory("m_unscored", { forgetAfter: undefined }));
+    await seedMemory(r, memory("m_cold", { forgetAfter: undefined }));
+    await seedMemory(r, memory("m_warm", { ...RECENT, forgetAfter: undefined }));
     expect(candidatesOf(await planAll(r, ZERO)).map((c) => [c.stage, c.ref.id])).toEqual([["C", "m_cold"]]);
   });
 
@@ -289,7 +283,7 @@ describe("stages X and C", () => {
     const stopped = "2026-03-15T00:00:00.000Z";
     for (const [id, project] of [["m_old", "proj"], ["m_idle", "idle"]] as const) {
       await seedMemory(r, memory(id, { forgetAfter: undefined, isLatest: false, updatedAt: stopped, project }));
-      await r.kv.set(KV.memories, `${id}_next`, memory(`${id}_next`, { forgetAfter: undefined, version: 2, supersedes: [id], createdAt: "2026-04-01T00:00:00.000Z" }));
+      await r.kv.set(KV.memories, `${id}_next`, memory(`${id}_next`, { ...RECENT, forgetAfter: undefined, version: 2, supersedes: [id] }));
     }
     const days = async (supersededDays: number) => candidatesOf(await planAll(r, { ...ZERO, supersededDays })).map(keyOf);
     expect((await clockOf(r)).activeDaysSince("proj", new Date(stopped))).toBe(3);

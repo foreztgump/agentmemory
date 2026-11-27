@@ -18,7 +18,7 @@ import type { StateKV } from "../../../src/state/kv.js";
 import { setEmbeddingProvider } from "../../../src/functions/search.js";
 import { KV } from "../../../src/state/schema.js";
 import type { EmbeddingProvider, Memory } from "../../../src/types.js";
-import { DIMS, memory, NOW, observation, rig, seedMemory, vec, type Rig } from "./move-fixtures.js";
+import { DIMS, memory, NOW, observation, RECENT, rig, seedMemory, vec, type Rig } from "./move-fixtures.js";
 import { liveIds, pin, sealedSession } from "./plan-fixtures.js";
 import { auditEntries, done, goldenCase, indexHarness, indexSizes, sweep, uncapped, userData, vaultKeys, writeCases } from "./sweep-fixtures.js";
 
@@ -35,9 +35,8 @@ async function dryRunWorld(): Promise<Rig> {
   await pin(r, { kind: "observation", sessionId: "ses_a", id: "a2" });
   await seedMemory(r, memory("m_expired"));
   await seedMemory(r, memory("m_old", { isLatest: false, forgetAfter: undefined, updatedAt: "2026-01-01T00:00:00.000Z" }));
-  await seedMemory(r, memory("m_next", { version: 2, supersedes: ["m_old"], parentId: "m_old", forgetAfter: undefined }));
+  await seedMemory(r, memory("m_next", { ...RECENT, version: 2, supersedes: ["m_old"], parentId: "m_old", forgetAfter: undefined }));
   await seedMemory(r, memory("m_cold", { forgetAfter: undefined }));
-  await r.kv.set(KV.retentionScores, "m_cold", { memoryId: "m_cold", score: 0.05 });
   return r;
 }
 
@@ -128,7 +127,6 @@ describe("an enforcing run", () => {
     await pin(r, { kind: "observation", sessionId: "ses_keep", id: "k1" });
     await seedMemory(r, memory("m_expired"));
     await seedMemory(r, memory("m_cold", { forgetAfter: undefined }));
-    await r.kv.set(KV.retentionScores, "m_cold", { memoryId: "m_cold", score: 0.05 });
     await uncapped(r);
     return { r, cases: writeCases({ cases: [goldenCase("pinned", "quokka", ["k1"])] }) };
   }
@@ -205,7 +203,6 @@ describe("stage C: an enforcing run demotes a cold memory in place", () => {
     await pin(r, { kind: "observation", sessionId: "ses_keep", id: "k1" });
     await seedMemory(r, memory("m_expired"));
     await seedMemory(r, GLACIER(), { seed: 7 });
-    await r.kv.set(KV.retentionScores, "m_cold", { memoryId: "m_cold", score: 0.05 });
     return { r, protectedCases: writeCases({ cases: [goldenCase("pinned", "quokka", ["k1"])] }) };
   }
 
@@ -255,7 +252,6 @@ describe("stage C: an enforcing run demotes a cold memory in place", () => {
     const { r, protectedCases } = await world();
     await uncapped(r);
     await seedMemory(r, GLACIER({ id: "m_saved", origin: { channel: "user" } as Memory["origin"] }), { seed: 9 });
-    await r.kv.set(KV.retentionScores, "m_saved", { memoryId: "m_saved", score: 0.05 });
     const result = done(await sweep(r, indexHarness(r, protectedCases), { dryRun: false }));
     expect(result.report.perStage.C).toMatchObject({ count: 2, moved: 1 });
     expect((await r.runs.get(result.runId))!.counters.C).toMatchObject({ planned: 2, moved: 1, protectedHits: 1 });
@@ -461,7 +457,6 @@ describe("R12, resume half", () => {
     await pin(r, { kind: "observation", sessionId: "ses_keep", id: "k1" });
     await seedMemory(r, memory("m_expired"));
     await seedMemory(r, memory("m_cold", { forgetAfter: undefined, title: "glacier memory", content: "glacier retreat notes" }), { seed: 7 });
-    await r.kv.set(KV.retentionScores, "m_cold", { memoryId: "m_cold", score: 0.05 });
     await uncapped(r);
     return writeCases({ cases: [goldenCase("pinned", "quokka", ["k1"])] });
   }
