@@ -25,7 +25,7 @@ function rig() {
       if (function_id === "state::set") {
         if (!store.has(scope)) store.set(scope, new Map());
         store.get(scope)!.set(key, value);
-        return value;
+        return { new_value: value };
       }
       if (function_id === "state::list_keys" || function_id === "state::get") {
         if (resetOnNodeRead && (scope === KV.graphNodes || scope.startsWith(`${KV.graphNodes}:generation:`))) {

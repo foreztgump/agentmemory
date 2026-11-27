@@ -34,7 +34,7 @@ function fakeSdk(store: Map<string, Map<string, unknown>>, opts: { getMany?: boo
         } finally { inFlight--; }
       }
       if (req.function_id === "state::list") return [...scope.values()];
-      if (req.function_id === "state::set") { scope.set(p.key!, p.value); store.set(p.scope, scope); return p.value; }
+      if (req.function_id === "state::set") { scope.set(p.key!, p.value); store.set(p.scope, scope); return { new_value: p.value }; }
       if (req.function_id === "state::delete") { scope.delete(p.key!); return; }
       throw new Error(`unexpected ${req.function_id}`);
     },

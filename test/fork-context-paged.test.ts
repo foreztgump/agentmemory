@@ -27,7 +27,7 @@ function makeStore(backend: "redis" | "file") {
       const p = req.payload;
       switch (req.function_id) {
         case "state::get": return structuredClone(store.get(p.scope)?.get(p.key) ?? null);
-        case "state::set": scope(p.scope).set(p.key, structuredClone(p.value)); return p.value;
+        case "state::set": scope(p.scope).set(p.key, structuredClone(p.value)); return { new_value: p.value };
         case "state::delete": store.get(p.scope)?.delete(p.key); return null;
         case "state::list": return [...(store.get(p.scope)?.values() ?? [])].map((v) => structuredClone(v));
         case "state::list_keys": return { keys: [...(store.get(p.scope)?.keys() ?? [])] };

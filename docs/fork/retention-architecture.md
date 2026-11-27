@@ -131,6 +131,7 @@ The call is visible at its one caller. Other delete paths keep their behaviour, 
 | `src/functions/remember.ts` | ~11 | one `afterForget` call in `mem::forget`, a ref list for the rows it deletes, and the reconciliation of ids it did not find live | 9 |
 | `src/functions/search.ts` | 2 | `hiddenFromIndex` in the rebuild and in `indexRecords` | 8 |
 | `src/triggers/api.ts` | 9 | import, `registerRetentionTriggers`, the five `registerTrigger` lines, and `export` on `requireConfiguredSecret` | 10 |
+| `src/state/kv.ts` | ~4 | `StateKV.set` is typed `StateSetReply<T>`, the engine's `{ old_value?, new_value }`; behaviour unchanged (TEE-1158) | 12 |
 
 Fork-owned files outside `src/fork/retention/`:
 - `src/fork/kv/scope-classes.ts`: about 12 lines, one per retention scope, `sweepScratch` included.
@@ -394,6 +395,11 @@ Each slice records its accepted deviations here before handing off.
   - A stale pin (its item forgotten upstream) stays until `unpin`, which needs no item. It is harmless: the Protector reads a pin only for an item that exists, and one that reappears under the key is kept, which errs toward keeping. Purge cannot remove a pinned item for good: a pin it would ignore is refused, and pin and commit share the item lock.
   - `restoreUnfinished` writes no R13 sweep audit (seal and per-stage entries); its `retention_restore` entry names the run and why.
 - **Left for slice 12.** The sweep timer meeting a purge or restore lease on a replica; a restore of a full run (36,000 rows) under the lease, and whether the renewal interval holds; a staging check of the pin route on a real demoted memory. **Not built:** `diffFromLastReport`, and the per-pass purge counts in the report (they stay in the `retention_purge` audit entries; the report shows `held` and `purgedAt`). `.env.example` does not list the `AM_RETENTION_*` keys (`scripts/check-env-example.mjs` flags them, as it did before this slice).
+
+**Slice 12 reconciliation (TEE-1158).**
+- **`StateKV.set` returns the engine's reply, not the value.** iii's `state::set` answers `StateSetResult` (`{ old_value?, new_value }`, iii-sdk 0.25.1 `dist/state.d.mts`), and upstream's `state-mutation-order.test.ts` pins that `set` passes it through. Its type said `Promise<T>`, so `RunStore.save` handed the reply on as the run row, and `recover()` gave a resumed sweep a row with no id: `missing field 'key'` on the replica. The seam changes only the type, so tsc names every caller that read the reply (`RunStore.save`, now `Promise<void>`, and the `withObservationStats` wrapper). The test doubles of `state::set` answer the same shape.
+- **An in-sweep restore that throws is logged** (`retention: the in-sweep restore failed`, with run id, reason and message) and the error still ends the sweep, leaving the run open in `check-after` for `POST restore {runId}`. The REST caller has had its 504 by then, so the log is the only trace. Staging run E's cause is unknown: it was a fresh run, so the `set` bug, which only `recover()` hit, did not reach it.
+- **The first restore reason is kept.** `release` keeps a run's `restoredBecause` once set, and `restoreUnfinished` reports it as `why`. Each restore's audit entry still carries the reason of that call.
 
 ## Next implementation step
 

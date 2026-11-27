@@ -42,7 +42,7 @@ async function setup() {
       if (id === "state::set") {
         rows.set(payload.key, structuredClone(payload.value));
         store.set(payload.scope, rows);
-        return structuredClone(payload.value);
+        return { new_value: structuredClone(payload.value) };
       }
       throw new Error(`unexpected state call ${id}`);
     },

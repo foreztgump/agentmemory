@@ -36,10 +36,14 @@ const outcome = (r: ReinstateResult): RestoreResult => ({
   deferred: r.deferred ? 1 : 0,
 });
 
-/** `RunRow.held` follows the vault: the sweep adds to it, and restore and purge take away. Clamped, since the sweep owns the count. */
+/**
+ * `RunRow.held` follows the vault: the sweep adds to it, and restore and purge take away. Clamped, since the sweep owns the count.
+ * The first reason a run was restored is kept: a later restore that finishes the job (each one is audited with its own reason) must not hide why it started.
+ */
 export async function release(runs: RunStore, runId: RunId, taken: number, why?: string): Promise<void> {
   const run = await runs.get(runId);
-  if (run) await runs.save({ ...run, held: Math.max(0, run.held - taken), ...(why === undefined ? {} : { restoredBecause: why }) });
+  const reason = run?.restoredBecause ?? why;
+  if (run) await runs.save({ ...run, held: Math.max(0, run.held - taken), ...(reason === undefined ? {} : { restoredBecause: reason }) });
 }
 
 const taken = (result: RestoreResult) => result.restored + result.keptLive;

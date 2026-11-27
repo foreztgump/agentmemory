@@ -26,7 +26,7 @@ function makeKv(tracked: boolean) {
       const p = req.payload;
       switch (req.function_id) {
         case "state::get": return structuredClone(store.get(p.scope)?.get(p.key) ?? null);
-        case "state::set": scope(p.scope).set(p.key, structuredClone(p.value)); return p.value;
+        case "state::set": scope(p.scope).set(p.key, structuredClone(p.value)); return { new_value: p.value };
         case "state::delete": store.get(p.scope)?.delete(p.key); return null;
         case "state::list":
           listed.push(p.scope);

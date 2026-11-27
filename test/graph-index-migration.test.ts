@@ -29,7 +29,7 @@ function setup() {
     if (fn === "state::get") return structuredClone(scope.get(payload.key) ?? null);
     if (fn === "state::list") return structuredClone([...scope.values()]);
     if (fn === "state::list_keys") return { keys: [...scope.keys()] };
-    if (fn === "state::set") { scope.set(payload.key, structuredClone(payload.value)); rows.set(payload.scope, scope); return payload.value; }
+    if (fn === "state::set") { scope.set(payload.key, structuredClone(payload.value)); rows.set(payload.scope, scope); return { new_value: payload.value }; }
     if (fn === "state::delete") { scope.delete(payload.key); return; }
     throw new Error(`Unexpected ${fn}`);
   } };

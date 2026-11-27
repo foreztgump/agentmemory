@@ -54,7 +54,7 @@ function setup(backend: "file" | "redis" = "file") {
       if (id === "state::set") {
         rows.set(payload.key, structuredClone(payload.value));
         store.set(payload.scope, rows);
-        return structuredClone(payload.value);
+        return { new_value: structuredClone(payload.value) };
       }
       if (id === "state::update") {
         const oldValue = structuredClone(rows.get(payload.key) ?? null);
