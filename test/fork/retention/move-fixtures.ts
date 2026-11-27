@@ -1,6 +1,8 @@
 import { vi } from "vitest";
 import { captureEventScope } from "../../../src/capture/event-record.js";
-import type { Candidate, Cleared } from "../../../src/fork/retention/protect.js";
+import { loadActiveClock } from "../../../src/fork/retention/clock.js";
+import { proveChain, successorIndex } from "../../../src/fork/retention/plan.js";
+import { createProtector, type Candidate, type Cleared } from "../../../src/fork/retention/protect.js";
 import { RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import type { RetentionDeps } from "../../../src/fork/retention/satellites.js";
 import { RunStore, newRunRow } from "../../../src/fork/retention/run-store.js";
@@ -109,13 +111,32 @@ export async function seedSeal(r: Rig, sessionId: string, count: number): Promis
   return seal;
 }
 
-export function candidate(stage: "T" | "O", row: CompressedObservation, seal: SessionSeal): Cleared;
-export function candidate(stage: "S" | "X", row: Memory): Cleared;
-export function candidate(stage: "T" | "O" | "S" | "X", row: CompressedObservation | Memory, seal?: SessionSeal): Cleared {
+/**
+ * A candidate through the real `Protector`: `Cleared` is minted by `judge`, and a stage S candidate carries the
+ * proof `proveChain` returns over a successor memory that this seeds when the memory has none.
+ */
+export async function candidate(r: Rig, stage: "T" | "O", row: CompressedObservation, seal: SessionSeal): Promise<Cleared>;
+export async function candidate(r: Rig, stage: "S" | "X", row: Memory): Promise<Cleared>;
+export async function candidate(r: Rig, stage: "T" | "O" | "S" | "X", row: CompressedObservation | Memory, seal?: SessionSeal): Promise<Cleared> {
   const reason = { stage, ageActiveDays: 200, note: "aged" };
-  if (stage === "S" || stage === "X") return { project: "proj", stage, ref: { kind: "memory", id: row.id }, row: row as Memory, reason, ...(stage === "S" ? { proof: { successorId: "mem_next" } } : {}) } as unknown as Cleared;
-  const obs = row as CompressedObservation;
-  return { project: "proj", stage, ref: { kind: "observation", sessionId: obs.sessionId, id: obs.id }, row: obs, proof: { seal: seal! }, reason } as Candidate as Cleared;
+  let item: Candidate;
+  if (stage === "T" || stage === "O") {
+    const obs = row as CompressedObservation;
+    item = { project: "proj", stage, ref: { kind: "observation", sessionId: obs.sessionId, id: obs.id }, row: obs, proof: { seal: seal! }, reason };
+  } else if (stage === "X") {
+    item = { project: "proj", stage, ref: { kind: "memory", id: row.id }, row: row as Memory, reason };
+  } else {
+    const old = row as Memory;
+    const next = memory(`${old.id}_next`, { version: old.version + 1, supersedes: [old.id], parentId: old.id, createdAt: old.createdAt, forgetAfter: undefined });
+    if (!(await r.kv.get(KV.memories, next.id))) await r.kv.set(KV.memories, next.id, next);
+    const proof = await proveChain(r.kv, old, await successorIndex(r.kv));
+    if (!proof) throw new Error(`no chain proof for ${old.id}`);
+    item = { project: "proj", stage, ref: { kind: "memory", id: old.id }, row: old, proof, reason };
+  }
+  const windows = { trimDays: 0, observationDays: 0, supersededDays: 0, coldDays: 0 };
+  const verdict = await (await createProtector(r.kv, windows, await loadActiveClock(r.kv, () => NOW))).judge(item);
+  if (verdict.kind !== "clear") throw new Error(`fixture candidate is protected by ${verdict.signal}`);
+  return verdict.item;
 }
 
 /** The sweep owns `RunRow.held`; tests that move items stand in for it. */

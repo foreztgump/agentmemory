@@ -29,7 +29,7 @@ async function observationFixture() {
   await seedObservation(r, observation("obs_2"), { seed: 2 });
   const seal = await seedSeal(r, "ses_1", 2);
   await openRun(r);
-  return { r, row, seal, ref: OBS, scope: KV.observations("ses_1"), cleared: candidate("O", row, seal), query: "zebra", seed: 1, keep: "obs_2" };
+  return { r, row, seal, ref: OBS, scope: KV.observations("ses_1"), cleared: await candidate(r, "O", row, seal), query: "zebra", seed: 1, keep: "obs_2" };
 }
 
 async function memoryFixture() {
@@ -37,7 +37,7 @@ async function memoryFixture() {
   const row = await seedMemory(r, memory("mem_1"), { seed: 7 });
   await seedMemory(r, memory("mem_2"), { seed: 8 });
   await openRun(r);
-  return { r, row, ref: MEM, scope: KV.memories, cleared: candidate("X", row), query: "okapi", seed: 7, keep: "mem_2" };
+  return { r, row, ref: MEM, scope: KV.memories, cleared: await candidate(r, "X", row), query: "okapi", seed: 7, keep: "mem_2" };
 }
 
 async function trimFixture() {
@@ -45,7 +45,7 @@ async function trimFixture() {
   const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
   const seal = await seedSeal(r, "ses_1", 1);
   await openRun(r);
-  return { r, row, seal, cleared: candidate("T", row, seal) };
+  return { r, row, seal, cleared: await candidate(r, "T", row, seal) };
 }
 
 type Fixture = Awaited<ReturnType<typeof observationFixture>> | Awaited<ReturnType<typeof memoryFixture>>;

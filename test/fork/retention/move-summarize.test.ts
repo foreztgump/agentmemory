@@ -74,7 +74,7 @@ describe("stage O against a summarize that is generating", () => {
 
     const rebuild = summarize();
     await generating;
-    for (const row of rows) expect((await displace(r.deps, r.vault, RUN, candidate("O", row, seal))).moved).toBe(true);
+    for (const row of rows) expect((await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal))).moved).toBe(true);
     expect((await r.kv.get<SessionSeal>(RETENTION_KV.seals, SESSION))?.trimmed).toBe(true);
     g.state.release();
 
@@ -108,7 +108,7 @@ describe("stage O against a summarize that is generating", () => {
 
     const rebuild = summarize();
     await atPublish;
-    const move = displace(r.deps, r.vault, RUN, candidate("O", rows[0]!, seal));
+    const move = displace(r.deps, r.vault, RUN, await candidate(r, "O", rows[0]!, seal));
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(await r.kv.get(KV.observations(SESSION), "obs_1")).not.toBeNull();
     expect((await r.kv.get<SessionSeal>(RETENTION_KV.seals, SESSION))?.trimmed).toBe(false);

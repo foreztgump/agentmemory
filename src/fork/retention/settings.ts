@@ -31,6 +31,8 @@ export const RETENTION_PAGE_PAUSE_MS = 25;
 export const RETENTION_IMPORTANCE_FLOOR = 8;
 /** Fixed spill threshold (design 6): the cited-by-memory set moves to `RETENTION_KV.sweepScratch` above this many ids. */
 export const RETENTION_SPILL_IDS = 500_000;
+/** Fixed cold tier (design 4.3): a latest memory scoring below this in `mem:retention` can be demoted. Upstream's default cold tier (functions/retention.ts), which importing would drag the search runtime into the fork build. */
+export const RETENTION_COLD_SCORE = 0.15;
 export const RETENTION_RECALL_STOP_POINTS = 2;
 export const RETENTION_FIRST_RUN_OBSERVATION_SHARE = 0.1;
 

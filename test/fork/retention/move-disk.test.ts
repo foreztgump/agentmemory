@@ -112,7 +112,7 @@ describe.skipIf(!QDRANT_URL)("disk mode", () => {
     expect((await r.kv.get<Session>(KV.sessions, "ses_1"))!.observationCount).toBe(2);
     embedCalls = 0;
 
-    for (const item of [candidate("O", o1, seal), candidate("X", m)]) expect((await displace(r.deps, r.vault, RUN, item)).moved).toBe(true);
+    for (const item of [await candidate(r, "O", o1, seal), await candidate(r, "X", m)]) expect((await displace(r.deps, r.vault, RUN, item)).moved).toBe(true);
     await settle(d);
 
     expect(await keyword(d, "zebra")).toEqual(["obs_2"]);
@@ -155,13 +155,13 @@ describe.skipIf(!QDRANT_URL)("disk mode", () => {
     await index(d, o, 1);
 
     d.down.value = true;
-    expect(await displace(r.deps, r.vault, RUN, candidate("O", o, seal))).toMatchObject({ moved: false, skipped: "unreadable" });
+    expect(await displace(r.deps, r.vault, RUN, await candidate(r, "O", o, seal))).toMatchObject({ moved: false, skipped: "unreadable" });
     d.down.value = false;
     expect(await r.kv.get(KV.observations("ses_1"), "obs_1")).toEqual(o);
     expect(await r.vault.get(RUN, { kind: "observation", sessionId: "ses_1", id: "obs_1" })).toBeNull();
 
     d.runtime.health.reportOk();
-    expect((await displace(r.deps, r.vault, RUN, candidate("O", o, seal))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "O", o, seal))).moved).toBe(true);
   }, 60_000);
 
   it("R8: after a move, a reconcile pass and the re-embed loop bring nothing back", async () => {
@@ -177,7 +177,7 @@ describe.skipIf(!QDRANT_URL)("disk mode", () => {
     for (const [i, o] of rows.entries()) await index(d, o, i + 1);
     await index(d, m, 9);
 
-    for (const item of [candidate("O", rows[0]!, seal), candidate("O", rows[1]!, seal), candidate("X", m)]) await displace(r.deps, r.vault, RUN, item);
+    for (const item of [await candidate(r, "O", rows[0]!, seal), await candidate(r, "O", rows[1]!, seal), await candidate(r, "X", m)]) await displace(r.deps, r.vault, RUN, item);
     await settle(d);
     embedCalls = 0;
 
@@ -205,7 +205,7 @@ describe.skipIf(!QDRANT_URL)("disk mode", () => {
     await r.kv.set(KV.observations("ses_1"), o.id, o);
     const seal = await seedSeal(r, "ses_1", 1);
     await index(d, o, 1);
-    await displace(r.deps, r.vault, RUN, candidate("O", o, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", o, seal));
     await restoreRun(r.deps, RUN, "test");
     await settle(d);
     await d.runtime.reconciler.runPass();

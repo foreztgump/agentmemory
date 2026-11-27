@@ -48,7 +48,7 @@ async function movedObservation(r: Rig, runId: RunId = RUN) {
   await seedObservation(r, observation("obs_2"), { seed: 2 });
   const seal = await seedSeal(r, "ses_1", 2);
   await openRun(r, runId);
-  await displace(r.deps, r.vault, runId, candidate("O", row, seal));
+  await displace(r.deps, r.vault, runId, await candidate(r, "O", row, seal));
   return { row, seal };
 }
 
@@ -135,11 +135,11 @@ describe("finding 1: recoverRun writes the locator and settles under the item lo
     const B = "ret_b" as RunId;
     const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, A, candidate("T", row, seal));
+    await displace(r.deps, r.vault, A, await candidate(r, "T", row, seal));
     await r.kv.delete(RETENTION_KV.items, itemKey(OBS));
     const trimmed = (await liveRow<CompressedObservation>(r, OBS_SCOPE, "obs_1"))!;
     const later = { ...r.deps, now: () => new Date("2026-09-02T00:00:00.000Z") };
-    await displace(later, r.vault, B, candidate("O", trimmed, seal));
+    await displace(later, r.vault, B, await candidate(r, "O", trimmed, seal));
     expect(await r.vault.locate(OBS)).toEqual({ runId: B, stage: "O" });
 
     await recoverRun(r.deps, r.vault, A);
@@ -156,7 +156,7 @@ describe("finding 2: displace snapshots the satellites under the item lock", () 
     let moving!: ReturnType<typeof displace>;
 
     await withKeyedLock(OBS_LOCK, async () => {
-      moving = displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+      moving = displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
       await sleep();
       r.runtime.vector.add("obs_1", "ses_1", vec(2));
     });
@@ -173,8 +173,8 @@ describe("finding 2: displace snapshots the satellites under the item lock", () 
     let reads = 0;
     const flaky = { canRead: true, read: (ids: readonly string[]) => (reads++ === 0 ? Promise.reject(new Error("down")) : r.deps.vectors.read(ids)) };
 
-    expect(await displace({ ...r.deps, vectors: flaky }, r.vault, RUN, candidate("O", row, seal))).toMatchObject({ moved: false, skipped: "unreadable" });
-    expect(await displace({ ...r.deps, vectors: flaky }, r.vault, RUN, candidate("O", row, seal))).toMatchObject({ moved: true });
+    expect(await displace({ ...r.deps, vectors: flaky }, r.vault, RUN, await candidate(r, "O", row, seal))).toMatchObject({ moved: false, skipped: "unreadable" });
+    expect(await displace({ ...r.deps, vectors: flaky }, r.vault, RUN, await candidate(r, "O", row, seal))).toMatchObject({ moved: true });
   });
 });
 
