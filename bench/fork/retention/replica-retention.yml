@@ -1,0 +1,19 @@
+# Retention overlay for bench/fork/replica.sh (TEE-1158 slice 12). Use it after the disk overlay:
+#
+#   REPLICA_COMPOSE_EXTRA=bench/fork/qdrant/replica-disk.yml:bench/fork/retention/replica-retention.yml
+#
+# Retention stays off unless S12_RETENTION=enforce. The settings are read at boot, so a change
+# needs `docker compose ... up -d --force-recreate agentmemory` (bench/fork/retention/stage.sh app does it).
+# S12_CASES_DIR is mounted read-only at /retention-cases, so AM_RETENTION_RECALL_CASES=/retention-cases/<file>.
+services:
+  agentmemory:
+    volumes:
+      - "${S12_CASES_DIR:-/tmp}:/retention-cases:ro"
+    environment:
+      AM_RETENTION: "${S12_RETENTION:-}"
+      AM_RETENTION_WINDOWS: "${S12_WINDOWS:-}"
+      AM_RETENTION_GRACE_DAYS: "${S12_GRACE_DAYS:-}"
+      AM_RETENTION_RECALL_CASES: "${S12_RECALL_CASES:-}"
+      AM_RETENTION_INTERVAL_MS: "${S12_INTERVAL_MS:-0}"
+      AGENTMEMORY_AUDIT_RETENTION_MONTHS: "13"
+      MAX_OBS_PER_SESSION: "5000"

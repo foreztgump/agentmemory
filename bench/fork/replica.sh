@@ -19,7 +19,7 @@
 #
 # Settings (environment): AM_IMAGE (required for up, app, kvrocks, migrate and client), REPLICA_PROJECT (default amreplica),
 # REPLICA_STORE (valkey or kvrocks, default valkey), KVROCKS_MEM_LIMIT, AM_MEM_LIMIT, VALKEY_MEM_LIMIT, VALKEY_MAXMEMORY, REPLICA_EMBEDDING_PROVIDER, AGENTMEMORY_SCOPE_GUARD, READY_TIMEOUT_S,
-# REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container), REPLICA_COMPOSE_EXTRA (an overlay compose file).
+# REPLICA_PRIVATE_DIR (mounted read-only at /private in the client container), REPLICA_COMPOSE_EXTRA (overlay compose files, separated by colons).
 set -euo pipefail
 
 die() { echo "replica: $*" >&2; exit 1; }
@@ -28,9 +28,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPLICA_PROJECT="${REPLICA_PROJECT:-amreplica}"
 COMPOSE=(docker compose -f "$HERE/replica-compose.yml")
 # An overlay such as qdrant/replica-disk.yml (disk-mode search) is added after the base file.
+# REPLICA_COMPOSE_EXTRA may name several overlays, separated by colons.
 if [[ -n "${REPLICA_COMPOSE_EXTRA:-}" ]]; then
-  [[ -f "$REPLICA_COMPOSE_EXTRA" ]] || die "no overlay at $REPLICA_COMPOSE_EXTRA"
-  COMPOSE+=(-f "$(cd "$(dirname "$REPLICA_COMPOSE_EXTRA")" && pwd)/$(basename "$REPLICA_COMPOSE_EXTRA")")
+  IFS=: read -ra EXTRA_FILES <<<"$REPLICA_COMPOSE_EXTRA"
+  for extra in "${EXTRA_FILES[@]}"; do
+    [[ -f "$extra" ]] || die "no overlay at $extra"
+    COMPOSE+=(-f "$(cd "$(dirname "$extra")" && pwd)/$(basename "$extra")")
+  done
 fi
 COMPOSE+=(-p "$REPLICA_PROJECT")
 SECRET="replica-dummy-secret"
@@ -174,10 +178,12 @@ client_up() {
   name="$(container client)"
   [[ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == true ]] && return 0
   docker rm -f "$name" >/dev/null 2>&1 || true
-  local private=()
+  local private=() modules=()
   [[ -n "${REPLICA_PRIVATE_DIR:-}" ]] && private=(-v "$REPLICA_PRIVATE_DIR:/private:ro")
+  # A worktree that symlinks node_modules to another checkout needs the target mounted too.
+  [[ -L "$REPO/node_modules" ]] && modules=(-v "$(readlink -f "$REPO/node_modules"):/work/node_modules:ro")
   docker run -d --name "$name" --network "${REPLICA_PROJECT}_replica" --memory 1g \
-    -v "$REPO:/work:ro" "${private[@]}" -w /work --entrypoint sleep "$AM_IMAGE" infinity >/dev/null
+    -v "$REPO:/work:ro" "${modules[@]}" "${private[@]}" -w /work --entrypoint sleep "$AM_IMAGE" infinity >/dev/null
 }
 
 client() {
