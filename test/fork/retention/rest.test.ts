@@ -30,9 +30,10 @@ const MEM = { kind: "memory", id: "mem_1" };
 const OBS = { kind: "observation", sessionId: "ses_1", id: "obs_1" };
 
 describe("the routes are wired in the upstream trigger file", () => {
-  it("api.ts registers the five paths and methods", () => {
+  it("api.ts registers the six paths and methods", () => {
     const rows = collectRestEndpoints(readFileSync(new URL("../../../src/triggers/api.ts", import.meta.url), "utf8"));
     expect(rows.filter(({ path }) => path.startsWith("/agentmemory/retention/"))).toEqual([
+      { path: "/agentmemory/retention/job", method: "GET" },
       { path: "/agentmemory/retention/pin", method: "POST" },
       { path: "/agentmemory/retention/purge", method: "POST" },
       { path: "/agentmemory/retention/report", method: "GET" },
