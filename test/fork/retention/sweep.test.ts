@@ -11,6 +11,8 @@ import { itemKey, RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import type { RecallHarness } from "../../../src/fork/retention/recall-check.js";
 import { LEASE_STALE_MS } from "../../../src/fork/retention/run-store.js";
 import type { RunId, RunRow } from "../../../src/fork/retention/types.js";
+import type { RetentionDeps } from "../../../src/fork/retention/satellites.js";
+import type { StateKV } from "../../../src/state/kv.js";
 import { setEmbeddingProvider } from "../../../src/functions/search.js";
 import { KV } from "../../../src/state/schema.js";
 import type { EmbeddingProvider, Memory } from "../../../src/types.js";
@@ -139,6 +141,15 @@ describe("an enforcing run", () => {
     expect(await liveIds(r, "ses_q")).toEqual(["q1", "q2"]);
     expect(await r.kv.get(KV.memories, "m_expired")).not.toBeNull();
     expect(await r.runs.get(result.runId)).toMatchObject({ phase: "done", outcome: "refused", held: 0 });
+  });
+
+  it("is refused when a case repeats an evidence id, which would inflate its recall", async () => {
+    const { r } = await world();
+    const repeated = writeCases({ cases: [goldenCase("pinned", "quokka", ["k1", "k1"])] });
+    const result = done(await sweep(r, indexHarness(r, repeated), { dryRun: false }));
+    expect(result.outcome).toBe("refused");
+    expect(result.report.why).toMatch(/evidence id "k1" is repeated/);
+    expect(await liveIds(r, "ses_q")).toEqual(["q1", "q2"]);
   });
 
   it("is refused when the recall cases file cannot be read, never run unmeasured", async () => {
@@ -554,6 +565,78 @@ describe("the lease", () => {
     expect(await sweep(r, stealing, { dryRun: false })).toEqual({ kind: "lease-lost" });
     expect(await liveIds(r, "ses_q")).toHaveLength(3);
     expect(await r.kv.get(RETENTION_KV.control, "lease")).toMatchObject({ owner: "usurper" });
+  });
+});
+
+interface KvOp {
+  readonly op: "get" | "listKeys" | "iterate";
+  readonly scope: string;
+  readonly key?: string;
+}
+
+/** The rig's deps, except that the first state-store read `when` matches first hands the sweep lease to another process. */
+function stealingDeps(r: Rig, when: (op: KvOp) => boolean): RetentionDeps {
+  let stolen = false;
+  const steal = async (op: KvOp): Promise<void> => {
+    if (stolen || !when(op)) return;
+    stolen = true;
+    await r.kv.set(RETENTION_KV.control, "lease", { owner: "usurper", heartbeatAt: NOW.toISOString() });
+  };
+  const kv = Object.create(r.kv) as StateKV;
+  kv.get = (async (scope: string, key: string) => {
+    const row = await r.kv.get(scope, key);
+    await steal({ op: "get", scope, key });
+    return row;
+  }) as StateKV["get"];
+  kv.listKeys = async (scope: string) => {
+    await steal({ op: "listKeys", scope });
+    return r.kv.listKeys(scope);
+  };
+  kv.iterate = async function* (scope: string, opts?: { pageSize?: number }) {
+    await steal({ op: "iterate", scope });
+    yield* r.kv.iterate(scope, opts);
+  } as StateKV["iterate"];
+  return { ...r.deps, kv };
+}
+
+describe("the lease, in the stretches between batches", () => {
+  async function crashedAtSettle(): Promise<{ r: Rig; cases: string; open: RunRow }> {
+    const r = rig();
+    await sealedSession(r, "ses_q", 3);
+    await uncapped(r);
+    const cases = writeCases({ cases: [goldenCase("c", "title", ["ses_q_o0"], true)] });
+    const real = indexHarness(r, cases);
+    await expect(sweep(r, { ...real, settle: async () => { throw new Error("killed"); } }, { dryRun: false })).rejects.toThrow("killed");
+    const [open] = await r.runs.unfinished();
+    expect(await vaultKeys(r, open!.id)).toHaveLength(3);
+    return { r, cases, open: open! };
+  }
+
+  it.each([
+    ["the scratch scope is cleared", (op: KvOp) => op.op === "listKeys" && op.scope === RETENTION_KV.sweepScratch],
+    ["the run's vault is first paged", (op: KvOp) => op.op === "iterate" && op.scope.startsWith("mem:retention:vault")],
+  ])("recovery stops with lease-lost, and never saves the run row, once the lease is lost as %s", async (_name, when) => {
+    const { r, cases, open } = await crashedAtSettle();
+    const stored = await r.kv.get<RunRow>(RETENTION_KV.runs, open.id);
+    const harness = indexHarness(r, cases);
+    const settle = vi.spyOn(harness, "settle");
+    expect(await sweep(r, harness, { dryRun: false }, stealingDeps(r, when))).toEqual({ kind: "lease-lost" });
+    expect(await r.kv.get(RETENTION_KV.control, "lease")).toMatchObject({ owner: "usurper" });
+    expect(await r.kv.get(RETENTION_KV.runs, open.id)).toEqual(stored);
+    expect(settle).not.toHaveBeenCalled();
+    expect(await vaultKeys(r, open.id)).toHaveLength(3);
+  });
+
+  it("the first run's cap scan stops with lease-lost, and the run row stays at check-before", async () => {
+    const r = rig();
+    await sealedSession(r, "ses_q", 3);
+    const cases = writeCases({ cases: [goldenCase("c", "title", ["ses_q_o0"], true)] });
+    const deps = stealingDeps(r, (op) => op.op === "get" && op.scope === RETENTION_KV.control && op.key === "enforced-runs");
+    expect(await sweep(r, indexHarness(r, cases), { dryRun: false }, deps)).toEqual({ kind: "lease-lost" });
+    expect(await r.kv.get(RETENTION_KV.control, "lease")).toMatchObject({ owner: "usurper" });
+    expect(await liveIds(r, "ses_q")).toHaveLength(3);
+    const [open] = await r.runs.unfinished();
+    expect(open).toMatchObject({ phase: "check-before", observationCap: null, held: 0 });
   });
 });
 

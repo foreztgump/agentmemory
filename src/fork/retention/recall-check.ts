@@ -73,6 +73,10 @@ function parseCase(raw: unknown, index: number, path: string, seen: Set<string>)
   if (!Array.isArray(evidence) || evidence.length === 0 || !evidence.every((e) => typeof e === "string" && e !== "")) {
     throw invalid(path, `case "${id}" needs a non-empty list of evidence ids`);
   }
+  if (new Set(evidence).size !== evidence.length) {
+    const repeated = evidence.find((e, i) => evidence.indexOf(e) !== i);
+    throw invalid(path, `evidence id "${repeated}" is repeated in case "${id}"`);
+  }
   if (golden !== undefined && typeof golden !== "boolean") throw invalid(path, `case "${id}" has a golden that is not true or false`);
   return { id, query, evidence: evidence as string[], golden: golden ?? true };
 }

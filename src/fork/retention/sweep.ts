@@ -138,6 +138,7 @@ async function openRun(s: Sweep, req: SweepRequest): Promise<RunRow> {
 
 async function recover(s: Sweep, row: RunRow): Promise<RunRow> {
   await recoverRun(s.deps, s.vault, row.id);
+  await beat(s);
   await clearSweepScratch(s.deps.kv);
   const moved = Object.fromEntries(STAGES.map((stage) => [stage, 0])) as Record<Stage, number>;
   let held = 0;
@@ -146,12 +147,18 @@ async function recover(s: Sweep, row: RunRow): Promise<RunRow> {
       moved[entry.stage]++;
       held++;
     }
+    await beat(s);
   }
   // A demote holds no vault entry; its record in mem:retention:demoted is what a stage C count comes from.
-  for await (const record of demotedBy(s.deps.kv, row.id)) if (!record.restoring) moved.C++;
+  let scanned = 0;
+  for await (const record of demotedBy(s.deps.kv, row.id)) {
+    if (!record.restoring) moved.C++;
+    if (++scanned % RETENTION_PAGE_SIZE === 0) await beat(s);
+  }
   for (const stage of STAGES) row.counters[stage].moved = moved[stage];
   row.held = held;
   row.ranBy = s.owner;
+  await beat(s);
   return s.runs.save(row);
 }
 
@@ -274,7 +281,9 @@ async function firstRunCap(s: Sweep): Promise<number | null> {
   if (((await s.deps.kv.get<number>(RETENTION_KV.control, ENFORCED_KEY)) ?? 0) > 0) return null;
   let total = 0;
   for await (const page of s.deps.kv.iterate<Session>(KV.sessions)) {
-    for (const session of page) total += (await sessionObservationTotals(s.deps.kv, session.id)).rows;
+    const totals = await Promise.all(page.map((session) => sessionObservationTotals(s.deps.kv, session.id)));
+    for (const { rows } of totals) total += rows;
+    await beat(s);
   }
   return Math.floor(total * s.settings.firstRunObservationShare);
 }

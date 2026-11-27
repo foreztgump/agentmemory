@@ -46,6 +46,7 @@ describe("loadRecallCases", () => {
     ["a case without evidence", { cases: [{ id: "a", query: "q", evidence: [] }] }],
     ["a case without a query", { cases: [{ id: "a", query: " ", evidence: ["o"] }] }],
     ["a repeated id", { cases: [{ id: "a", query: "q", evidence: ["o"] }, { id: "a", query: "r", evidence: ["o"] }] }],
+    ["a repeated evidence id", { cases: [{ id: "a", query: "q", evidence: ["o", "p", "o"] }] }],
     ["a non-boolean golden", { cases: [{ id: "a", query: "q", evidence: ["o"], golden: "yes" }] }],
   ])("rejects %s, so a broken file never reads as a passing check", async (_name, body) => {
     await expect(loadRecallCases(writeCases(body))).rejects.toThrow(/recall cases/);

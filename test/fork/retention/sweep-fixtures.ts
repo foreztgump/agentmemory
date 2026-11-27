@@ -9,7 +9,7 @@ import { runSweep, type SweepRequest, type SweepResult } from "../../../src/fork
 import type { RunId, Windows } from "../../../src/fork/retention/types.js";
 import type { AuditEntry } from "../../../src/types.js";
 import { KV } from "../../../src/state/schema.js";
-import { NOW, type Rig } from "./move-fixtures.js";
+import type { Rig } from "./move-fixtures.js";
 import { ZERO } from "./plan-fixtures.js";
 
 export const ENFORCE_ENV = { AM_RETENTION: "enforce", AM_RETENTION_WINDOWS: "trim:45,obs:180,sup:180,cold:365", AM_RETENTION_GRACE_DAYS: "30" };
@@ -73,8 +73,6 @@ export const indexSizes = (r: Rig) => ({ keyword: r.runtime.keyword.size, vector
 export const vaultKeys = async (r: Rig, runId: RunId): Promise<string[]> => r.kv.listKeys(RETENTION_KV.vault(runId));
 
 export const goldenCase = (id: string, query: string, evidence: string[], golden = true): RecallCase => ({ id, query, evidence, golden });
-
-export const RESUME_NOW = new Date(NOW.getTime() + 20 * 60_000);
 
 /** A stack whose first enforcing run is behind it, so the 10% cap does not apply (tiny fixtures would round to zero). */
 export const uncapped = (r: Rig) => r.kv.set(RETENTION_KV.control, "enforced-runs", 1);
