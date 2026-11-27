@@ -30,6 +30,7 @@ describe("parseRetentionSettings", () => {
     ["grace empty", { ...decided, AM_RETENTION_GRACE_DAYS: "" }, /AM_RETENTION_GRACE_DAYS/],
     ["interval malformed", { ...decided, AM_RETENTION_INTERVAL_MS: "weekly" }, /AM_RETENTION_INTERVAL_MS/],
     ["interval blank", { ...decided, AM_RETENTION_INTERVAL_MS: "  " }, /AM_RETENTION_INTERVAL_MS is blank/],
+    ["interval past the timer limit, which Node would fire every 1 ms", { ...decided, AM_RETENTION_INTERVAL_MS: "2147483648" }, /AM_RETENTION_INTERVAL_MS must be at most 2147483647/],
     ["window with an extra colon", { ...decided, AM_RETENTION_WINDOWS: "trim:45:9,obs:180,sup:180,cold:365" }, /trim.*one colon/],
   ];
 
@@ -66,6 +67,10 @@ describe("parseRetentionSettings", () => {
       recallCasesPath: "/data/cases.json",
       intervalMs: 3_600_000,
     });
+  });
+
+  it("accepts an interval at the timer limit", () => {
+    expect(parseRetentionSettings({ ...decided, AM_RETENTION_INTERVAL_MS: "2147483647" })).toMatchObject({ mode: "enforce", intervalMs: 2_147_483_647 });
   });
 
   it("reads an interval of 0 as manual only", () => {

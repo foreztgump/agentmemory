@@ -66,6 +66,14 @@ describe("startRetentionTimers", () => {
     expect(scheduled.map((s) => s.ms)).toEqual([WEEK, PURGE_INTERVAL_MS]);
   });
 
+  it("a 30-day interval never sweeps on a real clock (Node fires a delay past 2^31-1 ms every 1 ms)", async () => {
+    const run = runners();
+    const timers = startRetentionTimers(settings({ AM_RETENTION_INTERVAL_MS: String(30 * 86_400_000) }), run, realScheduler);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    timers.stop();
+    expect(run.sweep).not.toHaveBeenCalled();
+  });
+
   it("an interval of 0 means manual sweeps only, and the purge still runs daily", () => {
     const { scheduler, scheduled } = fakeScheduler();
     startRetentionTimers(settings({ AM_RETENTION_INTERVAL_MS: "0" }), runners(), scheduler);

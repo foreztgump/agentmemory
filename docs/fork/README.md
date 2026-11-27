@@ -108,7 +108,7 @@ Retention trims, hides and later deletes old observations and memories, after a 
 | `AM_RETENTION_WINDOWS` | `trim:45,obs:180,sup:180,cold:365` | Project-active days before raw `source` is trimmed, observations are moved, superseded memories are moved and cold memories are demoted. Each at least 1. |
 | `AM_RETENTION_GRACE_DAYS` | `30` | Days a moved row stays restorable before the purge deletes it. At least 1. |
 | `AM_RETENTION_RECALL_CASES` | `/path/cases.json` | Golden recall cases. With none, every run is refused and only reports. |
-| `AM_RETENTION_INTERVAL_MS` | `604800000` | Sweep interval. Unset is weekly, `0` is manual only, blank is off. The purge runs daily whatever this is. |
+| `AM_RETENTION_INTERVAL_MS` | `604800000` | Sweep interval. Unset is weekly, `0` is manual only, blank is off, and above `2147483647` (about 24.8 days, the longest delay a Node timer honours) is off. The purge runs daily whatever this is. |
 
 Also set `AGENTMEMORY_AUDIT_RETENTION_MONTHS=13`, so a run's audit outlives its grace period, and `MAX_OBS_PER_SESSION=5000`.
 
