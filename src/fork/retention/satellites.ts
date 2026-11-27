@@ -8,6 +8,7 @@ import type { SearchRuntime } from "../../state/search-ports.js";
 import type { Session } from "../../types.js";
 import { sessionObservationTotals } from "../kv/observation-stats.js";
 import { docOfRecord, type IndexDoc } from "../search/doc-of-record.js";
+import { imageSatellite } from "./images.js";
 import type { ItemRef, SatelliteSnapshots, VaultEntry } from "./types.js";
 import { reattachDocument, type VectorReader } from "./vectors.js";
 
@@ -54,10 +55,15 @@ export interface Satellite {
  *  session-count    detach and attach: Session.observationCount := ObservationStats rows for the session.
  *                   Assignment converges where +1/-1 does not, and repairs drift (L4, R11).
  *
- * Slice 7 adds the rows that only purge and images need: image (snapshot, detach, attach, finalize) and
- * metadata (finalize).
+ *  image            detach: note the held reference and, when no live row is left on the file, park its embedding (images.ts).
+ *                   attach: unhold, and put a parked embedding back with no embedding call. finalize: release the
+ *                   reference once (`imageReleased` first), then drop the hold.
+ *  metadata         memories only, finalize only: the access log and the retention score. An observation's
+ *                   access log is keyed by the bare id another session's row may share, so purge keeps it.
+ *
+ * Purge runs `finalize` for stages O, S and X; a trim entry's row is live, so it has nothing to finalize.
  */
-export const SATELLITES: readonly Satellite[] = [searchIndex(), captureEvent(), obsSessionIndex(), sessionCount()];
+export const SATELLITES: readonly Satellite[] = [searchIndex(), captureEvent(), obsSessionIndex(), sessionCount(), imageSatellite(), metadata()];
 
 type ObsEntry = Extract<VaultEntry, { ref: { kind: "observation" } }>;
 
@@ -167,6 +173,26 @@ export async function assignObservationCount(kv: StateKV, sessionId: string): Pr
 
 async function assignSessionCount(deps: RetentionDeps, entry: VaultEntry): Promise<void> {
   if (entry.ref.kind === "observation") await assignObservationCount(deps.kv, entry.ref.sessionId);
+}
+
+/**
+ * Memories only. Each delete throws on failure, so purge leaves the entry `purging` and a re-run finishes it; upstream's
+ * `deleteAccessLog` swallows the error, which let `vault.take` run with the log still there. The lock is the one
+ * `recordAccess` and `deleteAccessLog` hold. An observation's access log and facets are keyed by its bare id, which another session's live or vaulted
+ * row may share (ids repeat across imported sessions), and deleting them would strip that row's metadata.
+ * ponytail: nothing says cheaply whether another row holds a bare id (the obs-session index names one session, the vault
+ * is keyed by session), so purge keeps them; a bare-id holder index kept by `Vault.put` and `take` would let it delete.
+ */
+function metadata(): Satellite {
+  return {
+    name: "metadata",
+    appliesTo: ["memory"],
+    async finalize(deps, entry) {
+      const { id } = entry.ref;
+      await withKeyedLock(`mem:access:${id}`, () => deps.kv.delete(KV.accessLog, id));
+      await deps.kv.delete(KV.retentionScores, id);
+    },
+  };
 }
 
 function sessionCount(): Satellite {

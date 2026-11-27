@@ -13,7 +13,8 @@ import type { ItemRef, RunId } from "./types.js";
  *   tombstones    point-read-only  key = itemKey(observation ref), value = ObservationTombstone
  *   control       bounded          lease, enforced-run count, last report id
  *   reports       bounded          key = run id, value = RunReport (samples capped at 20 per stage)
- *   imageHolds    point-read-only  key = image file path, value = number of references held in vaults
+ *   imageHolds    point-read-only  key = image file path, value = ImageHold (images.ts): the item keys of the vault entries that
+ *                                  still hold a reference to the file, and the embedding row parked while no live row uses it
  *   activeDays    point-read-only  key = project, value = sorted day numbers with a session (clock.ts)
  *   sweepScratch  paged-only       key = bare observation id, value = 1: the cited-by-memory set once it passes
  *                                  RETENTION_SPILL_IDS (protect.ts). Point reads for membership; emptied by

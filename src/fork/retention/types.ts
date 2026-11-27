@@ -82,8 +82,6 @@ export interface SatelliteSnapshots {
   readonly vector?: string;
   /** The capture event as it was before `markCaptureEventDeleted`. */
   readonly captureEvent?: unknown;
-  /** The `mem:image-embeddings` row, moved only when this item held the last live reference (images.ts). */
-  readonly imageEmbedding?: unknown;
 }
 
 interface EntryBase {
@@ -102,8 +100,16 @@ interface EntryBase {
    */
   readonly rowFingerprint: string;
   readonly satellites: SatelliteSnapshots;
-  /** Set before the image ref is released at purge: a crash leaks one reference, never frees a shared file. */
+  /** Set before the image ref is released at purge or forget: a crash leaks one reference, never frees a shared file. */
   imageReleased?: boolean;
+  /**
+   * Written by purge, under the item's lock, before its first irreversible step. From then on the entry is not
+   * restorable (`reinstateLocked` defers it) and purge finishes it whatever protection says, so a restore never
+   * brings back a row whose image reference, access log or demote record is already gone. An entry with
+   * `imageReleased` set counts the same: a forget that crashed after releasing the reference leaves one, and purge
+   * finishes it at the end of grace.
+   */
+  purging?: boolean;
   /**
    * Written, under the item's lock, before the first change of a restore. After a crash the row can be live
    * with the entry still held either way round (displace before its delete, or reinstate before its take), and
@@ -232,4 +238,6 @@ export interface RunRow {
   ranBy: string;
   restoredBecause?: string;
   closedAt?: string;
+  /** Set by purge once the run's vault is empty; a purged run is never visited again. */
+  purgedAt?: string;
 }

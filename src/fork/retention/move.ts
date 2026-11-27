@@ -14,7 +14,7 @@ import {
 } from "./types.js";
 import type { Vault } from "./vault.js";
 
-type Live = CompressedObservation | Memory;
+export type Live = CompressedObservation | Memory;
 type ObservationRef = Extract<ItemRef, { kind: "observation" }>;
 
 /**
@@ -36,7 +36,7 @@ function canonical(value: unknown): unknown {
   return Object.fromEntries(Object.keys(record).sort().map((key) => [key, canonical(record[key])]));
 }
 
-const scopeOf = (ref: ItemRef): string => (ref.kind === "memory" ? KV.memories : KV.observations(ref.sessionId));
+export const scopeOf = (ref: ItemRef): string => (ref.kind === "memory" ? KV.memories : KV.observations(ref.sessionId));
 
 /**
  * The lock every writer of the row holds: summarize publishes under `obs:<session>`, `mem::remember` and
@@ -167,21 +167,44 @@ export interface ReinstateResult {
  * rewritten since, so the live row stays and the entry is dropped. A trim entry with no live row is deferred.
  *
  * `entry.restoring` is written before the first change, so recoverRun can tell a restore under way from a
- * move under way.
+ * move under way. An entry that purge has marked `purging`, or whose image reference is released (purge, or a
+ * forget that crashed after it), is deferred: its first irreversible step has begun, so purge finishes it and nothing
+ * brings the row back.
+ *
+ * `listed` is only a key: the entry is read again once the lock is held, because a caller that read it from a page
+ * may have waited while a purge, forget or other restore changed or took it. A stale copy would bring back a row
+ * whose image, access log and tombstone are settled, and rewrite a vault key purge already took. Null when the
+ * entry is gone.
  */
-export function reinstate(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<ReinstateResult> {
-  return withKeyedLock(lockOf(entry.ref), () => reinstateLocked(deps, vault, entry));
+export function reinstate(deps: RetentionDeps, vault: Vault, listed: VaultEntry): Promise<ReinstateResult | null> {
+  return withKeyedLock(lockOf(listed.ref), async () => {
+    const entry = await vault.get(listed.runId, listed.ref);
+    return entry ? reinstateLocked(deps, vault, entry) : null;
+  });
+}
+
+/**
+ * What `reinstateLocked` does with an entry, given its live row (null when none) as read under the item lock. Pure, so a
+ * dry run can count what an enforcing pass would do without writing. `drop`: the live row was rewritten since the move,
+ * so it stays and the entry goes. `deferred`: purge has begun on the entry, or a trim entry has no live row to restore into.
+ */
+export function reinstatement(entry: VaultEntry, live: Live | null): "restore" | "drop" | "deferred" {
+  if (entry.purging || entry.imageReleased) return "deferred";
+  if (live && fingerprintRow(live) !== entry.rowFingerprint) return "drop";
+  if (entry.stage === "T" && !live) return "deferred";
+  return "restore";
 }
 
 /** `reinstate` for a caller that already holds `lockOf(entry.ref)`: the keyed mutex is not reentrant, so a caller holding it must not call `reinstate`. */
 export async function reinstateLocked(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<ReinstateResult> {
   const { ref } = entry;
   const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
-  if (live && fingerprintRow(live) !== entry.rowFingerprint) {
+  const decision = reinstatement(entry, live);
+  if (decision === "deferred") return { restored: false, reembedNeeded: false, deferred: true };
+  if (decision === "drop") {
     await vault.take(entry.runId, ref);
     return { restored: false, reembedNeeded: false };
   }
-  if (entry.stage === "T" && !live) return { restored: false, reembedNeeded: false, deferred: true };
   if (!entry.restoring) await vault.update({ ...entry, restoring: true });
   if (entry.stage === "T") {
     await deps.kv.set(scopeOf(ref), ref.id, { ...live, source: entry.source });
