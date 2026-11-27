@@ -112,7 +112,7 @@ Retention trims, hides and later deletes old observations and memories, after a 
 
 Also set `AGENTMEMORY_AUDIT_RETENTION_MONTHS=13`, so a run's audit outlives its grace period, and `MAX_OBS_PER_SESSION=5000`.
 
-**Routes.** All five need `Authorization: Bearer <secret>`. With no secret configured they answer 503. `dryRun` is true unless it is exactly `false`.
+**Routes.** All six need `Authorization: Bearer <secret>`. With no secret configured they answer 503. `dryRun` is true unless it is exactly `false`.
 
 | Route | Body or query | Does |
 |---|---|---|
@@ -121,8 +121,20 @@ Also set `AGENTMEMORY_AUDIT_RETENTION_MONTHS=13`, so a run's audit outlives its 
 | `POST /agentmemory/retention/restore` | `{"runId": "ret_..."}` or `{"refs": [...]}` (at most 100) | Puts rows back from the vault, with no embedding call. |
 | `POST /agentmemory/retention/purge` | `{"dryRun": true}` | Deletes the runs whose grace has ended. |
 | `POST /agentmemory/retention/pin` | `{"ref": {...}, "reason": "...", "who": "..."}` or `{"ref": {...}, "unpin": true}` | Protects one item. |
+| `GET /agentmemory/retention/job` | `?id=job_...` | The state of a sweep, purge or restore that answered 202. |
 
 A ref is `{"kind": "memory", "id": "mem_..."}` or `{"kind": "observation", "sessionId": "ses_...", "id": "obs_..."}`. Status codes: 400 for a bad body, 401 for a wrong token, 404 for an unknown run or item (a pin also answers 404 for an item nothing could restore, such as one the purge has started on), 409 when a sweep, purge or restore already holds the lease or took it over mid-call (retry later; every step repeats safely), 503 for no secret or, on sweep and purge, retention off.
+
+**Long calls.** The engine ends an HTTP request at 180 s (`default_timeout: 180000` in `deploy/runtime/worker-compose.yaml` and `src/cli/compose-project.ts`, and the worker's `invocationTimeoutMs: 180000` in `src/index.ts`), and the work it started keeps running. So sweep, purge and restore stop waiting after 150 s, 30 s before that limit, and answer `202 {"kind": "running", "jobId": "job_...", "poll": "/agentmemory/retention/job?id=job_..."}`. A call that finishes in time answers as before, with no job id. Poll `GET /agentmemory/retention/job?id=<jobId>` until `job.state` is not `running`:
+
+| `job.state` | Meaning |
+|---|---|
+| `running` | The call is still working. |
+| `done` | Finished. `job.outcome` is what the call would have answered (`kind: "done"`, `busy`, `off`, `lease-lost`, `not-found` or `invalid`), so read its `kind`, not only the state. For a sweep, `job.outcome.runId` names the run for `GET report`. |
+| `failed` | The call threw. `job.error` holds the message and the log has the rest. Repeating the call is safe. |
+| `lost` | The worker restarted while the call ran. Nothing finishes it. Read the run's report and repeat the call, which resumes safely. |
+
+An unknown job id answers 404 and a malformed one 400. A 404 for an id a 202 handed out means the call never started; repeat it. Job rows stay in `mem:retention:jobs`; nothing prunes them.
 
 **First rollout.**
 

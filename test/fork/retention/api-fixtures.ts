@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import { pinItem } from "../../../src/fork/retention/pin.js";
 import { registerRetention, type RetentionOptions } from "../../../src/fork/retention/register.js";
-import { registerRetentionTriggers } from "../../../src/fork/retention/rest.js";
+import { registerRetentionTriggers, type RetentionRestOptions } from "../../../src/fork/retention/rest.js";
 import type { RetentionEnv } from "../../../src/fork/retention/settings.js";
 import type { StateKV } from "../../../src/state/kv.js";
 import { checkAuth, requireConfiguredSecret } from "../../../src/triggers/api.js";
@@ -12,7 +12,7 @@ import { goldenCase, uncapped, writeCases } from "./sweep-fixtures.js";
 
 export const SECRET = "s3cret";
 
-export type Route = "sweep" | "restore" | "purge" | "pin" | "report";
+export type Route = "sweep" | "restore" | "purge" | "pin" | "report" | "job";
 export interface Reply {
   readonly status_code: number;
   readonly body: Record<string, unknown>;
@@ -26,7 +26,7 @@ interface Call {
 
 /** An HTTP request shaped like the engine's: POST carries a JSON body, GET carries query params. */
 export function httpRequest(route: Route, { body, query, token = SECRET }: Call = {}): never {
-  const get = route === "report";
+  const get = route === "report" || route === "job";
   return {
     method: get ? "GET" : "POST",
     headers: {
@@ -39,8 +39,8 @@ export function httpRequest(route: Route, { body, query, token = SECRET }: Call 
 }
 
 /** `secret` null is a stack with no AGENTMEMORY_SECRET. */
-export function restRoutes(h: ReturnType<typeof retentionHarness>, secret: string | null = SECRET) {
-  registerRetentionTriggers(h.sdk as never, secret ?? undefined, { checkAuth, requireConfiguredSecret });
+export function restRoutes(h: ReturnType<typeof retentionHarness>, secret: string | null = SECRET, rest: RetentionRestOptions = {}) {
+  registerRetentionTriggers(h.sdk as never, secret ?? undefined, { checkAuth, requireConfiguredSecret }, rest);
   return async (route: Route, call: Call = {}): Promise<Reply> => {
     const handler = h.functions.get(`api::retention-${route}`);
     if (!handler) throw new Error(`api::retention-${route} is not registered`);
@@ -57,6 +57,7 @@ export function spiedRoutes(secret: string | null = SECRET) {
     purge: vi.fn(async (_payload: unknown): Promise<unknown> => ({ kind: "done" })),
     pin: vi.fn(async (_payload: unknown): Promise<unknown> => ({ kind: "pinned" })),
     report: vi.fn(async (_payload: unknown): Promise<unknown> => ({ kind: "found" })),
+    job: vi.fn(async (_payload: unknown): Promise<unknown> => ({ kind: "found" })),
   };
   for (const [route, spy] of Object.entries(spies)) h.functions.set(`mem::retention-${route}`, spy);
   return { h, spies, call: restRoutes(h, secret) };
@@ -69,8 +70,8 @@ export const ENFORCE: RetentionEnv = {
 };
 
 /** The real `mem::retention-*` functions over a rig, on a clock the test moves, behind the REST routes. */
-export function liveRoutes(r: Rig, clock: { now: Date }, over: Partial<RetentionOptions> & { kv?: StateKV; secret?: string } = {}) {
-  const { kv, secret, ...options } = over;
+export function liveRoutes(r: Rig, clock: { now: Date }, over: Partial<RetentionOptions> & { kv?: StateKV; secret?: string; rest?: RetentionRestOptions } = {}) {
+  const { kv, secret, rest, ...options } = over;
   r.h.functions.set("mem::smart-search", async (payload: unknown) => ({
     results: (await r.runtime.keyword.search((payload as { query: string }).query, 10)).map((hit) => ({ obsId: hit.obsId })),
   }));
@@ -80,7 +81,7 @@ export function liveRoutes(r: Rig, clock: { now: Date }, over: Partial<Retention
     deps: { search: r.deps.search, vectors: r.deps.vectors, now: () => clock.now },
     ...options,
   });
-  return { call: restRoutes(r.h, secret ?? SECRET), timers };
+  return { call: restRoutes(r.h, secret ?? SECRET, rest), timers };
 }
 
 /**

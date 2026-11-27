@@ -591,6 +591,7 @@ export function registerApiTriggers(
   sdk.registerTrigger({ type: "http", function_id: "api::retention-purge", config: { api_path: "/agentmemory/retention/purge", http_method: "POST" } });
   sdk.registerTrigger({ type: "http", function_id: "api::retention-pin", config: { api_path: "/agentmemory/retention/pin", http_method: "POST" } });
   sdk.registerTrigger({ type: "http", function_id: "api::retention-report", config: { api_path: "/agentmemory/retention/report", http_method: "GET" } });
+  sdk.registerTrigger({ type: "http", function_id: "api::retention-job", config: { api_path: "/agentmemory/retention/job", http_method: "GET" } });
   sdk.registerTrigger({ type: "http", function_id: "api::graph-index-status", config: { api_path: "/agentmemory/graph/index", http_method: "GET" } });
   sdk.registerTrigger({ type: "http", function_id: "api::graph-index-migrate", config: { api_path: "/agentmemory/graph/index/migrate", http_method: "POST" } });
   sdk.registerTrigger({ type: "http", function_id: "api::graph-index-resume", config: { api_path: "/agentmemory/graph/index/resume", http_method: "POST" } });
