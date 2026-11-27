@@ -66,6 +66,7 @@ describe("evaluateStatus", () => {
     const problem = report.problems.find((p) => p.code === "keyword-index-rebuilding");
     expect(problem?.message).toContain("warming up: refreshing counts and loading the keyword vocabulary");
     expect(problem?.message).not.toContain("rebuilding from stored data");
+    expect(problem?.fix).toContain("after the warm-up finishes");
   });
 
   it("keeps the rebuild message in memory mode", () => {
@@ -74,6 +75,7 @@ describe("evaluateStatus", () => {
     );
     const problem = report.problems.find((p) => p.code === "keyword-index-rebuilding");
     expect(problem?.message).toContain("still rebuilding from stored data");
+    expect(problem?.fix).toContain("after the rebuild");
   });
 
   it("tells a missing embedding key apart from an unchosen provider", () => {

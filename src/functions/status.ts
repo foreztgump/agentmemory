@@ -344,7 +344,9 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
       message: warmingUp
         ? "The keyword index is warming up: refreshing counts and loading the keyword vocabulary. The check for observations missing from search waits until it finishes."
         : "The keyword index is still rebuilding from stored data, so the check for observations missing from search waits until it finishes.",
-      fix: "No action needed. The check runs on the next health update after the rebuild.",
+      fix: warmingUp
+        ? "No action needed. The check runs on the next health update after the warm-up finishes."
+        : "No action needed. The check runs on the next health update after the rebuild.",
     });
   } else if (missingObservations === null && !input.searchBackend) {
     const backendTimedOut = Boolean(input.searchBackendEnabled);
