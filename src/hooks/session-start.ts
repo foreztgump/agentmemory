@@ -92,6 +92,7 @@ async function main() {
     // gives the pending socket before exit.
     fetch(url, {
       ...init,
+      body: JSON.stringify({ sessionId, project, cwd, injectContext: false }),
       signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS),
     }).catch(() => {});
     return;

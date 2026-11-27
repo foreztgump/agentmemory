@@ -31,6 +31,11 @@ export class RowIndex<Row extends { key: string }, Entry extends { key: string }
     this.apply({ key, entry: null });
   }
 
+  /** The entry for `key` when the copy is loaded, without waiting for a load. */
+  peek(key: string): Entry | undefined {
+    return this.loaded ? this.entriesByKey.get(key) : undefined;
+  }
+
   async entries(): Promise<Entry[]> {
     await this.ensureLoaded();
     return [...this.entriesByKey.values()];

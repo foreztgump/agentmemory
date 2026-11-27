@@ -1,0 +1,12 @@
+# Capture replay overlay (TEE-1449), added after qdrant/replica-disk.yml: production's session cap and
+# CPU limits that stand in for production's shared 4-core host (both stacks, load ~4).
+# Tunables: AM_CPUS (default 1.5), KVROCKS_CPUS (default 1), QDRANT_CPUS (default 1), REPLICA_MAX_OBS (default 5000).
+services:
+  agentmemory:
+    cpus: "${AM_CPUS:-1.5}"
+    environment:
+      MAX_OBS_PER_SESSION: "${REPLICA_MAX_OBS:-5000}"
+  kvrocks:
+    cpus: "${KVROCKS_CPUS:-1}"
+  qdrant:
+    cpus: "${QDRANT_CPUS:-1}"

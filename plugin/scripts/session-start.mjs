@@ -242,6 +242,12 @@ async function main() {
 	if (!INJECT_CONTEXT) {
 		fetch(url, {
 			...init,
+			body: JSON.stringify({
+				sessionId,
+				project,
+				cwd,
+				injectContext: false
+			}),
 			signal: AbortSignal.timeout(REGISTER_TIMEOUT_MS)
 		}).catch(() => {});
 		return;

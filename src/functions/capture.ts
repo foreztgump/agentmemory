@@ -21,6 +21,7 @@ import { prunePromptLedgers } from "../capture/prompt-ledger.js";
 import { scrubRecord } from "./privacy.js";
 import { scanRows } from "../fork/kv/paged-scan.js";
 import { RowIndex } from "../fork/kv/row-index.js";
+import { SessionLanes } from "../capture/lanes.js";
 import { runtimeConfigPath } from "../cli/engine-launch.js";
 import { captureDurableAfterMs, engineStateConfigPaths } from "../cli/engine-config.js";
 import {
@@ -63,6 +64,7 @@ type InboxEntry = Omit<InboxRecord, "payload">;
 export { captureEventShard } from "../capture/event-record.js";
 
 export type CaptureResult =
+  | { status: "accepted"; state: "pending"; eventId: string; observationId: string; attempts: 0 }
   | { status: "accepted"; state: "completed"; eventId: string; observationId: string; attempts: number }
   | { status: "accepted"; state: "retrying"; eventId: string; observationId: string; attempts: number; nextAttemptAt: string; error: string }
   | { status: "duplicate"; state: "completed" | InboxState; eventId: string; observationId?: string; deduplicated: true }
@@ -75,6 +77,7 @@ export interface CapturePolicy {
   inboxMax: number;
   deadMax: number;
   eventsMax: number;
+  workers: number;
 }
 
 export interface CaptureStatus {
@@ -121,6 +124,7 @@ export function capturePolicy(): CapturePolicy {
     inboxMax: positiveInt("AGENTMEMORY_CAPTURE_INBOX_MAX", 10_000),
     deadMax: positiveInt("AGENTMEMORY_CAPTURE_DEAD_MAX", 1000),
     eventsMax: positiveInt("AGENTMEMORY_CAPTURE_EVENTS_MAX", 100_000),
+    workers: positiveInt("AGENTMEMORY_CAPTURE_WORKERS", 2),
   };
 }
 
@@ -189,6 +193,8 @@ export interface CaptureController {
   prune(): Promise<number>;
   drainLocalSpool(): Promise<DrainResult[]>;
   status(): Promise<CaptureStatus>;
+  /** Resolves once no accepted capture is waiting or running in the background. */
+  idle(): Promise<void>;
   durability(): SentMark;
   start(): void;
   stop(): void;
@@ -220,6 +226,7 @@ export function registerCaptureFunctions(
   let sweeping: Promise<{ processed: number; recovered: number; deadLettered: number }> | null = null;
   const inboxIndex = new RowIndex<InboxRecord, InboxEntry>(kv, KV.captureInbox, ({ payload: _payload, ...entry }) => entry);
   const timers: Array<ReturnType<typeof setInterval>> = [];
+  const lanes = new SessionLanes((key: string) => retryOne(key, false), policy.workers);
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
 
   async function complete(rec: InboxRecord, observationId: string): Promise<void> {
@@ -296,15 +303,23 @@ export function registerCaptureFunctions(
     return { status: "accepted", state: "retrying", eventId: rec.eventId, observationId: rec.observationId, attempts: rec.attempts, nextAttemptAt, error: message };
   }
 
-  async function capture(input: { payload: HookPayload; eventId?: string }): Promise<CaptureResult> {
+  async function capture(input: { payload: HookPayload; eventId?: string; defer?: boolean }): Promise<CaptureResult> {
     const payload = input.payload;
     const clientEventId = isValidEventId(input.eventId) ? input.eventId : undefined;
     const eventId = clientEventId ?? generateId("evs");
     const key = captureKey(payload.project, payload.sessionId, eventId);
+    const inFlight = inboxIndex.peek(key);
+    if (inFlight) {
+      counters.duplicates++;
+      return { status: "duplicate", state: inFlight.status, eventId, observationId: inFlight.observationId, deduplicated: true };
+    }
     return withKeyedLock(`capture:${key}`, async () => {
       let storedObservationId: string | undefined;
+      const [done, queued] = await Promise.all([
+        clientEventId ? kv.get<CompletedEvent>(eventScope(key), key) : null,
+        kv.get<InboxRecord>(KV.captureInbox, key),
+      ]);
       if (clientEventId) {
-        const done = await kv.get<CompletedEvent>(eventScope(key), key);
         if (done?.state === "deleted") {
           counters.duplicates++;
           return { status: "duplicate", state: "completed", eventId, observationId: done.observationId, deduplicated: true };
@@ -323,7 +338,6 @@ export function registerCaptureFunctions(
           });
         }
       }
-      const queued = await kv.get<InboxRecord>(KV.captureInbox, key);
       if (queued) {
         counters.duplicates++;
         return { status: "duplicate", state: queued.status, eventId, observationId: queued.observationId, deduplicated: true };
@@ -351,7 +365,9 @@ export function registerCaptureFunctions(
       await kv.set(KV.captureInbox, key, rec);
       inboxIndex.put(rec);
       counters.accepted++;
-      return attempt(rec);
+      if (!input.defer) return attempt(rec);
+      void lanes.submit(rec.sessionId, key).catch(() => {});
+      return { status: "accepted", state: "pending", eventId, observationId: rec.observationId, attempts: 0 };
     });
   }
 
@@ -388,8 +404,10 @@ export function registerCaptureFunctions(
       .filter((r) => r && r.status !== "dead")
       .filter((r) => r.status === "pending" || !r.nextAttemptAt || Date.parse(r.nextAttemptAt) <= now)
       .sort((a, b) => a.acceptedAt.localeCompare(b.acceptedAt));
-    for (const rec of due) {
-      const outcome = await retryOne(rec.key, false).catch(() => "waiting" as const);
+    const outcomes = await Promise.all(
+      due.map((rec) => lanes.submit(rec.sessionId, rec.key).catch(() => "waiting" as const)),
+    );
+    for (const outcome of outcomes) {
       if (outcome === "gone") continue;
       processed++;
       if (outcome === "recovered") recovered++;
@@ -522,7 +540,7 @@ export function registerCaptureFunctions(
     return { policy, inbox, sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
   }
 
-  sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string }) => capture(input));
+  sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string; defer?: boolean }) => capture(input));
 
   sdk.registerFunction("mem::capture-retry", async (input: { eventId?: string; key?: string; all?: boolean } = {}) => {
     const records = await inboxIndex.entries();
@@ -562,6 +580,7 @@ export function registerCaptureFunctions(
     prune,
     drainLocalSpool,
     status,
+    idle: () => lanes.idle(),
     durability: () => ({ ...mark }),
     start() {
       if (timers.length) return;

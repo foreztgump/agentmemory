@@ -79,10 +79,14 @@ function rig(model = provider(), kv = store()) {
     ]);
   });
   const call = (id: string, input: any) => handlers.get(id)!(input);
-  const observe = (eventId: string, text: string, sessionId = "summary-session") => call("api::observe", { headers: {}, body: {
-    sessionId, eventId, project: "summary-project", cwd: "/fixture", hookType: "post_tool_use",
-    timestamp: new Date().toISOString(), data: { tool_name: "Read", tool_output: text },
-  } });
+  const observe = async (eventId: string, text: string, sessionId = "summary-session") => {
+    const answer = await call("api::observe", { headers: {}, body: {
+      sessionId, eventId, project: "summary-project", cwd: "/fixture", hookType: "post_tool_use",
+      timestamp: new Date().toISOString(), data: { tool_name: "Read", tool_output: text },
+    } });
+    await capture.idle();
+    return answer;
+  };
   const sessions = () => call("api::sessions", { headers: {}, query_params: { agentId: "*" } });
   const flush = async () => { while (pending.size) await Promise.allSettled([...pending]); };
   return { kv, sdk, call, model, observe, sessions, flush, close: capture.stop };
@@ -444,7 +448,7 @@ describe("session summary recovery", () => {
     await r.observe("seed-event-0001", "Original investigation");
     vi.stubEnv("AGENTMEMORY_AUTO_COMPRESS", "true");
     const captured = await r.observe("reply-event-0001", "The final analysis is available");
-    expect(captured).toMatchObject({ status_code: 201, body: { state: "completed" } });
+    expect(captured).toMatchObject({ status_code: 202, body: { state: "pending" } });
     await vi.waitFor(() => expect(model.compress).toHaveBeenCalledOnce());
     await r.call("test::close-session", { sessionId: "summary-session" });
     expect(await r.kv.get(KV.summaryRepairs, "summary-session")).not.toBeNull();

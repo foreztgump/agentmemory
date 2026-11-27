@@ -770,7 +770,7 @@ export function registerApiTriggers(
       };
       const result = await sdk.trigger<unknown, CaptureResult>({
         function_id: "mem::capture",
-        payload: { payload, eventId },
+        payload: { payload, eventId, defer: true },
       });
       return {
         status_code: captureStatusCode(result),
@@ -1185,6 +1185,7 @@ export function registerApiTriggers(
           error: err instanceof Error ? err.message : String(err),
         });
       });
+      if (body.injectContext === false) return { status_code: 200, body: { session } };
       const contextResult = await sdk.trigger<
         { sessionId: string; project: string; agentId?: string },
         { context: string }
