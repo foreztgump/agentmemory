@@ -6,6 +6,7 @@ import type { CompressedObservation, Memory, SearchResult, Session } from '../ty
 import { KV } from '../state/schema.js'
 import { StateKV, collectAll } from '../state/kv.js'
 import { trackedUnindexedObservations } from '../fork/index-reconcile.js'
+import { hiddenFromIndex } from '../fork/retention/indexable.js'
 import { getSearchResultLayer, isSearchLayer, matchesSearchLayer, type SearchLayer, type SearchResultLayer } from "../state/search-layer.js";
 import type { SearchIndexRevision } from '../state/search-index.js'
 import { getSearchRuntime, type KeywordIndexPort, type VectorStorePort } from '../state/search-ports.js'
@@ -376,7 +377,7 @@ export async function indexRecords(
   const revisions = new Map<Memory | CompressedObservation, SearchIndexRevision>()
   let count = 0
   for (const memory of memories) {
-    if (memory.isLatest === false || !memory.title || !memory.content) continue
+    if (memory.isLatest === false || !memory.title || !memory.content || hiddenFromIndex(memory)) continue
     idx.add(memoryToObservation(memory), "memory")
     if (vectorEnabled) revisions.set(memory, idx.watchRevision(memory.id))
     count++
@@ -638,7 +639,7 @@ async function runKeywordRebuild(
   } else {
     memoriesLoaded = true
     for (const memory of memories) {
-      if (memory.isLatest === false) continue
+      if (memory.isLatest === false || hiddenFromIndex(memory)) continue
       if (!memory.title || !memory.content) continue
       idx.add(memoryToObservation(memory), "memory")
       consider(memory.id, memory.sessionIds?.[0] ?? 'memory', observationEmbedText({ title: memory.title, narrative: memory.content, concepts: memory.concepts }), memory.createdAt, "memory")

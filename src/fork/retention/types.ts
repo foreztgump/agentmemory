@@ -133,7 +133,9 @@ export type VaultEntry = RowEntry | TrimEntry;
 
 /**
  * `mem:retention:demoted`, key = memory id. Demote is not purged (D6), so it lives outside the per-run
- * vault and a run's vault can still empty and be deleted. Holds the vector so un-demote never embeds.
+ * vault and a run's vault can still empty and be deleted, and no purge, locator or `RunRow.held` reaches it.
+ * Holds the vector (base64 float32, as `SatelliteSnapshots.vector`) so un-demote never embeds. Written before the
+ * row's mark and deleted after the mark is cleared, so a record without a mark is a demote that never landed.
  */
 export interface DemoteRecord {
   readonly memoryId: string;
@@ -141,6 +143,8 @@ export interface DemoteRecord {
   readonly demotedAt: string;
   readonly reason: Reason;
   readonly vector?: string;
+  /** Written, under the memory lock, before the first change of an un-demote, so recovery finishes it instead of undoing it. */
+  readonly restoring?: boolean;
 }
 
 /**

@@ -2,13 +2,15 @@ import { createHash } from "node:crypto";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import { KV } from "../../state/schema.js";
 import type { CompressedObservation, Memory } from "../../types.js";
+import { demoteLocked, MEMORY_LOCK, recoverDemotes } from "./demote.js";
+import { hiddenFromIndex } from "./indexable.js";
 import type { Cleared } from "./protect.js";
 import { SATELLITES, type RetentionDeps } from "./satellites.js";
 import { RETENTION_KV } from "./scopes.js";
 import { RETENTION_PAGE_SIZE } from "./settings.js";
 import {
   STAGE_DISPOSITION,
-  type DemoteRecord, type ItemRef, type RowEntry, type RunId, type SatelliteSnapshots, type SessionSeal, type TrimEntry, type VaultEntry,
+  type ItemRef, type RowEntry, type RunId, type SatelliteSnapshots, type SessionSeal, type TrimEntry, type VaultEntry,
 } from "./types.js";
 import type { Vault } from "./vault.js";
 
@@ -40,7 +42,7 @@ const scopeOf = (ref: ItemRef): string => (ref.kind === "memory" ? KV.memories :
  * The lock every writer of the row holds: summarize publishes under `obs:<session>`, `mem::remember` and
  * `mem::forget` under `mem:remember`. The keyed mutex is not reentrant, so nothing inside it may call `sealSession`.
  */
-export const lockOf = (ref: ItemRef): string => (ref.kind === "memory" ? "mem:remember" : `obs:${ref.sessionId}`);
+export const lockOf = (ref: ItemRef): string => (ref.kind === "memory" ? MEMORY_LOCK : `obs:${ref.sessionId}`);
 
 const sizeOf = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 
@@ -53,8 +55,9 @@ export interface DisplaceResult {
   /**
    * Why nothing moved. `unreadable`: a satellite could not be read, in practice the stored vector, so the row stays
    * live (a rejected read is not "no vector"). `row-changed`: the live row was rewritten after the plan read it.
+   * `already-demoted`: a stage C candidate whose live row was marked between the plan and this hold.
    */
-  readonly skipped?: "unreadable" | "row-changed" | "gone" | "nothing-to-trim";
+  readonly skipped?: "unreadable" | "row-changed" | "gone" | "nothing-to-trim" | "already-demoted";
 }
 
 const NOT_MOVED = (skipped: NonNullable<DisplaceResult["skipped"]>): DisplaceResult => ({ moved: false, bytes: 0, skipped });
@@ -90,19 +93,21 @@ async function attachSatellites(deps: RetentionDeps, entry: VaultEntry): Promise
  *   row as read here. The snapshot is inside the lock, so it is of the state that is deleted.
  * trim (T): vault.put({source}), rewrite the row with `source: {hookType, originalBytes, truncated: true}`
  *   (the source-budget shape); the row stays live and indexed, the summary fingerprint is unchanged.
- * demote (C): slice 8.
+ * demote (C): under `mem:remember`, snapshot the stored vector (a read that rejects refuses the row), then `demoteLocked`
+ *   (demote.ts): record with the vector, the mark on the row, index removals. The row stays in `mem:memories`, and a
+ *   memory that is already marked is skipped.
  */
 export async function displace(deps: RetentionDeps, vault: Vault, runId: RunId, item: Cleared): Promise<DisplaceResult> {
   const disposition = STAGE_DISPOSITION[item.stage];
-  if (disposition === "demote") throw new Error("demote is not implemented: slice 8");
   const { ref } = item;
   return withKeyedLock(lockOf(ref), async () => {
     const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
     if (!live) return NOT_MOVED("gone");
     const rowFingerprint = fingerprintRow(live);
     if (rowFingerprint !== fingerprintRow(item.row)) return NOT_MOVED("row-changed");
+    if (item.stage === "C" && hiddenFromIndex(live as Memory)) return NOT_MOVED("already-demoted");
     let satellites: SatelliteSnapshots = {};
-    if (disposition === "trash") {
+    if (disposition !== "trim") {
       try {
         satellites = await snapshotSatellites(deps, ref, live);
       } catch {
@@ -111,6 +116,7 @@ export async function displace(deps: RetentionDeps, vault: Vault, runId: RunId, 
     }
     const base = { runId, reason: item.reason, movedAt: deps.now().toISOString(), project: item.project, rowFingerprint, satellites };
     if (item.stage === "T") return trimRow(deps, vault, base, item.ref, live as CompressedObservation);
+    if (item.stage === "C") return demoteLocked(deps, base, live as Memory);
     if (item.stage === "O") await markTrimmed(deps, item.ref.sessionId, item.proof.seal);
     const entry = { ...base, stage: item.stage, ref, row: live } as RowEntry;
     await vault.put(entry);
@@ -187,13 +193,6 @@ export async function reinstateLocked(deps: RetentionDeps, vault: Vault, entry: 
   return { restored: true, reembedNeeded };
 }
 
-/** Un-demote: clear `retention.demotedAt`, reattach from `record.vector`, delete the record. Never embeds. Slice 8. */
-export function reinstateDemote(deps: RetentionDeps, record: DemoteRecord): Promise<ReinstateResult> {
-  void deps;
-  void record;
-  throw new Error("not implemented: slice 8");
-}
-
 /**
  * Settles a run that crashed mid-apply (R12), per disposition. Called first by every sweep that finds its
  * run row unfinished. Each entry is settled under the item's keyed lock, and `put`'s locator is repaired
@@ -208,7 +207,7 @@ export function reinstateDemote(deps: RetentionDeps, record: DemoteRecord): Prom
  *    `source`), so a row not yet rewritten and one already rewritten both match; a mismatch means the row
  *    was rewritten since and stays as it is. The entry stays in the vault until purge or restore; for a
  *    trim, live row plus vault entry is the normal state.
- *  demote: slice 8 (`mem:retention:demoted` records of the run, replayed in order).
+ *  demote: `recoverDemotes` (demote.ts), the run's records in `mem:retention:demoted`, each under `mem:remember`.
  *
  * Counts: `finished` is a move, a restore or a trim rewrite completed; `detachedAgain` is a trash entry whose
  * row was already gone and had its detach run again.
@@ -230,7 +229,8 @@ export async function recoverRun(deps: RetentionDeps, vault: Vault, runId: RunId
       else if (settled === "detached") detachedAgain++;
     }
   }
-  return { finished, detachedAgain };
+  const demoted = await recoverDemotes(deps, runId);
+  return { finished: finished + demoted.finished, detachedAgain: detachedAgain + demoted.detachedAgain };
 }
 
 async function settle(deps: RetentionDeps, vault: Vault, entry: VaultEntry): Promise<"finished" | "detached" | "left"> {

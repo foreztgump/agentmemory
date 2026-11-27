@@ -7,7 +7,7 @@ import { KV } from "../../state/schema.js";
 import type { SearchRuntime } from "../../state/search-ports.js";
 import type { Session } from "../../types.js";
 import { sessionObservationTotals } from "../kv/observation-stats.js";
-import { docOfRecord } from "../search/doc-of-record.js";
+import { docOfRecord, type IndexDoc } from "../search/doc-of-record.js";
 import type { ItemRef, SatelliteSnapshots, VaultEntry } from "./types.js";
 import { reattachDocument, type VectorReader } from "./vectors.js";
 
@@ -81,21 +81,30 @@ function searchIndex(): Satellite {
     },
     async detach(deps, entry) {
       if (await indexOwnedElsewhere(deps, entry.ref)) return;
-      const runtime = deps.search();
-      runtime.keyword.remove(entry.ref.id);
-      runtime.keyword.invalidateRevision(entry.ref.id);
-      runtime.vector?.remove(entry.ref.id);
-      runtime.openPersistence().scheduleSave();
+      removeDocument(deps, entry.ref.id);
     },
     async attach(deps, entry) {
       if (entry.stage === "T") return;
       const doc = docOfRecord(entry.ref.kind, entry.row);
       if (!doc || (await indexOwnedElsewhere(deps, entry.ref))) return;
-      const runtime = deps.search();
-      runtime.openPersistence().scheduleSave();
-      return reattachDocument(runtime.keyword, runtime.vector, doc.obs, doc.layer, entry.satellites.vector);
+      return addDocument(deps, doc, entry.satellites.vector);
     },
   };
+}
+
+export function removeDocument(deps: RetentionDeps, id: string): void {
+  const runtime = deps.search();
+  runtime.keyword.remove(id);
+  runtime.keyword.invalidateRevision(id);
+  runtime.vector?.remove(id);
+  runtime.openPersistence().scheduleSave();
+}
+
+/** Puts one document and its stored vector back without embedding (R3); the caller has already applied `docOfRecord`. */
+export function addDocument(deps: RetentionDeps, doc: IndexDoc, storedVector: string | undefined): { reembedNeeded: boolean } {
+  const runtime = deps.search();
+  runtime.openPersistence().scheduleSave();
+  return reattachDocument(runtime.keyword, runtime.vector, doc.obs, doc.layer, storedVector);
 }
 
 const captureKeyOf = (row: unknown): string | null => {

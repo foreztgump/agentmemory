@@ -57,7 +57,7 @@ export type Rig = ReturnType<typeof rig>;
 export function rig(search?: () => SearchRuntime) {
   const h = retentionHarness();
   const kv = withObservationStats(h.kv);
-  const runtime = memoryRuntime();
+  const runtime = (search ? search() : memoryRuntime()) as ReturnType<typeof memoryRuntime>;
   const embed = vi.fn(async () => new Float32Array(DIMS));
   const deps: RetentionDeps = {
     sdk: h.sdk as never, kv, search: search ?? (() => runtime), vectors: activeVectorReader(search ?? (() => runtime)), now: () => NOW,
@@ -116,14 +116,14 @@ export async function seedSeal(r: Rig, sessionId: string, count: number): Promis
  * proof `proveChain` returns over a successor memory that this seeds when the memory has none.
  */
 export async function candidate(r: Rig, stage: "T" | "O", row: CompressedObservation, seal: SessionSeal): Promise<Cleared>;
-export async function candidate(r: Rig, stage: "S" | "X", row: Memory): Promise<Cleared>;
-export async function candidate(r: Rig, stage: "T" | "O" | "S" | "X", row: CompressedObservation | Memory, seal?: SessionSeal): Promise<Cleared> {
+export async function candidate(r: Rig, stage: "S" | "X" | "C", row: Memory): Promise<Cleared>;
+export async function candidate(r: Rig, stage: "T" | "O" | "S" | "X" | "C", row: CompressedObservation | Memory, seal?: SessionSeal): Promise<Cleared> {
   const reason = { stage, ageActiveDays: 200, note: "aged" };
   let item: Candidate;
   if (stage === "T" || stage === "O") {
     const obs = row as CompressedObservation;
     item = { project: "proj", stage, ref: { kind: "observation", sessionId: obs.sessionId, id: obs.id }, row: obs, proof: { seal: seal! }, reason };
-  } else if (stage === "X") {
+  } else if (stage === "X" || stage === "C") {
     item = { project: "proj", stage, ref: { kind: "memory", id: row.id }, row: row as Memory, reason };
   } else {
     const old = row as Memory;

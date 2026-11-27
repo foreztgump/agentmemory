@@ -1,5 +1,6 @@
 import { safeAudit } from "../../functions/audit.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
+import { demotedBy, reinstateDemote, reinstateDemoteLocked } from "./demote.js";
 import { lockOf, reinstate, reinstateLocked, type ReinstateResult } from "./move.js";
 import type { Protector } from "./protect.js";
 import { RunStore } from "./run-store.js";
@@ -56,6 +57,8 @@ async function audit(deps: RetentionDeps, ids: readonly string[], details: Recor
  * and restore by run restores the entries of that run only: the stage O run first puts the trimmed row back,
  * and the trim run then gives the source back. A trim entry restored while the row sits in a later run's
  * vault is deferred, not dropped.
+ *
+ * The run's demotes are un-demoted too and count in `restored`, but not in `held`, which counts vault entries only.
  */
 export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string): Promise<RestoreResult> {
   const vault = new Vault(deps.kv);
@@ -66,6 +69,10 @@ export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string)
     for (const entry of page) result = add(result, outcome(await reinstate(deps, vault, entry)));
   }
   await release(runs, runId, taken(result));
+  for await (const record of demotedBy(deps.kv, runId)) {
+    const one = await reinstateDemote(deps, record.memoryId);
+    if (one) result = add(result, outcome(one));
+  }
   await audit(deps, [runId], { runId, why }, result);
   return result;
 }
@@ -73,7 +80,8 @@ export async function restoreRun(deps: RetentionDeps, runId: RunId, why: string)
 /**
  * Restores single items, located through mem:retention:items by `itemKey(ref)` (one point read each).
  * Takes refs, not bare ids: observation ids can repeat across imported sessions. An item with two claims, a trim
- * and a later stage O, is restored newest first, so one ref gives back the whole row. Demotes: slice 8.
+ * and a later stage O, is restored newest first, so one ref gives back the whole row. A memory ref is un-demoted
+ * last, so a memory that was demoted and then soft deleted comes back live and indexed.
  *
  * One ref's claims are walked under its item lock, so the locator read, the stale-claim cleanup and each
  * reinstate see one state, against `displace` and `recoverRun`. A run is visited once per ref, so a locator that
@@ -86,13 +94,15 @@ export async function restoreItems(deps: RetentionDeps, refs: readonly ItemRef[]
   try {
     for (const ref of refs) {
       const claimed: Claimed[] = [];
+      const demoted: ReinstateResult[] = [];
       try {
-        await withKeyedLock(lockOf(ref), () => restoreClaims(deps, vault, ref, claimed));
+        await withKeyedLock(lockOf(ref), () => restoreClaims(deps, vault, ref, claimed, demoted));
       } finally {
         for (const { runId, one } of claimed) {
           result = add(result, one);
           await release(runs, runId, taken(one));
         }
+        for (const one of demoted) result = add(result, outcome(one));
       }
     }
   } finally {
@@ -107,7 +117,7 @@ interface Claimed {
 }
 
 /** The caller holds `lockOf(ref)`; `reinstateLocked` is the variant that assumes it. */
-async function restoreClaims(deps: RetentionDeps, vault: Vault, ref: ItemRef, claimed: Claimed[]): Promise<void> {
+async function restoreClaims(deps: RetentionDeps, vault: Vault, ref: ItemRef, claimed: Claimed[], demoted: ReinstateResult[]): Promise<void> {
   const visited = new Set<RunId>();
   for (let claim = await vault.locate(ref); claim && !visited.has(claim.runId); claim = await vault.locate(ref)) {
     visited.add(claim.runId);
@@ -120,6 +130,8 @@ async function restoreClaims(deps: RetentionDeps, vault: Vault, ref: ItemRef, cl
     claimed.push({ runId: claim.runId, one });
     if (one.deferred) break;
   }
+  const undemoted = ref.kind === "memory" ? await reinstateDemoteLocked(deps, ref.id) : null;
+  if (undemoted) demoted.push(undemoted);
 }
 
 export interface PurgeResult {
