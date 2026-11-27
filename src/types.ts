@@ -748,7 +748,8 @@ export interface AuditEntry {
     | "retention_soft_delete"
     | "retention_restore"
     | "retention_purge"
-    | "retention_demote";
+    | "retention_demote"
+    | "retention_pin";
   userId?: string;
   functionId: string;
   targetIds: string[];

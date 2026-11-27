@@ -66,6 +66,7 @@ import { clearSessionFinalize, scheduleSessionFinalize } from "../functions/sess
 import { getSummaryTriggerTimeoutMs, requestSummaryRefresh } from "../functions/summary-state.js";
 import { registerCompressionApi } from "./compression.js";
 import { exportStreamHandler } from "../fork/export-stream.js";
+import { registerRetentionTriggers } from "../fork/retention/rest.js";
 import {
   getFinalizeIdleMs,
   isGraphExtractionEnabled,
@@ -130,7 +131,7 @@ export function checkAuth(
   return null;
 }
 
-function requireConfiguredSecret(
+export function requireConfiguredSecret(
   secret: string | undefined,
   feature: string,
 ): Response | null {
@@ -584,6 +585,12 @@ export function registerApiTriggers(
   provider?: ResilientProvider | { circuitState?: unknown },
 ): void {
   registerGraphIndexApi(sdk, secret, checkAuth);
+  registerRetentionTriggers(sdk, secret, { checkAuth, requireConfiguredSecret });
+  sdk.registerTrigger({ type: "http", function_id: "api::retention-sweep", config: { api_path: "/agentmemory/retention/sweep", http_method: "POST" } });
+  sdk.registerTrigger({ type: "http", function_id: "api::retention-restore", config: { api_path: "/agentmemory/retention/restore", http_method: "POST" } });
+  sdk.registerTrigger({ type: "http", function_id: "api::retention-purge", config: { api_path: "/agentmemory/retention/purge", http_method: "POST" } });
+  sdk.registerTrigger({ type: "http", function_id: "api::retention-pin", config: { api_path: "/agentmemory/retention/pin", http_method: "POST" } });
+  sdk.registerTrigger({ type: "http", function_id: "api::retention-report", config: { api_path: "/agentmemory/retention/report", http_method: "GET" } });
   sdk.registerTrigger({ type: "http", function_id: "api::graph-index-status", config: { api_path: "/agentmemory/graph/index", http_method: "GET" } });
   sdk.registerTrigger({ type: "http", function_id: "api::graph-index-migrate", config: { api_path: "/agentmemory/graph/index/migrate", http_method: "POST" } });
   sdk.registerTrigger({ type: "http", function_id: "api::graph-index-resume", config: { api_path: "/agentmemory/graph/index/resume", http_method: "POST" } });
