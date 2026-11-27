@@ -1,7 +1,7 @@
 import type { HttpRequest } from "@iii-dev/helpers/http";
 import type { IIIClient } from "iii-sdk";
 import { logger } from "../../logger.js";
-import type { ItemRef } from "./types.js";
+import { ok, parsePayload, parsePin, parseRestore, parseRunId, type Parsed } from "./requests.js";
 
 type Response = { status_code: number; headers?: Record<string, string>; body: unknown };
 
@@ -11,76 +11,13 @@ export interface AuthGuards {
   requireConfiguredSecret(secret: string | undefined, feature: string): Response | null;
 }
 
-export const MAX_REFS = 100;
-const MAX_ID_LENGTH = 256;
-const MAX_RUN_ID_LENGTH = 100;
-const MAX_REASON_LENGTH = 500;
-const MAX_WHO_LENGTH = 100;
 const DEFAULT_WHO = "api";
-const RUN_ID = /^ret_[A-Za-z0-9_-]+$/;
-
-type Parsed<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: string };
-const ok = <T>(value: T): Parsed<T> => ({ ok: true, value });
-const bad = (error: string): Parsed<never> => ({ ok: false, error });
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
-function text(value: unknown, name: string, max: number): Parsed<string> {
-  if (typeof value !== "string" || value.trim() === "") return bad(`${name} must be a non-empty string`);
-  return value.length > max ? bad(`${name} must be at most ${max} characters`) : ok(value);
-}
-
-function parseRef(raw: unknown): Parsed<ItemRef> {
-  if (!isRecord(raw)) return bad("ref must be an object");
-  const id = text(raw["id"], "ref.id", MAX_ID_LENGTH);
-  if (!id.ok) return id;
-  if (raw["kind"] === "memory") return ok({ kind: "memory", id: id.value });
-  if (raw["kind"] !== "observation") return bad('ref.kind must be "memory" or "observation"');
-  const sessionId = text(raw["sessionId"], "ref.sessionId", MAX_ID_LENGTH);
-  return sessionId.ok ? ok({ kind: "observation", sessionId: sessionId.value, id: id.value }) : sessionId;
-}
-
-function parseRunId(raw: unknown, name: string): Parsed<string> {
-  const id = text(raw, name, MAX_RUN_ID_LENGTH);
-  return id.ok && !RUN_ID.test(id.value) ? bad(`${name} is not a run id`) : id;
-}
-
-/** A body is an object or absent; everything else is refused. */
-function bodyOf(req: HttpRequest): Parsed<Record<string, unknown>> {
-  const body = req.body ?? {};
-  return isRecord(body) ? ok(body) : bad("the body must be a JSON object");
-}
 
 /** True unless exactly `false`: a mistyped or missing field never turns a preview into a delete. */
 const dryRunOf = (body: Record<string, unknown>): boolean => body["dryRun"] !== false;
 
-function parseRestore(body: Record<string, unknown>): Parsed<{ runId: string } | { refs: ItemRef[] }> {
-  const { runId, refs } = body;
-  if ((runId === undefined) === (refs === undefined)) return bad("give either runId or refs");
-  if (runId !== undefined) {
-    const id = parseRunId(runId, "runId");
-    return id.ok ? ok({ runId: id.value }) : id;
-  }
-  if (!Array.isArray(refs) || refs.length === 0 || refs.length > MAX_REFS) return bad(`refs must be a list of 1 to ${MAX_REFS} refs`);
-  const parsed: ItemRef[] = [];
-  for (const raw of refs) {
-    const ref = parseRef(raw);
-    if (!ref.ok) return ref;
-    parsed.push(ref.value);
-  }
-  return ok({ refs: parsed });
-}
-
-function parsePin(body: Record<string, unknown>): Parsed<{ ref: ItemRef; who: string; reason: string } | { ref: ItemRef; who: string; unpin: true }> {
-  const ref = parseRef(body["ref"]);
-  if (!ref.ok) return ref;
-  const who = body["who"] === undefined ? ok(DEFAULT_WHO) : text(body["who"], "who", MAX_WHO_LENGTH);
-  if (!who.ok) return who;
-  if (body["unpin"] !== undefined && typeof body["unpin"] !== "boolean") return bad("unpin must be a boolean");
-  if (body["unpin"] === true) return ok({ ref: ref.value, who: who.value, unpin: true });
-  const reason = text(body["reason"], "reason", MAX_REASON_LENGTH);
-  return reason.ok ? ok({ ref: ref.value, who: who.value, reason: reason.value }) : reason;
-}
+/** `who` is an unverified label (one shared secret), so a call that names none is labelled as the API's. */
+const withDefaultWho = (body: Record<string, unknown>): Record<string, unknown> => (body["who"] === undefined ? { ...body, who: DEFAULT_WHO } : body);
 
 type Outcome = { readonly kind: string } & Record<string, unknown>;
 
@@ -95,6 +32,8 @@ function statusOf(outcome: Outcome): Response {
       return { status_code: 503, body: { error: "retention is off", why: outcome.why } };
     case "not-found":
       return { status_code: 404, body: { error: "not-found" } };
+    case "invalid":
+      return { status_code: 400, body: { error: outcome["error"] } };
     default:
       return { status_code: 200, body: outcome };
   }
@@ -121,14 +60,14 @@ export function registerRetentionTriggers(sdk: IIIClient, secret: string | undef
       }
     };
   const withBody = <Payload>(parse: (body: Record<string, unknown>) => Parsed<Payload>) => (req: HttpRequest): Parsed<Payload> => {
-    const body = bodyOf(req);
+    const body = parsePayload(req.body);
     return body.ok ? parse(body.value) : body;
   };
 
   sdk.registerFunction("api::retention-sweep", route("sweep", withBody((body) => ok({ dryRun: dryRunOf(body) })), "mem::retention-sweep"));
   sdk.registerFunction("api::retention-purge", route("purge", withBody((body) => ok({ dryRun: dryRunOf(body) })), "mem::retention-purge"));
   sdk.registerFunction("api::retention-restore", route("restore", withBody(parseRestore), "mem::retention-restore"));
-  sdk.registerFunction("api::retention-pin", route("pin", withBody(parsePin), "mem::retention-pin"));
+  sdk.registerFunction("api::retention-pin", route("pin", withBody((body) => parsePin(withDefaultWho(body))), "mem::retention-pin"));
   sdk.registerFunction(
     "api::retention-report",
     route("report", (req) => {

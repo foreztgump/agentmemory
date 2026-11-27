@@ -5,6 +5,7 @@ import { logger } from "../../logger.js";
 import { getSearchRuntime } from "../../state/search-ports.js";
 import { readReport, restoreLeased } from "./admin.js";
 import { pinItem, unpinItem } from "./pin.js";
+import { invalid, parsePayload, parsePin, parseRestore, type Parsed } from "./requests.js";
 import { runPurge } from "./purge.js";
 import { createRecallHarness } from "./recall-check.js";
 import type { RetentionDeps } from "./satellites.js";
@@ -12,8 +13,13 @@ import { activeVectorReader } from "./vectors.js";
 import { parseRetentionSettings, RETENTION_SETTING_KEYS, retentionEnforceRequested, type RetentionEnv } from "./settings.js";
 import { runSweep } from "./sweep.js";
 import { realScheduler, startRetentionTimers, type Scheduler } from "./timers.js";
-import type { ItemRef, RunId } from "./types.js";
+import type { RunId } from "./types.js";
 import { setSummarizeVeto, trimmedSealVeto } from "./veto.js";
+
+const parsed = <T>(raw: unknown, parse: (body: Record<string, unknown>) => Parsed<T>): Parsed<T> => {
+  const body = parsePayload(raw);
+  return body.ok ? parse(body.value) : body;
+};
 
 function retentionEnv(): RetentionEnv {
   return Object.fromEntries(RETENTION_SETTING_KEYS.map((key) => [key, getEnvVar(key)]));
@@ -35,6 +41,8 @@ export interface RetentionOptions {
  *   mem::retention-purge    { dryRun }            -> PurgeOutcome (dryRun defaults to true, as for the sweep)
  *   mem::retention-pin      { ref, who, reason } | { ref, who, unpin: true } -> PinOutcome
  *   mem::retention-report   { runId? }            -> ReportOutcome (the newest run without a runId)
+ * Restore and pin parse their payload with the parsers the routes use (requests.ts) and answer { kind: "invalid", error }
+ * to one the routes would refuse: other workers trigger them directly.
  * REST (src/triggers/api.ts registers the paths and calls registerRetentionTriggers, rest.ts):
  *   POST /agentmemory/retention/sweep, POST /agentmemory/retention/restore, POST /agentmemory/retention/purge,
  *   POST /agentmemory/retention/pin, GET /agentmemory/retention/report. Fields whitelisted; auth fails closed.
@@ -67,12 +75,15 @@ export function registerRetention(sdk: IIIClient, kv: StateKV, options: Retentio
   const purge = (dryRun: boolean) => runPurge(deps, settings, { dryRun });
   sdk.registerFunction("mem::retention-sweep", async (req?: { dryRun?: unknown }) => sweep(req?.dryRun !== false));
   sdk.registerFunction("mem::retention-purge", async (req?: { dryRun?: unknown }) => purge(req?.dryRun !== false));
-  sdk.registerFunction("mem::retention-restore", async (req: { runId?: string; refs?: ItemRef[] }) =>
-    restoreLeased(deps, req.refs ? { refs: req.refs } : { runId: req.runId as RunId }),
-  );
-  sdk.registerFunction("mem::retention-pin", async (req: { ref: ItemRef; who: string; reason?: string; unpin?: true }) =>
-    req.unpin ? unpinItem(deps, req.ref, req.who) : pinItem(deps, { ref: req.ref, who: req.who, reason: req.reason ?? "" }),
-  );
+  sdk.registerFunction("mem::retention-restore", async (raw?: unknown) => {
+    const req = parsed(raw, parseRestore);
+    return req.ok ? restoreLeased(deps, req.value) : invalid(req);
+  });
+  sdk.registerFunction("mem::retention-pin", async (raw?: unknown) => {
+    const req = parsed(raw, parsePin);
+    if (!req.ok) return invalid(req);
+    return "unpin" in req.value ? unpinItem(deps, req.value.ref, req.value.who) : pinItem(deps, req.value);
+  });
   sdk.registerFunction("mem::retention-report", async (req?: { runId?: string }) => readReport(deps, req?.runId as RunId | undefined));
 
   return startRetentionTimers(settings, { sweep: () => sweep(false), purge: () => purge(false) }, options.scheduler ?? realScheduler);

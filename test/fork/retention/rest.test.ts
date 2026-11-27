@@ -1,6 +1,6 @@
 // Slice 10: the five retention routes. Auth fails closed, every field is whitelisted and typed, and each outcome has its own status.
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -9,8 +9,12 @@ vi.mock("../../../src/logger.js", () => ({
 }));
 
 import { collectRestEndpoints } from "../../../scripts/skills/rest-endpoints.js";
-import { MAX_REFS } from "../../../src/fork/retention/rest.js";
-import { spiedRoutes, type Route } from "./api-fixtures.js";
+import { resetSummarizeVeto } from "../../../src/fork/retention/veto.js";
+import { MAX_REFS } from "../../../src/fork/retention/requests.js";
+import { liveRoutes, spiedRoutes, type Route } from "./api-fixtures.js";
+import { memory, NOW, rig, seedMemory } from "./move-fixtures.js";
+
+afterEach(() => resetSummarizeVeto());
 
 const ROUTES: readonly Route[] = ["sweep", "restore", "purge", "pin", "report"];
 const BODIES: Record<Route, unknown> = {
@@ -229,5 +233,56 @@ describe("each outcome has its own status", () => {
     const reply = await call(route, { body: BODIES[route] });
     expect(reply.status_code).toBe(500);
     expect(JSON.stringify(reply.body)).not.toContain("hunter2");
+  });
+});
+
+describe("the iii functions refuse a payload the routes would refuse, since other workers trigger them directly", () => {
+  function functions() {
+    const r = rig();
+    liveRoutes(r, { now: NOW });
+    const fn = (name: "restore" | "pin") => (payload: unknown) => r.h.functions.get(`mem::retention-${name}`)!(payload) as Promise<Record<string, unknown>>;
+    return { r, restore: fn("restore"), pin: fn("pin") };
+  }
+
+  it.each([
+    ["no payload", undefined],
+    ["a payload that is a list", [MEM]],
+    ["neither runId nor refs", {}],
+    ["both runId and refs", { runId: "ret_a", refs: [MEM] }],
+    ["a runId that is not a run id", { runId: "mem_1" }],
+    ["an empty refs list", { refs: [] }],
+    ["refs that are not a list", { refs: MEM }],
+    ["an observation ref with no session", { refs: [{ kind: "observation", id: "obs_1" }] }],
+  ])("mem::retention-restore answers invalid for %s, and takes no lease", async (_name, payload) => {
+    const { r, restore } = functions();
+    expect(await restore(payload)).toEqual({ kind: "invalid", error: expect.any(String) });
+    expect(r.h.stateOps.some((op) => /^state::(set|delete|update)/.test(op))).toBe(false);
+  });
+
+  it.each([
+    ["no payload", undefined],
+    ["no ref", { who: "dana", reason: "r" }],
+    ["no who", { ref: MEM, reason: "r" }],
+    ["no who on an unpin", { ref: MEM, unpin: true }],
+    ["no reason", { ref: MEM, who: "dana" }],
+    ["an observation ref with no session", { ref: { kind: "observation", id: "obs_1" }, who: "dana", reason: "r" }],
+  ])("mem::retention-pin answers invalid for %s, and writes nothing", async (_name, payload) => {
+    const { r, pin } = functions();
+    await seedMemory(r, memory("mem_1"));
+    const writes = r.h.stateOps.length;
+    expect(await pin(payload)).toEqual({ kind: "invalid", error: expect.any(String) });
+    expect(r.h.stateOps.slice(writes).some((op) => /^state::(set|delete|update)/.test(op))).toBe(false);
+  });
+
+  it("a valid payload still goes through", async () => {
+    const { r, pin } = functions();
+    await seedMemory(r, memory("mem_1"));
+    expect(await pin({ ref: MEM, who: "dana", reason: "r" })).toMatchObject({ kind: "pinned" });
+  });
+
+  it("the route answers 400 for an invalid outcome", async () => {
+    const { call, spies } = spiedRoutes();
+    spies.restore.mockResolvedValueOnce({ kind: "invalid", error: "refs must be a list" });
+    expect(await call("restore", { body: BODIES.restore })).toMatchObject({ status_code: 400, body: { error: "refs must be a list" } });
   });
 });
