@@ -59,6 +59,23 @@ describe("evaluateStatus", () => {
     expect(codes(report)).toContain("keyword-index-rebuilding");
   });
 
+  it("describes warm-up, not a rebuild, while a disk search backend warms up", () => {
+    const report = evaluateStatus(
+      inputs({ searchBackendEnabled: true, index: { ...inputs().index, missingObservations: 7, keywordRebuildRunning: true } }),
+    );
+    const problem = report.problems.find((p) => p.code === "keyword-index-rebuilding");
+    expect(problem?.message).toContain("warming up: refreshing counts and loading the keyword vocabulary");
+    expect(problem?.message).not.toContain("rebuilding from stored data");
+  });
+
+  it("keeps the rebuild message in memory mode", () => {
+    const report = evaluateStatus(
+      inputs({ index: { ...inputs().index, keywordRebuildRunning: true } }),
+    );
+    const problem = report.problems.find((p) => p.code === "keyword-index-rebuilding");
+    expect(problem?.message).toContain("still rebuilding from stored data");
+  });
+
   it("tells a missing embedding key apart from an unchosen provider", () => {
     const missing = evaluateStatus(inputs({ embeddingHint: "EMBEDDING_PROVIDER=voyage is set, but VOYAGE_API_KEY is not." }));
     expect(missing.problems.map((p) => p.code)).toContain("embedding-provider-key-missing");

@@ -336,10 +336,14 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
     });
   }
   if (input.index.keywordRebuildRunning) {
+    // A disk search backend keeps its index in the worker, so boot only refreshes counts and loads the vocabulary.
+    const warmingUp = Boolean(input.searchBackendEnabled);
     problems.push({
       level: "info",
       code: "keyword-index-rebuilding",
-      message: "The keyword index is still rebuilding from stored data, so the check for observations missing from search waits until it finishes.",
+      message: warmingUp
+        ? "The keyword index is warming up: refreshing counts and loading the keyword vocabulary. The check for observations missing from search waits until it finishes."
+        : "The keyword index is still rebuilding from stored data, so the check for observations missing from search waits until it finishes.",
       fix: "No action needed. The check runs on the next health update after the rebuild.",
     });
   } else if (missingObservations === null && !input.searchBackend) {

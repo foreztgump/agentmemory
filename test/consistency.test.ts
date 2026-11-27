@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 
@@ -9,7 +9,7 @@ vi.mock("../src/logger.js", () => ({
 
 import { getAllTools } from "../src/mcp/tools-registry.js";
 import { VERSION } from "../src/version.js";
-import { collectRestEndpointsInDirectory } from "../scripts/skills/rest-endpoints.js";
+import { collectRestEndpoints } from "../scripts/skills/rest-endpoints.js";
 
 const ROOT = join(import.meta.dirname, "..");
 
@@ -17,8 +17,17 @@ function readText(relativePath: string): string {
   return readFileSync(join(ROOT, relativePath), "utf-8");
 }
 
+function sourceFilesUnder(relativeDirectory: string): string[] {
+  return readdirSync(join(ROOT, relativeDirectory), { withFileTypes: true }).flatMap((entry) => {
+    const path = join(relativeDirectory, entry.name);
+    if (entry.isDirectory()) return sourceFilesUnder(path);
+    return entry.name.endsWith(".ts") ? [path] : [];
+  });
+}
+
+/** Every http trigger in the registration tree, by method and path, the way docs-sync counts REST endpoints. */
 function countRestApiEndpoints(): number {
-  return collectRestEndpointsInDirectory(join(ROOT, "src/triggers")).length;
+  return collectRestEndpoints(...sourceFilesUnder("src/triggers").concat(sourceFilesUnder("src/fork")).map(readText)).length;
 }
 
 describe("Consistency checks", () => {
@@ -72,6 +81,12 @@ describe("Consistency checks", () => {
     if (readme.includes("endpoints on port")) expect(readme).toContain(`${restEndpointCount} endpoints on port`);
     expect(agents).toContain(`${restEndpointCount} REST endpoints`);
     expect(index).toContain(`REST API: ${restEndpointCount} endpoints`);
+  });
+
+  it("the boot log REST endpoint count matches every http trigger under src/triggers and src/fork", () => {
+    const logged = readText("src/index.ts").match(/REST API: (\d+) endpoints/);
+    expect(logged, "src/index.ts logs no REST endpoint count").not.toBeNull();
+    expect(Number(logged![1])).toBe(restEndpointCount);
   });
 
   it("all tool names are unique", () => {
