@@ -9,6 +9,7 @@ import { addDocument, removeDocument, type RetentionDeps } from "./satellites.js
 import { RETENTION_KV } from "./scopes.js";
 import { RETENTION_PAGE_SIZE } from "./settings.js";
 import type { DemoteRecord, Reason, RunId, SatelliteSnapshots } from "./types.js";
+import { Vault } from "./vault.js";
 
 /** The lock `mem::remember` and `mem::forget` write memories under; every demote and un-demote holds it. */
 export const MEMORY_LOCK = "mem:remember";
@@ -21,6 +22,7 @@ export interface DemoteMove {
 }
 
 const NOT_RESTORED: ReinstateResult = { restored: false, reembedNeeded: false };
+const DEFERRED: ReinstateResult = { ...NOT_RESTORED, deferred: true };
 
 function withoutMark(row: Memory): Memory {
   const copy = { ...row };
@@ -51,6 +53,9 @@ export async function demoteLocked(deps: RetentionDeps, move: DemoteMove, live: 
  * for the id. A record whose row is not marked and is not being restored is a demote that never landed, or a mark a
  * writer dropped: the record goes and the live row is indexed again, so a live row is always in the indexes.
  * A marked row with no record (an export imported from another stack) is restored with no vector, and the re-embed loop fills it.
+ * With no live row the record stays while a run's vault holds the row (a demoted memory a stage S or X run soft deleted),
+ * and the answer is `deferred`: the row comes back marked, and only the record can un-demote it without an embedding
+ * call. With the row in no vault either, the memory is gone and the record goes.
  */
 export async function reinstateDemoteLocked(deps: RetentionDeps, memoryId: string): Promise<ReinstateResult | null> {
   const [record, live] = await Promise.all([
@@ -60,6 +65,7 @@ export async function reinstateDemoteLocked(deps: RetentionDeps, memoryId: strin
   const marked = hiddenFromIndex(live);
   if (!record && !marked) return null;
   if (!live) {
+    if (await new Vault(deps.kv).locate({ kind: "memory", id: memoryId })) return DEFERRED;
     await deps.kv.delete(RETENTION_KV.demoted, memoryId);
     return NOT_RESTORED;
   }

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import { KV } from "../../state/schema.js";
 import type { CompressedObservation, Memory } from "../../types.js";
-import { demoteLocked, MEMORY_LOCK, recoverDemotes } from "./demote.js";
+import { demoteLocked, MEMORY_LOCK, recoverDemotes, reinstateDemoteLocked } from "./demote.js";
 import { hiddenFromIndex } from "./indexable.js";
 import type { Cleared } from "./protect.js";
 import { SATELLITES, type RetentionDeps } from "./satellites.js";
@@ -216,9 +216,22 @@ export async function reinstateLocked(deps: RetentionDeps, vault: Vault, entry: 
     return { restored: true, reembedNeeded: false };
   }
   if (!live) await deps.kv.set(scopeOf(ref), ref.id, entry.row);
-  const { reembedNeeded } = await attachSatellites(deps, entry);
+  const attached = await attachSatellites(deps, entry);
+  const undemoted = await undemoteIfPinned(deps, entry);
   await vault.take(entry.runId, ref);
-  return { restored: true, reembedNeeded };
+  return { restored: true, reembedNeeded: attached.reembedNeeded || undemoted?.reembedNeeded === true };
+}
+
+/**
+ * A memory demoted and then soft deleted (stage S or X) comes back from the vault with its demote mark, and its record
+ * waited for it (`reinstateDemoteLocked`). A pinned one is un-demoted from that record before the entry is taken, so a
+ * crash in between repeats the restore; any other stays fully demoted, mark and record, as before it was soft deleted.
+ * The caller holds `MEMORY_LOCK`, which is `lockOf` a memory ref.
+ */
+async function undemoteIfPinned(deps: RetentionDeps, entry: VaultEntry): Promise<ReinstateResult | null> {
+  if (entry.stage === "T" || entry.ref.kind !== "memory" || !hiddenFromIndex(entry.row as Memory)) return null;
+  if (!(await deps.kv.get(RETENTION_KV.pins, itemKey(entry.ref)))) return null;
+  return reinstateDemoteLocked(deps, entry.ref.id);
 }
 
 /**

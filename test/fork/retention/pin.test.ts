@@ -10,8 +10,9 @@ vi.mock("../../../src/logger.js", () => ({
 import { hiddenFromIndex } from "../../../src/fork/retention/indexable.js";
 import { displace } from "../../../src/fork/retention/move.js";
 import { pinItem, unpinItem } from "../../../src/fork/retention/pin.js";
+import { restoreItems, restoreRun } from "../../../src/fork/retention/restore.js";
 import { itemKey, RETENTION_KV, type Pin } from "../../../src/fork/retention/scopes.js";
-import type { ItemRef } from "../../../src/fork/retention/types.js";
+import type { ItemRef, RunId } from "../../../src/fork/retention/types.js";
 import { resetSummarizeVeto } from "../../../src/fork/retention/veto.js";
 import { KV } from "../../../src/state/schema.js";
 import type { Memory } from "../../../src/types.js";
@@ -29,6 +30,7 @@ const provider = { name: "spy", dimensions: DIMS, embed, embedBatch } as unknown
 
 const obs = (sessionId: string, id: string): ItemRef => ({ kind: "observation", sessionId, id });
 const mem = (id: string): ItemRef => ({ kind: "memory", id });
+const X_RUN = "ret_x" as RunId;
 
 beforeEach(() => vi.spyOn(console, "warn").mockImplementation(() => {}));
 afterEach(() => {
@@ -230,6 +232,50 @@ describe("pinning a demoted memory", () => {
     const result = swept(await sweep(r, indexHarness(r, cases), { dryRun: false }));
     expect(result.report.perStage.C.moved).toBe(0);
     expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "mem_cold"))).toBe(false);
+  });
+
+  /** Demoted by RUN, then soft deleted by a stage X run during the demote: the row is only in X's vault, still marked. */
+  async function demotedThenExpired() {
+    const r = await demoted();
+    const marked = (await r.kv.get<Memory>(KV.memories, "mem_cold"))!;
+    await closedRun(r, X_RUN, [await candidate(r, "X", marked)], { graceDays: 1 });
+    expect(await r.kv.get(KV.memories, "mem_cold")).toBeNull();
+    embed.mockClear();
+    embedBatch.mockClear();
+    return r;
+  }
+
+  it("pinned while its row is only in a vault, it keeps its demote record and purge brings it back un-demoted, with no embedding call", async () => {
+    const r = await demotedThenExpired();
+    const { clock, deps } = clocked(r);
+    expect(await pinItem(deps, { ref: mem("mem_cold"), who: "owner", reason: "keep" })).toMatchObject({ kind: "pinned", vaulted: true, undemoted: false });
+    expect(await r.kv.get(RETENTION_KV.demoted, "mem_cold")).not.toBeNull();
+    clock.now = at(25);
+    expect(done(await purge(deps))).toMatchObject({ restoredBack: 1, purged: 0 });
+    expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "mem_cold"))).toBe(false);
+    expect(await keywordHits(r, "okapi")).toEqual(["mem_cold"]);
+    expect(await vectorHits(r, 7)).toEqual(["mem_cold"]);
+    expect(await r.kv.get(RETENTION_KV.demoted, "mem_cold")).toBeNull();
+    expect(embed).not.toHaveBeenCalled();
+    expect(embedBatch).not.toHaveBeenCalled();
+  });
+
+  it("restoring the run that soft deleted it, with no pin, brings it back still demoted, mark and record together", async () => {
+    const r = await demotedThenExpired();
+    expect(await restoreRun(r.deps, X_RUN, "test")).toMatchObject({ restored: 1 });
+    expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "mem_cold"))).toBe(true);
+    expect(await r.kv.get(RETENTION_KV.demoted, "mem_cold")).not.toBeNull();
+    expect(r.runtime.keyword.has("mem_cold")).toBe(false);
+  });
+
+  it("restoring the demoting run while the row is in another vault defers the un-demote and keeps the record", async () => {
+    const r = await demotedThenExpired();
+    expect(await restoreRun(r.deps, RUN, "test")).toMatchObject({ restored: 0, keptLive: 0, deferred: 1 });
+    expect(await r.kv.get(RETENTION_KV.demoted, "mem_cold")).not.toBeNull();
+    expect(await restoreItems(r.deps, [mem("mem_cold")], "test")).toMatchObject({ restored: 2 });
+    expect(hiddenFromIndex(await r.kv.get<Memory>(KV.memories, "mem_cold"))).toBe(false);
+    expect(await vectorHits(r, 7)).toEqual(["mem_cold"]);
+    expect(embed).not.toHaveBeenCalled();
   });
 
   it("a memory that is not demoted is pinned with no restore and no restore audit", async () => {
