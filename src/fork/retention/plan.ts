@@ -4,7 +4,7 @@ import type { StateKV } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
 import type { CompressedObservation, Memory, RetentionScore, Session } from "../../types.js";
 import type { ActiveClock } from "./clock.js";
-import type { Candidate, ChainProof, SealProof } from "./protect.js";
+import { mintChainProof, type Candidate, type ChainProof, type SealProof } from "./protect.js";
 import { RETENTION_KV } from "./scopes.js";
 import { RETENTION_COLD_SCORE, RETENTION_PAGE_SIZE } from "./settings.js";
 import type { Cursor, SessionSeal, Stage, Windows } from "./types.js";
@@ -57,12 +57,11 @@ export async function* planCandidates(kv: StateKV, clock: ActiveClock, windows: 
 
 async function* planSessions(kv: StateKV, clock: ActiveClock, windows: Windows, from: Cursor | null): AsyncGenerator<PlanBatch> {
   let done = from?.after ?? null;
-  let resume = from?.within;
+  const resume = from?.within;
   for (const sessionId of after(await sortedKeys(kv, RETENTION_KV.seals), done)) {
     const [seal, session] = await Promise.all([kv.get<SessionSeal>(RETENTION_KV.seals, sessionId), kv.get<Session>(KV.sessions, sessionId)]);
-    if (seal && session) yield* planSession(kv, clock, windows, { seal, project: session.project }, done, resume);
+    if (seal && session) yield* planSession(kv, clock, windows, { seal, project: session.project }, done, resume?.sessionId === sessionId ? resume : undefined);
     done = sessionId;
-    resume = undefined;
   }
   yield { candidates: [], cursorAfter: { unit: "memories", after: null } };
 }
@@ -114,7 +113,7 @@ async function* planSession(
         return { project, stage, ref, row, proof, reason, ...(cited.has(row.id) ? { graphCited: true as const } : {}) };
       });
       last = slice.at(-1)!;
-      yield { candidates, cursorAfter: { unit: "sessions", after: done, within: { pass, afterRowId: last } } };
+      yield { candidates, cursorAfter: { unit: "sessions", after: done, within: { sessionId: seal.sessionId, pass, afterRowId: last } } };
     }
   }
 }
@@ -189,7 +188,7 @@ export async function successorIndex(kv: StateKV): Promise<ReadonlyMap<string, M
     for (const row of page) {
       for (const id of new Set([...(row?.supersedes ?? []), ...(row?.parentId ? [row.parentId] : [])])) {
         const held = best.get(id);
-        if (row && (!held || (row.version ?? 1) > (held.version ?? 1) || ((row.version ?? 1) === (held.version ?? 1) && row.createdAt > held.createdAt))) best.set(id, row);
+        if (row && (!held || (row.version ?? 1) > (held.version ?? 1) || ((row.version ?? 1) === (held.version ?? 1) && Date.parse(row.createdAt) > Date.parse(held.createdAt)))) best.set(id, row);
       }
     }
   }
@@ -211,7 +210,7 @@ export async function proveChain(kv: StateKV, row: Memory, successors: ReadonlyM
     const nextId = successors.get(current.id);
     const next = nextId === undefined ? null : await kv.get<Memory>(KV.memories, nextId);
     if (!next || !strictlyNewer(next, current)) return null;
-    if (next.isLatest) return { successorId: next.id } as ChainProof;
+    if (next.isLatest) return mintChainProof(next.id);
     current = next;
   }
 }

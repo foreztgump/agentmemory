@@ -8,7 +8,7 @@ import { RETENTION_IMPORTANCE_FLOOR, RETENTION_SPILL_IDS } from "./settings.js";
 import type { ItemRef, Reason, SessionSeal, SignalId, Stage, VaultEntry, Windows } from "./types.js";
 
 declare const cleared: unique symbol;
-declare const chained: unique symbol;
+const chained: unique symbol = Symbol("chained");
 
 /** Proof that a session's summary covers every row (seal.ts). Only `judgeSeal` returns one. */
 export interface SealProof {
@@ -20,6 +20,11 @@ export interface ChainProof {
   readonly successorId: string;
   readonly [chained]: true;
 }
+
+/** The only place a `ChainProof` is made; `proveChain` (plan.ts) calls it after it has walked the chain. */
+export const mintChainProof = (successorId: string): ChainProof => ({ successorId, [chained]: true });
+
+export const isChainProof = (value: unknown): value is ChainProof => typeof value === "object" && value !== null && (value as Partial<ChainProof>)[chained] === true;
 
 /**
  * `project` is the item's project (a memory's own, a session's for an observation): the `retrieved` signal reads the project-active clock with it.

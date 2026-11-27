@@ -189,10 +189,12 @@ export interface Cursor {
   /** Last session id or memory id fully handled. */
   readonly after: string | null;
   /**
-   * Sessions unit only: progress inside the session that follows `after`, absent when no session is in
-   * progress. Rows are walked in sorted key order, uncited rows first, then graph-cited rows (they go last).
+   * Sessions unit only: progress inside the session `sessionId`, which follows `after`, absent when no session
+   * is in progress. A resume applies only to that session; if its seal is gone the next session starts from its
+   * first row. Rows are walked in sorted key order, uncited rows first, then graph-cited rows (they go last).
    */
   readonly within?: {
+    readonly sessionId: string;
     readonly pass: "uncited" | "graph-cited";
     /** Last row key (observation id) handled in this pass; null before the first page. */
     readonly afterRowId: string | null;

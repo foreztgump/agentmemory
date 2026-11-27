@@ -127,7 +127,7 @@ export async function candidate(r: Rig, stage: "T" | "O" | "S" | "X", row: Compr
     item = { project: "proj", stage, ref: { kind: "memory", id: row.id }, row: row as Memory, reason };
   } else {
     const old = row as Memory;
-    const next = memory(`${old.id}_next`, { version: old.version + 1, supersedes: [old.id], parentId: old.id, createdAt: "2026-02-01T00:00:00.000Z", forgetAfter: undefined });
+    const next = memory(`${old.id}_next`, { version: old.version + 1, supersedes: [old.id], parentId: old.id, createdAt: old.createdAt, forgetAfter: undefined });
     if (!(await r.kv.get(KV.memories, next.id))) await r.kv.set(KV.memories, next.id, next);
     const proof = await proveChain(r.kv, old, await successorIndex(r.kv));
     if (!proof) throw new Error(`no chain proof for ${old.id}`);
