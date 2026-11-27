@@ -49,7 +49,7 @@ describe("fingerprintRow", () => {
 describe("displace, stage O", () => {
   it("moves the row to the vault and detaches every satellite", async () => {
     const { r, row, seal } = await stageO();
-    const result = await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    const result = await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
 
     expect(result).toMatchObject({ moved: true });
     expect(result.bytes).toBeGreaterThan(0);
@@ -73,9 +73,10 @@ describe("displace, stage O", () => {
   it("refuses a row whose vector cannot be read back, and changes nothing", async () => {
     const { r, row, seal } = await stageO();
     const deps = { ...r.deps, vectors: { canRead: false, read: () => Promise.reject(new Error("backend down")) } };
+    const cleared = await candidate(r, "O", row, seal);
     const writes = r.h.stateOps.length;
 
-    const result = await displace(deps, r.vault, RUN, candidate("O", row, seal));
+    const result = await displace(deps, r.vault, RUN, cleared);
 
     expect(result).toMatchObject({ moved: false, skipped: "unreadable" });
     expect(await liveRow(r, KV.observations("ses_1"), "obs_1")).toEqual(row);
@@ -89,7 +90,7 @@ describe("displace, stage O", () => {
     const { r, row, seal } = await stageO();
     await r.kv.set(KV.observations("ses_1"), "obs_1", { ...row, title: "recompressed" });
 
-    const result = await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    const result = await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
 
     expect(result).toMatchObject({ moved: false, skipped: "row-changed" });
     expect((await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))?.title).toBe("recompressed");
@@ -100,13 +101,13 @@ describe("displace, stage O", () => {
   it("skips a row that is already gone", async () => {
     const { r, row, seal } = await stageO();
     await r.kv.delete(KV.observations("ses_1"), "obs_1");
-    expect(await displace(r.deps, r.vault, RUN, candidate("O", row, seal))).toMatchObject({ moved: false, skipped: "gone" });
+    expect(await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal))).toMatchObject({ moved: false, skipped: "gone" });
   });
 
   it("marks the seal trimmed even when the stored seal was dropped, from the proof it was given", async () => {
     const { r, row, seal } = await stageO();
     await r.kv.delete(RETENTION_KV.seals, "ses_1");
-    await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     expect(await r.kv.get<SessionSeal>(RETENTION_KV.seals, "ses_1")).toMatchObject({ sessionId: "ses_1", trimmed: true });
   });
 
@@ -120,7 +121,7 @@ describe("displace, stage O", () => {
     r.runtime.keyword.add(b);
     r.runtime.vector.add("obs_dup", "ses_b", vec(2));
 
-    const result = await displace(r.deps, r.vault, RUN, candidate("O", a, seal));
+    const result = await displace(r.deps, r.vault, RUN, await candidate(r, "O", a, seal));
 
     expect(result.moved).toBe(true);
     expect(await liveRow(r, KV.observations("ses_b"), "obs_dup")).toEqual(b);
@@ -138,7 +139,7 @@ describe("displace, stage X", () => {
     const row = await seedMemory(r, memory("mem_1"), { seed: 7 });
     await seedMemory(r, memory("mem_2"), { seed: 8 });
 
-    const result = await displace(r.deps, r.vault, RUN, candidate("X", row));
+    const result = await displace(r.deps, r.vault, RUN, await candidate(r, "X", row));
 
     expect(result.moved).toBe(true);
     expect(await liveRow(r, KV.memories, "mem_1")).toBeNull();
@@ -152,7 +153,7 @@ describe("displace, stage X", () => {
   it("moves a superseded memory, which is in no index, without inventing a vector", async () => {
     const r = rig();
     const row = await seedMemory(r, memory("mem_old", { isLatest: false }));
-    expect((await displace(r.deps, r.vault, RUN, candidate("S", row))).moved).toBe(true);
+    expect((await displace(r.deps, r.vault, RUN, await candidate(r, "S", row))).moved).toBe(true);
     expect((await r.vault.get(RUN, { kind: "memory", id: "mem_old" }))?.satellites).toEqual({});
   });
 });
@@ -164,7 +165,7 @@ describe("displace, stage T", () => {
     const seal = await seedSeal(r, "ses_1", 1);
     const before = await readSessionFacts(r.kv, (await r.kv.get<Session>(KV.sessions, "ses_1"))!);
 
-    const result = await displace(r.deps, r.vault, RUN, candidate("T", row, seal));
+    const result = await displace(r.deps, r.vault, RUN, await candidate(r, "T", row, seal));
 
     expect(result.moved).toBe(true);
     expect(result.bytes).toBeGreaterThan(300);
@@ -185,8 +186,8 @@ describe("displace, stage T", () => {
     const truncated = await seedObservation(r, observation("obs_1", "ses_1", { source: { hookType: "post_tool_use", originalBytes: 9, truncated: true } }));
     const bare = await seedObservation(r, observation("obs_2", "ses_1", { source: undefined }));
     const seal = await seedSeal(r, "ses_1", 2);
-    expect(await displace(r.deps, r.vault, RUN, candidate("T", truncated, seal))).toMatchObject({ moved: false, skipped: "nothing-to-trim" });
-    expect(await displace(r.deps, r.vault, RUN, candidate("T", bare, seal))).toMatchObject({ moved: false, skipped: "nothing-to-trim" });
+    expect(await displace(r.deps, r.vault, RUN, await candidate(r, "T", truncated, seal))).toMatchObject({ moved: false, skipped: "nothing-to-trim" });
+    expect(await displace(r.deps, r.vault, RUN, await candidate(r, "T", bare, seal))).toMatchObject({ moved: false, skipped: "nothing-to-trim" });
     expect(await r.vault.get(RUN, ref("obs_1"))).toBeNull();
   });
 });
@@ -195,7 +196,7 @@ describe("reinstate", () => {
   it("puts the row, the index doc, the stored vector, the capture event and the count back, and empties the vault", async () => {
     const { r, row, seal } = await stageO();
     await openRun(r, RUN, 1);
-    await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     const entry = (await r.vault.get(RUN, ref("obs_1")))!;
 
     const result = await reinstate(r.deps, r.vault, entry);
@@ -216,7 +217,7 @@ describe("reinstate", () => {
     const r = rig();
     const row = await seedObservation(r, observation("obs_1"));
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     const result = await reinstate(r.deps, r.vault, (await r.vault.get(RUN, ref("obs_1")))!);
     expect(result).toEqual({ restored: true, reembedNeeded: true });
     expect(await keywordHits(r, "zebra")).toEqual(["obs_1"]);
@@ -224,7 +225,7 @@ describe("reinstate", () => {
 
   it("keeps a live row that was written since the move and drops the entry", async () => {
     const { r, row, seal } = await stageO();
-    await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     const recaptured = { ...row, title: "recaptured" };
     await r.kv.set(KV.observations("ses_1"), "obs_1", recaptured);
 
@@ -238,7 +239,7 @@ describe("reinstate", () => {
 
   it("is idempotent: finishing an entry whose row already came back adds nothing twice", async () => {
     const { r, row, seal } = await stageO();
-    await displace(r.deps, r.vault, RUN, candidate("O", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal));
     const entry = (await r.vault.get(RUN, ref("obs_1")))!;
     await reinstate(r.deps, r.vault, entry);
     const again = await reinstate(r.deps, r.vault, entry);
@@ -253,7 +254,7 @@ describe("reinstate", () => {
     const r = rig();
     const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, RUN, candidate("T", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "T", row, seal));
 
     const result = await reinstate(r.deps, r.vault, (await r.vault.get(RUN, ref("obs_1")))!);
 
@@ -266,7 +267,7 @@ describe("reinstate", () => {
     const r = rig();
     const row = await seedObservation(r, observation("obs_1"));
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, RUN, candidate("T", row, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "T", row, seal));
     const entry = (await r.vault.get(RUN, ref("obs_1")))!;
 
     await r.kv.delete(KV.observations("ses_1"), "obs_1");
@@ -286,9 +287,9 @@ describe("a trim and a later stage O for one observation (slice 1 note: shared k
     const B = "ret_b" as typeof RUN;
     const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, A, candidate("T", row, seal));
+    await displace(r.deps, r.vault, A, await candidate(r, "T", row, seal));
     const trimmedRow = (await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))!;
-    await displace(r.deps, r.vault, B, candidate("O", trimmedRow, seal));
+    await displace(r.deps, r.vault, B, await candidate(r, "O", trimmedRow, seal));
 
     expect(await r.vault.locate(ref("obs_1"))).toEqual({ runId: B, stage: "O", under: { runId: A, stage: "T" } });
     expect(await r.vault.get(A, ref("obs_1"))).toMatchObject({ stage: "T", source: row.source });

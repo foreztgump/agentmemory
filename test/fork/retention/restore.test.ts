@@ -52,7 +52,7 @@ describe("R3 in memory mode: a soft-deleted observation and expired memory leave
     const countBefore = (await r.kv.get<Session>(KV.sessions, "ses_1"))!.observationCount;
     expect(countBefore).toBe(2);
 
-    await sweepMove(r, [candidate("O", o, seal), candidate("X", m)]);
+    await sweepMove(r, [await candidate(r, "O", o, seal), await candidate(r, "X", m)]);
 
     expect(await keywordHits(r, "zebra")).toEqual(["obs_2"]);
     expect(await keywordHits(r, "okapi")).toEqual([]);
@@ -90,7 +90,7 @@ describe("R11: stored observation counts equal stored rows after a sweep move an
     const counts = async () => Promise.all(["ses_a", "ses_b"].map(async (id) => [(await r.kv.get<Session>(KV.sessions, id))!.observationCount, (await r.kv.listKeys(KV.observations(id))).length]));
     const exact = async () => (await counts()).every(([stored, rows]) => stored === rows);
 
-    await sweepMove(r, [candidate("O", rowsA[0]!, sealA), candidate("O", rowsA[1]!, sealA), candidate("O", rowsB[0]!, sealB)]);
+    await sweepMove(r, [await candidate(r, "O", rowsA[0]!, sealA), await candidate(r, "O", rowsA[1]!, sealA), await candidate(r, "O", rowsB[0]!, sealB)]);
     expect(await counts()).toEqual([[1, 1], [1, 1]]);
     expect(await exact()).toBe(true);
 
@@ -105,7 +105,7 @@ describe("R11: stored observation counts equal stored rows after a sweep move an
     const rows = [observation("a1", "ses_a"), observation("a2", "ses_a")];
     for (const row of rows) await seedObservation(r, row);
     const seal = await seedSeal(r, "ses_a", 2);
-    await sweepMove(r, rows.map((row) => candidate("O", row, seal)));
+    await sweepMove(r, await Promise.all(rows.map((row) => candidate(r, "O", row, seal))));
     expect((await r.kv.get<Session>(KV.sessions, "ses_a"))!.observationCount).toBe(0);
     await restoreRun(r.deps, RUN, "test");
     expect((await r.kv.get<Session>(KV.sessions, "ses_a"))!.observationCount).toBe(2);
@@ -119,7 +119,7 @@ describe("restoreRun", () => {
     const o = await seedObservation(r, observation("obs_1"));
     const seal = await seedSeal(r, "ses_1", 1);
     const m = await seedMemory(r, memory("mem_1"));
-    await sweepMove(r, [candidate("O", o, seal), candidate("X", m)]);
+    await sweepMove(r, [await candidate(r, "O", o, seal), await candidate(r, "X", m)]);
     expect((await r.runs.get(RUN))!.held).toBe(2);
 
     await restoreRun(r.deps, RUN, "recall dropped 3 points");
@@ -138,7 +138,7 @@ describe("restoreRun", () => {
     await openRun(r);
     const o = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const seal = await seedSeal(r, "ses_1", 1);
-    await sweepMove(r, [candidate("O", o, seal)]);
+    await sweepMove(r, [await candidate(r, "O", o, seal)]);
     await restoreRun(r.deps, RUN, "first");
     const again = await restoreRun(r.deps, RUN, "second");
     expect(again).toMatchObject({ restored: 0, keptLive: 0 });
@@ -152,7 +152,7 @@ describe("restoreRun", () => {
     const kept = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const bare = await seedObservation(r, observation("obs_2"));
     const seal = await seedSeal(r, "ses_1", 2);
-    await sweepMove(r, [candidate("O", kept, seal), candidate("O", bare, seal)]);
+    await sweepMove(r, [await candidate(r, "O", kept, seal), await candidate(r, "O", bare, seal)]);
     await r.kv.set(KV.observations("ses_1"), "obs_1", { ...kept, title: "recaptured" });
 
     expect(await restoreRun(r.deps, RUN, "test")).toMatchObject({ restored: 1, keptLive: 1, reembedNeeded: 1 });
@@ -163,7 +163,7 @@ describe("restoreRun", () => {
     const r = rig();
     const o = await seedObservation(r, observation("obs_1"));
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, "ret_orphan" as RunId, candidate("O", o, seal));
+    await displace(r.deps, r.vault, "ret_orphan" as RunId, await candidate(r, "O", o, seal));
     expect(await restoreRun(r.deps, "ret_orphan" as RunId, "test")).toMatchObject({ restored: 1 });
     expect(await r.runs.get("ret_orphan" as RunId)).toBeNull();
   });
@@ -177,7 +177,7 @@ describe("restoreItems", () => {
     const b = await seedObservation(r, observation("obs_2"), { seed: 2 });
     const m = await seedMemory(r, memory("mem_1"), { seed: 7 });
     const seal = await seedSeal(r, "ses_1", 2);
-    await sweepMove(r, [candidate("O", a, seal), candidate("O", b, seal), candidate("X", m)]);
+    await sweepMove(r, [await candidate(r, "O", a, seal), await candidate(r, "O", b, seal), await candidate(r, "X", m)]);
 
     const result = await restoreItems(r.deps, [obsRef("obs_1"), memRef("mem_1"), obsRef("obs_missing")], "owner asked");
 
@@ -194,7 +194,7 @@ describe("restoreItems", () => {
     await openRun(r);
     const a = await seedObservation(r, observation("obs_dup", "ses_a"));
     const seal = await seedSeal(r, "ses_a", 1);
-    await sweepMove(r, [candidate("O", a, seal)]);
+    await sweepMove(r, [await candidate(r, "O", a, seal)]);
     expect(await restoreItems(r.deps, [obsRef("obs_dup", "ses_b")], "test")).toMatchObject({ restored: 0 });
     expect(await restoreItems(r.deps, [obsRef("obs_dup", "ses_a")], "test")).toMatchObject({ restored: 1 });
   });
@@ -207,8 +207,8 @@ describe("restoreItems", () => {
     await openRun(r, B);
     const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, A, candidate("T", row, seal));
-    await displace(r.deps, r.vault, B, candidate("O", (await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))!, seal));
+    await displace(r.deps, r.vault, A, await candidate(r, "T", row, seal));
+    await displace(r.deps, r.vault, B, await candidate(r, "O", (await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))!, seal));
     await r.runs.save({ ...(await r.runs.get(A))!, held: 1 });
     await r.runs.save({ ...(await r.runs.get(B))!, held: 1 });
 
@@ -229,8 +229,8 @@ describe("restoreItems", () => {
     await openRun(r, B);
     const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, A, candidate("T", row, seal));
-    await displace(r.deps, r.vault, B, candidate("O", (await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))!, seal));
+    await displace(r.deps, r.vault, A, await candidate(r, "T", row, seal));
+    await displace(r.deps, r.vault, B, await candidate(r, "O", (await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))!, seal));
     await r.runs.save({ ...(await r.runs.get(A))!, held: 1 });
     await r.runs.save({ ...(await r.runs.get(B))!, held: 1 });
     const failing = new Proxy(r.kv, {
@@ -254,8 +254,8 @@ describe("restoreItems", () => {
     const B = "ret_b" as RunId;
     const row = await seedObservation(r, observation("obs_1"), { seed: 1 });
     const seal = await seedSeal(r, "ses_1", 1);
-    await displace(r.deps, r.vault, A, candidate("T", row, seal));
-    await displace(r.deps, r.vault, B, candidate("O", (await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))!, seal));
+    await displace(r.deps, r.vault, A, await candidate(r, "T", row, seal));
+    await displace(r.deps, r.vault, B, await candidate(r, "O", (await liveRow<CompressedObservation>(r, KV.observations("ses_1"), "obs_1"))!, seal));
 
     expect(await restoreRun(r.deps, A, "test")).toMatchObject({ restored: 0, deferred: 1 });
     expect(await r.vault.get(A, obsRef("obs_1"))).toMatchObject({ stage: "T", source: row.source });

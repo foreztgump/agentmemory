@@ -61,7 +61,7 @@ describe("R8 replay", () => {
     await openRun(r);
     const seal = await seedSeal(r, SESSION, 3);
     const [kept, ...moved] = rows;
-    for (const row of moved) expect((await displace(r.deps, r.vault, RUN, candidate("O", row, seal))).moved).toBe(true);
+    for (const row of moved) expect((await displace(r.deps, r.vault, RUN, await candidate(r, "O", row, seal))).moved).toBe(true);
 
     for (const n of [1, 2, 3]) expect(await capture(n)).toMatchObject({ status: "duplicate", deduplicated: true });
     expect((await rowsOf(r)).map((row) => row.id)).toEqual([kept!.id]);
@@ -80,7 +80,7 @@ describe("R8 replay", () => {
     const [row] = await rowsOf(r);
     await openRun(r);
     const seal = await seedSeal(r, SESSION, 1);
-    await displace(r.deps, r.vault, RUN, candidate("O", row!, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row!, seal));
     const entry = (await r.vault.get(RUN, { kind: "observation", sessionId: SESSION, id: row!.id }))!;
     const event = entry.satellites.captureEvent as { key: string };
     await r.kv.set(captureEventScope(event.key), event.key, event);
@@ -98,7 +98,7 @@ describe("R8 replay", () => {
     embedBatch.mockClear();
     await openRun(r);
     const seal = await seedSeal(r, SESSION, 1);
-    await displace(r.deps, r.vault, RUN, candidate("O", row!, seal));
+    await displace(r.deps, r.vault, RUN, await candidate(r, "O", row!, seal));
     await restoreRun(r.deps, RUN, "test");
 
     expect(await capture(1)).toMatchObject({ status: "duplicate", deduplicated: true });
