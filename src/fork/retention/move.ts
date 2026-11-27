@@ -75,7 +75,8 @@ async function attachSatellites(deps: RetentionDeps, entry: VaultEntry): Promise
   let reembedNeeded = false;
   for (const satellite of SATELLITES) {
     if (!satellite.appliesTo.includes(entry.ref.kind)) continue;
-    reembedNeeded ||= (await satellite.attach?.(deps, entry))?.reembedNeeded === true;
+    const attached = await satellite.attach?.(deps, entry);
+    reembedNeeded = reembedNeeded || attached?.reembedNeeded === true;
   }
   return { reembedNeeded };
 }

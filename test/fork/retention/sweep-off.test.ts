@@ -27,6 +27,7 @@ const UNDECIDED: Array<[string, Record<string, string>]> = [
 const ENV_KEYS = ["AM_RETENTION", "AM_RETENTION_WINDOWS", "AM_RETENTION_GRACE_DAYS", "AM_RETENTION_RECALL_CASES", "AM_RETENTION_INTERVAL_MS"];
 
 const refusingHarness: RecallHarness = {
+  cases: async () => { throw new Error("recall harness touched"); },
   settle: async () => { throw new Error("recall harness touched"); },
   score: async () => { throw new Error("recall harness touched"); },
 };

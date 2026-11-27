@@ -3,7 +3,7 @@ import type { StateKV } from "../../state/kv.js";
 import { getEnvVar } from "../../config.js";
 import { logger } from "../../logger.js";
 import { getSearchRuntime } from "../../state/search-ports.js";
-import type { RecallHarness } from "./recall-check.js";
+import { createRecallHarness } from "./recall-check.js";
 import type { RetentionDeps } from "./satellites.js";
 import { activeVectorReader } from "./vectors.js";
 import { parseRetentionSettings, RETENTION_SETTING_KEYS, retentionEnforceRequested, type RetentionEnv } from "./settings.js";
@@ -47,11 +47,7 @@ export function registerRetention(sdk: IIIClient, kv: StateKV): void {
     vectors: activeVectorReader(getSearchRuntime),
     now: () => new Date(),
   };
-  const harness: RecallHarness = {
-    // TODO(slice 6): drain the docs outbox and score golden cases; until then score rejects, so no enforcing run can pass its recall check.
-    settle: async () => {},
-    score: () => Promise.reject(new Error("not implemented")),
-  };
+  const harness = createRecallHarness(deps, settings.mode === "enforce" ? settings.recallCasesPath : null);
 
   setSummarizeVeto(trimmedSealVeto(kv));
 
