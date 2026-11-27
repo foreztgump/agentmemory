@@ -54,11 +54,12 @@ const found = (search.body?.results ?? []).findIndex((hit: { obsId: string }) =>
 r.close();
 const { vector: _b, ...afterQ } = afterPoint as Record<string, unknown>;
 const { vector: _a, ...beforeQ } = before.qdrant as Record<string, unknown>;
+const searchRank = memoryMissing || found < 0 ? null : found + 1;
 const result = {
   demotedMemoriesBefore: demoted, id, pinStatus: res.status, pinResponse: res.body && { kind: res.body.kind, vaulted: res.body.vaulted, undemoted: res.body.undemoted },
   before: { ...before, qdrant: beforeQ },
-  after: { retention: afterMemory.retention ?? null, qdrant: afterQ, demoteRecordGone: recordAfter === null, vectorMatchesStored: vectorMatches, searchRank: memoryMissing ? null : found >= 0 ? found + 1 : null, memoryRowMissing: memoryMissing },
-  pass: res.status === 200 && res.body?.undemoted === true && afterPoint.exists && !(afterPoint as { deleted?: boolean }).deleted && recordAfter === null && vectorMatches !== false,
+  after: { retention: afterMemory.retention ?? null, qdrant: afterQ, demoteRecordGone: recordAfter === null, vectorMatchesStored: vectorMatches, searchRank, memoryRowMissing: memoryMissing },
+  pass: res.status === 200 && res.body?.undemoted === true && afterPoint.exists && !(afterPoint as { deleted?: boolean }).deleted && recordAfter === null && vectorMatches !== false && !memoryMissing,
 };
 const out = arg("out");
 if (out) writeFileSync(out, JSON.stringify(result, null, 1));
