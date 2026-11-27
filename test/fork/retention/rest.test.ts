@@ -207,12 +207,10 @@ describe("each outcome has its own status", () => {
     expect(await call(route, { body: {} })).toMatchObject({ status_code: 200, body: { kind: "done", runId: "ret_1" } });
   });
 
-  it("restore: busy is 409, an open run is 409, an unknown run is 404", async () => {
+  it("restore: busy is 409, an unknown run is 404", async () => {
     const { call, spies } = spiedRoutes();
     spies.restore.mockResolvedValueOnce({ kind: "busy", heldBy: "sweep-1" });
     expect(await call("restore", { body: BODIES.restore })).toMatchObject({ status_code: 409, body: { error: "busy" } });
-    spies.restore.mockResolvedValueOnce({ kind: "run-open" });
-    expect(await call("restore", { body: BODIES.restore })).toMatchObject({ status_code: 409, body: { error: "run-open" } });
     spies.restore.mockResolvedValueOnce({ kind: "not-found" });
     expect((await call("restore", { body: BODIES.restore })).status_code).toBe(404);
   });

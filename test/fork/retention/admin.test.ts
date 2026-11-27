@@ -8,7 +8,8 @@ vi.mock("../../../src/logger.js", () => ({
 }));
 
 import { readReport, restoreLeased } from "../../../src/fork/retention/admin.js";
-import { LEASE_STALE_MS } from "../../../src/fork/retention/run-store.js";
+import { displace } from "../../../src/fork/retention/move.js";
+import { LEASE_STALE_MS, newRunRow } from "../../../src/fork/retention/run-store.js";
 import { itemKey, RETENTION_KV } from "../../../src/fork/retention/scopes.js";
 import type { Scheduler } from "../../../src/fork/retention/timers.js";
 import type { ItemRef, RunId, RunRow } from "../../../src/fork/retention/types.js";
@@ -99,13 +100,22 @@ describe("restoreLeased", () => {
     expect(await restoreLeased(deps, { runId: A })).toMatchObject({ kind: "done", restored: 3 });
   });
 
-  it("answers not-found for a run that does not exist, and run-open for one that has not finished", async () => {
+  it("answers not-found for a run that does not exist", async () => {
     const r = rig();
     expect(await restoreLeased(r.deps, { runId: "ret_nope" as RunId })).toEqual({ kind: "not-found" });
+    expect(await leaseOwner(r)).toBeNull();
+  });
+
+  it("restores a run a sweep left unfinished and closes it as restored, so no sweep resumes it", async () => {
+    const r = rig();
     await heldRun(r);
-    await r.runs.save({ ...(await r.runs.get(A))!, phase: "apply", outcome: "running" } satisfies RunRow);
-    expect(await restoreLeased(r.deps, { runId: A })).toEqual({ kind: "run-open" });
-    expect(await liveIds(r, "ses_p")).toEqual([]);
+    await r.runs.save({ ...(await r.runs.get(A))!, phase: "apply", outcome: "running", closedAt: undefined } satisfies RunRow);
+    await r.kv.set(RETENTION_KV.reports, A, { runId: A, outcome: "running" });
+    expect(await restoreLeased(r.deps, { runId: A })).toMatchObject({ kind: "done", restored: 3 });
+    expect(await r.kv.get(RETENTION_KV.reports, A)).toMatchObject({ outcome: "restored", why: expect.stringMatching(/^restore requested/), restored: { restored: 3 } });
+    expect(await liveIds(r, "ses_p")).toEqual(["p1", "p2", "p3"]);
+    expect(await r.runs.get(A)).toMatchObject({ phase: "done", outcome: "restored", held: 0, restoredBecause: "restore requested; the run had stopped in phase apply", closedAt: expect.any(String) });
+    expect(await r.runs.unfinished()).toEqual([]);
     expect(await leaseOwner(r)).toBeNull();
   });
 
@@ -141,6 +151,34 @@ describe("restoreLeased", () => {
     resume.open();
     expect(await restoring).toMatchObject({ kind: "done", restored: 3 });
     expect(beats).toEqual([]);
+  });
+});
+
+/** A run a sweep crashed in during apply: items moved, phase "apply", never closed. */
+async function crashedRun(r: Rig, runId: RunId, ids: readonly string[], session = "ses_p"): Promise<void> {
+  const rows = [];
+  for (const [n, id] of ids.entries()) rows.push(await seedObservation(r, observation(id, session), { seed: n + 1 }));
+  const seal = await seedSeal(r, session, rows.length);
+  const row = newRunRow({ id: runId, dryRun: false, windows: { trimDays: 1, observationDays: 1, supersededDays: 1, coldDays: 1 }, graceDays: 1, ranBy: "sweep-dead", startedAt: "2026-08-31T00:00:00.000Z" });
+  let held = 0;
+  for (const seeded of rows) if ((await displace(r.deps, r.vault, runId, await candidate(r, "O", seeded, seal))).moved) held++;
+  await r.runs.save({ ...row, phase: "apply", held });
+}
+
+describe("restore of an unfinished run with retention off, through the endpoint", () => {
+  it("restores the run, closes it, and a second restore finds nothing left", async () => {
+    const r = rig();
+    const clock = { now: at(0) };
+    await crashedRun(r, A, ["p1", "p2"]);
+    expect(await liveIds(r, "ses_p")).toEqual([]);
+    const { call } = liveRoutes(r, clock, { env: { AM_RETENTION: "off" } });
+    expect((await call("sweep", { body: { dryRun: false } })).status_code).toBe(503);
+    const restore = await call("restore", { body: { runId: A } });
+    expect(restore).toMatchObject({ status_code: 200, body: { kind: "done", restored: 2 } });
+    expect(await liveIds(r, "ses_p")).toEqual(["p1", "p2"]);
+    const report = await call("report", { query: { runId: A } });
+    expect(report.body["run"]).toMatchObject({ phase: "done", outcome: "restored", held: 0, restoredBecause: "restore requested; the run had stopped in phase apply" });
+    expect(await call("restore", { body: { runId: A } })).toMatchObject({ status_code: 200, body: { kind: "done", restored: 0 } });
   });
 });
 

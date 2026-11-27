@@ -88,7 +88,6 @@ type Outcome = { readonly kind: string } & Record<string, unknown>;
 function statusOf(outcome: Outcome): Response {
   switch (outcome.kind) {
     case "busy":
-    case "run-open":
       return { status_code: 409, body: { ...outcome, error: outcome.kind } };
     case "lease-lost":
       return { status_code: 409, body: { error: "lease-lost", why: "another process took the sweep lease; the run stays open and the next sweep resumes it" } };
