@@ -81,12 +81,18 @@ function tally(name: string, ok: boolean, error?: string) {
   counts.set(name, entry);
 }
 
+const latencies = new Map<string, number[]>();
+const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!;
+
 async function post(name: string, path: string, body: unknown): Promise<void> {
   try {
+    const started = performance.now();
     const response = await fetch(`${base}${path}`, {
       method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000),
     });
     const text = await response.text();
+    if (!latencies.has(name)) latencies.set(name, []);
+    latencies.get(name)!.push(performance.now() - started);
     tally(name, response.ok, `${response.status} ${text}`);
   } catch (error) {
     tally(name, false, String(error));
@@ -217,6 +223,8 @@ await post("session/end", "/agentmemory/session/end", { sessionId });
 await Promise.allSettled(inFlight);
 console.log(`replay: done in ${((Date.now() - startedAt) / 60_000).toFixed(1)} min`);
 for (const [name, { ok, failed, firstError }] of [...counts].sort()) {
-  console.log(`  ${name.padEnd(32)} ok=${ok} failed=${failed}${firstError ? ` first error: ${firstError}` : ""}`);
+  const ms = [...(latencies.get(name) ?? [])].sort((a, b) => a - b);
+  const timing = ms.length ? ` p50=${quantile(ms, 0.5).toFixed(1)}ms p99=${quantile(ms, 0.99).toFixed(1)}ms` : "";
+  console.log(`  ${name.padEnd(32)} ok=${ok} failed=${failed}${timing}${firstError ? ` first error: ${firstError}` : ""}`);
 }
 console.log("The server writes scope-guard-inventory.json to its data dir every 30 s; wait 30 s, then read it.");
