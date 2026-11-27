@@ -4,6 +4,7 @@ import { logger } from "../../logger.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import { collectAll, type StateKV } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
+import type { Facet } from "../../types.js";
 import { loadActiveClock, MS_PER_DAY } from "./clock.js";
 import { lockOf, reinstatement, reinstateLocked, scopeOf, type Live, type ReinstateResult } from "./move.js";
 import { createProtector, type Protector } from "./protect.js";
@@ -11,7 +12,6 @@ import { RunStore } from "./run-store.js";
 import { SATELLITES, type RetentionDeps } from "./satellites.js";
 import { itemKey, RETENTION_KV } from "./scopes.js";
 import { RETENTION_PAGE_PAUSE_MS, RETENTION_PAGE_SIZE, type RetentionSettings } from "./settings.js";
-import type { Facet } from "../../types.js";
 import type { ItemRef, ObservationTombstone, RunId, RunRow, VaultEntry } from "./types.js";
 import { Vault } from "./vault.js";
 
@@ -85,10 +85,10 @@ interface Pass {
  *   3. the page's memory facets go in one pass (`deleteMemoryFacets` reads the whole facet scope). An observation's
  *      facets and access log are keyed by the bare id another session's row may share, so they stay (satellites.ts).
  *   4. per committed entry, under its lock, stages O, S and X: `finalize` per satellite (image reference released
- *      once with `imageReleased` first, then its hold; a memory's access log and retention score), the observation tombstone (never
- *      deleted; the capture event marker from soft delete is left alone, so a replay stays a duplicate) or the demote
- *      record of a memory, and last `vault.take`, which also pops the locator. A stage T entry only drops its vaulted
- *      source; its live row stays.
+ *      once with `imageReleased` first, then its hold; a memory's access log and retention score), the observation
+ *      tombstone (never deleted; the capture event marker from soft delete is left alone, so a replay stays a duplicate)
+ *      or the demote record of a memory, and last `vault.take`, which also pops the locator. A stage T entry only drops
+ *      its vaulted source; its live row stays.
  *   5. at the end of the run `held` is assigned the entries left (not decremented per page: a run whose `held` reached 0
  *      before it was marked would never be visited again). A run left empty is marked `purgedAt`, and one
  *      `retention_purge` audit entry per run and pass (R13) goes in before the row is saved.
@@ -153,9 +153,7 @@ async function commit(pass: Pass, runId: RunId, ref: ItemRef): Promise<Commit> {
   if (!entry) return { kind: "gone" };
   if (entry.purging || entry.imageReleased) return { kind: "commit", entry: { ...entry, purging: true } };
   const live = await deps.kv.get<Live>(scopeOf(ref), ref.id);
-  const protectedBy = entry.stage === "T" && !live && !(await rowVaulted(vault, entry))
-    ? CLEAR
-    : entry.restoring || (entry.stage !== "T" && live) ? null : await pass.protect.recheck(entry);
+  const protectedBy = await judge(pass, entry, live);
   if (protectedBy?.kind === "clear") {
     await pass.beat();
     if (pass.dryRun) return { kind: "commit", entry };
@@ -182,7 +180,15 @@ async function deleteMemoryFacets(kv: StateKV, ids: readonly string[]): Promise<
   }
 }
 
-const CLEAR = { kind: "clear" } as const;
+/**
+ * `clear` commits the entry and `protected` reinstates it. Null sends it to `reinstateLocked` unjudged: it is mid-restore,
+ * or its trashed row is live again.
+ */
+async function judge(pass: Pass, entry: VaultEntry, live: Live | null): Promise<Awaited<ReturnType<Protector["recheck"]>> | null> {
+  if (entry.stage === "T" && !live && !(await rowVaulted(pass.vault, entry))) return { kind: "clear" };
+  if (entry.restoring || (entry.stage !== "T" && live)) return null;
+  return pass.protect.recheck(entry);
+}
 
 /**
  * A trim entry restores only onto a live row. With none, its source has a place to go only while another run's vault
