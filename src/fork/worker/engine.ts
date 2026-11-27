@@ -158,18 +158,18 @@ export class SearchEngine {
   async apply(rawOps: unknown[], rawVersion?: unknown): Promise<ApplyResult> {
     this.vocabulary = null;
     this.counts.beginWrite();
-    let changes: CountedChange[] | null = null;
+    let done: Awaited<ReturnType<SearchEngine["write"]>> | null = null;
     try {
-      const result = await this.applyOps(rawOps, rawVersion, (counted) => {
-        changes = counted;
-      });
-      return result;
+      done = await this.write(rawOps, rawVersion);
+      return done.result;
     } finally {
-      this.counts.endWrite(changes);
+      this.counts.endWrite(done?.changes ?? null);
+      // After the counts hold this write, so the reweighting pass reads a mean that includes it.
+      if (done?.corpusChanged) this.corpusDidChange();
     }
   }
 
-  private async applyOps(rawOps: unknown[], rawVersion: unknown, report: (changes: CountedChange[]) => void): Promise<ApplyResult> {
+  private async write(rawOps: unknown[], rawVersion: unknown): Promise<{ result: ApplyResult; changes: CountedChange[]; corpusChanged: boolean }> {
     const tracking = this.counts.tracking;
     const version = await this.clock.versionFor(rawVersion);
     const failed: ApplyResult["failed"] = [];
@@ -300,24 +300,13 @@ export class SearchEngine {
       }
     }
     const corpusChanged = terms.size > 0 || ops.some((op) => op.k === "del");
-    try {
-      return await this.settleApply(stored, version, epoch, operations.length > 0 ? touched : [], corpusIds, written, vecDeletes, fenced, failed, applied, report);
-    } finally {
-      // After settleApply has reported the write, so the reweighting pass reads a mean that includes it.
-      if (corpusChanged) this.corpusDidChange();
-    }
-  }
-
-  private async settleApply(
-    stored: Map<string, StoredPayload>, version: OpVersion, epoch: number, touched: string[], corpusIds: string[],
-    written: Array<{ id: string; rev: ContentRev }>, vecDeletes: string[], fenced: string[], failed: ApplyResult["failed"], applied: number,
-    report: (changes: CountedChange[]) => void,
-  ): Promise<ApplyResult> {
+    const settled = operations.length > 0 ? touched : [];
+    let changes: CountedChange[] = [];
     // A vector change applied only if its claim held: the point is live and carries this version.
     // A vector delete on a tombstone or an absent point leaves no vector either way.
-    if (written.length > 0 || vecDeletes.length > 0 || corpusIds.length > 0 || touched.length > 0) {
-      const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes, ...corpusIds, ...touched])]);
-      report(touched.map((id) => [stored.get(id)?.counted, now.get(id)?.counted]));
+    if (written.length > 0 || vecDeletes.length > 0 || corpusIds.length > 0 || settled.length > 0) {
+      const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes, ...corpusIds, ...settled])]);
+      changes = settled.map((id) => [stored.get(id)?.counted, now.get(id)?.counted]);
       for (const id of corpusIds) {
         const current = now.get(id);
         if (epoch !== this.collectionEpoch || !this.prefixes || current?.v !== version) continue;
@@ -330,8 +319,8 @@ export class SearchEngine {
       ];
       fenced.push(...lost);
       applied -= lost.length;
-    } else report([]);
-    return { applied, fenced, failed };
+    }
+    return { result: { applied, fenced, failed }, changes, corpusChanged };
   }
 
   /**
