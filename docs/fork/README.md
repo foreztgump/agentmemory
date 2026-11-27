@@ -122,7 +122,7 @@ Also set `AGENTMEMORY_AUDIT_RETENTION_MONTHS=13`, so a run's audit outlives its 
 | `POST /agentmemory/retention/purge` | `{"dryRun": true}` | Deletes the runs whose grace has ended. |
 | `POST /agentmemory/retention/pin` | `{"ref": {...}, "reason": "...", "who": "..."}` or `{"ref": {...}, "unpin": true}` | Protects one item. |
 
-A ref is `{"kind": "memory", "id": "mem_..."}` or `{"kind": "observation", "sessionId": "ses_...", "id": "obs_..."}`. Status codes: 400 for a bad body, 401 for a wrong token, 404 for an unknown run or item, 409 when a sweep, purge or restore already holds the lease (retry later), 503 for no secret or, on sweep and purge, retention off.
+A ref is `{"kind": "memory", "id": "mem_..."}` or `{"kind": "observation", "sessionId": "ses_...", "id": "obs_..."}`. Status codes: 400 for a bad body, 401 for a wrong token, 404 for an unknown run or item (a pin also answers 404 for an item nothing could restore, such as one the purge has started on), 409 when a sweep, purge or restore already holds the lease or took it over mid-call (retry later; every step repeats safely), 503 for no secret or, on sweep and purge, retention off.
 
 **First rollout.**
 
@@ -131,7 +131,7 @@ A ref is `{"kind": "memory", "id": "mem_..."}` or `{"kind": "observation", "sess
 3. During the grace period `GET report` shows `held` (rows still restorable) and `graceEndsAt`. Restore one item or a whole run with the restore route. The daily purge deletes what is still held after `graceEndsAt` and sets `purgedAt`.
 4. Pin what must never go. A pinned item is skipped by the sweep and by the purge. Pinning a demoted memory brings it back at once. Pinning an item that is already in the vault does not restore it: the purge restores it at the end of grace, or restore it now.
 
-Restore, pin and report keep working when retention is switched off, so the kill switch never blocks an undo.
+Restore, pin and report keep working when retention is switched off, so the kill switch never blocks an undo. Restoring a run a sweep left unfinished also closes it, with retention on or off.
 
 ## Rebasing
 
