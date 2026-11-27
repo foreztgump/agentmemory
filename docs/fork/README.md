@@ -96,6 +96,43 @@ Disk keyword search expands query prefixes and ranks with SearchIndex's exact BM
 
 [spikes/qdrant.md](spikes/qdrant.md) records the Qdrant memory, recall, latency and point-lifecycle spikes (TEE-1161), the engine decision and the settings for the search worker. The scripts are in `bench/fork/qdrant/`.
 
+## Retention (operator guide)
+
+Retention trims, hides and later deletes old observations and memories, after a session summary covers them. Nothing is deleted at once: a row moves to a restorable vault and is purged after the grace period. The design is in [retention-design.md](retention-design.md) and the code layout in [retention-architecture.md](retention-architecture.md).
+
+**Turn it on.** A stack is on only when every one of these is set. A missing or malformed one keeps retention off, and the log says which.
+
+| Variable | Value | Meaning |
+|---|---|---|
+| `AM_RETENTION` | `enforce` | The kill switch. Anything else is off. |
+| `AM_RETENTION_WINDOWS` | `trim:45,obs:180,sup:180,cold:365` | Project-active days before raw `source` is trimmed, observations are moved, superseded memories are moved and cold memories are demoted. Each at least 1. |
+| `AM_RETENTION_GRACE_DAYS` | `30` | Days a moved row stays restorable before the purge deletes it. At least 1. |
+| `AM_RETENTION_RECALL_CASES` | `/path/cases.json` | Golden recall cases. With none, every run is refused and only reports. |
+| `AM_RETENTION_INTERVAL_MS` | `604800000` | Sweep interval. Unset is weekly, `0` is manual only, blank is off. The purge runs daily whatever this is. |
+
+Also set `AGENTMEMORY_AUDIT_RETENTION_MONTHS=13`, so a run's audit outlives its grace period, and `MAX_OBS_PER_SESSION=5000`.
+
+**Routes.** All five need `Authorization: Bearer <secret>`. With no secret configured they answer 503. `dryRun` is true unless it is exactly `false`.
+
+| Route | Body or query | Does |
+|---|---|---|
+| `POST /agentmemory/retention/sweep` | `{"dryRun": true}` | Seals, plans and, when `false`, moves what the protection rules clear, then checks recall and restores the run by itself if recall fell. |
+| `GET /agentmemory/retention/report` | `?runId=ret_...` (optional) | The run's report and run row; the newest run without `runId`. |
+| `POST /agentmemory/retention/restore` | `{"runId": "ret_..."}` or `{"refs": [...]}` (at most 100) | Puts rows back from the vault, with no embedding call. |
+| `POST /agentmemory/retention/purge` | `{"dryRun": true}` | Deletes the runs whose grace has ended. |
+| `POST /agentmemory/retention/pin` | `{"ref": {...}, "reason": "...", "who": "..."}` or `{"ref": {...}, "unpin": true}` | Protects one item. |
+
+A ref is `{"kind": "memory", "id": "mem_..."}` or `{"kind": "observation", "sessionId": "ses_...", "id": "obs_..."}`. Status codes: 400 for a bad body, 401 for a wrong token, 404 for an unknown run or item, 409 when a sweep, purge or restore already holds the lease (retry later), 503 for no secret or, on sweep and purge, retention off.
+
+**First rollout.**
+
+1. Set the variables and restart. Run `{"dryRun": true}` first and read the report: counts and bytes per stage, 20 samples per stage with reasons, what each protection signal held back, and the sessions that have no seal yet.
+2. Run `{"dryRun": false}`. The first enforcing run moves at most 10% of observations. It restores itself if the recall check fails, and the report says why.
+3. During the grace period `GET report` shows `held` (rows still restorable) and `graceEndsAt`. Restore one item or a whole run with the restore route. The daily purge deletes what is still held after `graceEndsAt` and sets `purgedAt`.
+4. Pin what must never go. A pinned item is skipped by the sweep and by the purge. Pinning a demoted memory brings it back at once. Pinning an item that is already in the vault does not restore it: the purge restores it at the end of grace, or restore it now.
+
+Restore, pin and report keep working when retention is switched off, so the kill switch never blocks an undo.
+
 ## Rebasing
 
 See [rebase-runbook.md](rebase-runbook.md).
