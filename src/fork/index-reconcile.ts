@@ -40,7 +40,7 @@ class UnindexedTracker {
     private readonly kv: StateKV,
     private readonly stats: ObservationStats,
   ) {
-    stats.onWrite((scope, key, deleted) => this.onWrite(scope, key, deleted));
+    stats.onWrite((scope, key, deleted, failed) => this.onWrite(scope, key, deleted && !failed));
   }
 
   scan(idx: KeywordIndexPort, epoch: number): Promise<UnindexedScan> {
