@@ -414,6 +414,7 @@ export function registerCaptureFunctions(
       }
       counters.accepted++;
       if (!input.defer) {
+        // ponytail: an inline attempt runs outside the session lane, so it follows older rows only once they are submitted, not stored; route it through the lane (after releasing this key's lock) if a non-deferred caller ever needs strict order. No caller in this repo omits defer.
         await backlogSubmitted();
         return attempt(rec);
       }
