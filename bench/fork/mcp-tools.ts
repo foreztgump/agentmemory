@@ -91,7 +91,7 @@ function readCases(ids: { memoryIds: string[]; obsIds: string[]; sha?: string })
     { key: "memory_diagnose", tool: "memory_diagnose", args: () => ({}) },
     { key: "memory_file_history", tool: "memory_file_history", args: () => ({ files: "src/index.ts" }) },
     { key: "memory_patterns", tool: "memory_patterns", args: (i) => ({ project: p(i), limit: 10 }) },
-    { key: "memory_timeline.keyword", tool: "memory_timeline", args: (i) => ({ anchor: words(i).split(" ")[0], before: 5, after: 5 }) },
+    { key: "memory_timeline.keyword", tool: "memory_timeline", args: (i) => ({ anchor: q(i).trim().split(/\s+/)[0]!, before: 5, after: 5 }) },
     { key: "memory_timeline.date", tool: "memory_timeline", args: (i) => ({ anchor: `2026-11-${String(1 + (i % 15)).padStart(2, "0")}T12:00:00Z`, project: p(i), before: 5, after: 5 }) },
     { key: "memory_relations", tool: "memory_relations", args: (i) => ({ memoryId: mem(i) }) },
     { key: "memory_commits", tool: "memory_commits", args: () => ({ limit: 20 }) },
@@ -188,6 +188,8 @@ if (args.ceilings && args.name) {
   if (!limits) throw new Error(`no ceilings entry "${args.name}"`);
   const violations = checkLimits(measured, limits);
   for (const v of violations) console.error(`FAIL ${v.metric}: measured ${v.measured}, limit ${v.limit}`);
-  if (violations.length) process.exitCode = 1;
+  // A failed call returns fast, so a tool that errors would pass its latency ceiling.
+  for (const [key, list] of errors) console.error(`FAIL ${key}: ${list.length} calls did not return 200, first: ${list[0]}`);
+  if (violations.length || errors.size) process.exitCode = 1;
   else console.log(`PASS ${limits.length} limits`);
 }
