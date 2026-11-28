@@ -413,7 +413,10 @@ export function registerCaptureFunctions(
         reservedSlots--;
       }
       counters.accepted++;
-      if (!input.defer) return attempt(rec);
+      if (!input.defer) {
+        await backlogSubmitted();
+        return attempt(rec);
+      }
       void backlogSubmitted()
         .then(() => lanes.submit(rec.sessionId, key))
         .catch((err) => {
@@ -480,8 +483,9 @@ export function registerCaptureFunctions(
   function backlogSubmitted(): Promise<void> {
     backlog ??= submitDue().then(
       () => undefined,
-      () => {
+      (err) => {
         backlog = null;
+        logger.warn("inbox rows left by a restart could not be read; captures run without waiting for them until the next try", { error: errorText(err) });
       },
     );
     return backlog;
