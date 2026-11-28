@@ -30,7 +30,7 @@ export function isRedisListTimeout(error: unknown): boolean {
   return ADAPTER_LIST_TIMEOUT.test(message);
 }
 
-const ADAPTER_WRITE_TIMEOUT = /Failed to atomically (?:set|delete) value (?:in|from) Redis: .*timed out/;
+const ADAPTER_WRITE_TIMEOUT = /Failed to (?:atomically )?(?:set|delete) value (?:in|from) Redis: .*timed out/;
 
 export function isRedisWriteTimeout(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
