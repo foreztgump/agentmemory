@@ -7,7 +7,8 @@
 //   AGENTMEMORY_SECRET=... node --import tsx bench/fork/capture-replay.ts \
 //     --url http://agentmemory:3111 --sessions 40 --captures 4000 --concurrency 16 --burst 3 --verify \
 //     --max-observe-p99-ms 100 --max-session-start-p99-ms 300
-// Exits 1 when a ceiling is exceeded or the exactly-once check fails.
+// Exits 1 when a ceiling is exceeded or the exactly-once check fails. An acknowledged capture the
+// server dead-lettered counts as lost unless --allow-dead-letter is given.
 import { parseArgs } from "node:util";
 import { writeFileSync } from "node:fs";
 import { captureKey } from "../../src/functions/capture.js";
@@ -25,6 +26,7 @@ const { values } = parseArgs({
     "max-attempts": { type: "string", default: "40" },
     "session-inject": { type: "boolean", default: false },
     verify: { type: "boolean", default: false },
+    "allow-dead-letter": { type: "boolean", default: false },
     "drain-timeout-s": { type: "string", default: "900" },
     out: { type: "string" },
     "max-observe-p99-ms": { type: "string" },
@@ -184,7 +186,7 @@ if (values.verify) {
   const expected = new Map<string, string>();
   for (const [eventId, sessionId] of acked) {
     const key = captureKey(project, sessionId, eventId);
-    if (!deadKeys.has(key)) expected.set(key, eventId);
+    if (!values["allow-dead-letter"] || !deadKeys.has(key)) expected.set(key, eventId);
   }
   const seen = new Map<string, number>();
   let rows = 0;
