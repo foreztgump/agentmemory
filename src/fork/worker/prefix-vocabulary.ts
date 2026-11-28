@@ -235,8 +235,8 @@ export class PrefixVocabulary {
   private async recount(pointIds: string[]): Promise<void> {
     const epoch = this.epoch;
     try {
-      const points = await this.qdrant.call<Array<{ id: string; payload?: { terms?: unknown; dl?: number; deleted?: boolean } }>>("POST", `${this.qdrant.path}/points`, {
-        ids: pointIds, with_payload: ["terms", "dl", "deleted"], with_vector: false,
+      const points = await this.qdrant.call<Array<{ id: string; payload?: { terms?: unknown; dl?: number; ad?: number; deleted?: boolean } }>>("POST", `${this.qdrant.path}/points`, {
+        ids: pointIds, with_payload: ["terms", "dl", "ad", "deleted"], with_vector: false,
       });
       if (epoch !== this.epoch) return;
       const stored = new Map(points.map(({ id, payload }) => [id, payload]));
@@ -244,6 +244,7 @@ export class PrefixVocabulary {
         if (!this.fillWrites.get(id)?.abandoned) continue;
         this.fillWrites.delete(id);
         const payload = stored.get(id);
+        this.noteIndexedAverageLength(payload?.ad ?? 0);
         if (!payload?.deleted) this.replace(undefined, storedDocument(payload));
       }
     } catch (error) {
@@ -394,6 +395,8 @@ export class PrefixVocabulary {
       });
       if (epoch !== this.epoch) return;
       for (const { id, payload } of page.points) {
+        // Every stored mean the scroll reads, skipped points' too: a lower minimum only loosens the score bound.
+        this.noteIndexedAverageLength(payload?.ad ?? 0);
         const write = this.fillWrites.get(id);
         if (write) {
           write.skipped = true;
@@ -402,7 +405,6 @@ export class PrefixVocabulary {
         // The engine's stored-document read too, so a later replace or delete subtracts what was added here.
         const stored = storedDocument(payload);
         if (!stored) continue;
-        this.noteIndexedAverageLength(payload?.ad ?? 0);
         documents++;
         totalLength += stored.dl;
         for (const term of new Set(stored.terms)) {
