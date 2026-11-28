@@ -79,7 +79,7 @@ export class ObservationStats {
       : null;
   }
 
-  /** Calls `listener` after every successful set, update and delete on any scope. Returns the unsubscribe function. */
+  /** Calls `listener` after every set, update and delete on any scope. `deleted` means the delete committed; a write that threw is reported as not deleted, since the row may or may not have changed. Returns the unsubscribe function. */
   onWrite(listener: WriteListener): () => void {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);
@@ -137,22 +137,30 @@ export class ObservationStats {
     deleted = false,
   ): Promise<T> {
     const sessionId = sessionOf(scope);
-    if (sessionId === null) {
-      const result = await write();
+    if (sessionId === null) return this.notifying(scope, key, deleted, write);
+    return this.lock(sessionId, () =>
+      this.notifying(scope, key, deleted, async () => {
+        const before = await this.loadLocked(sessionId);
+        const oldRow = await this.base.get(scope, key);
+        const result = await write();
+        const newRow = await read();
+        const after = shift(before, contribution(oldRow), contribution(newRow));
+        await this.storeLocked(sessionId, after, before.rows);
+        await this.important?.applyLocked(sessionId, key, oldRow, newRow, before.rows, after.rows);
+        return result;
+      }),
+    );
+  }
+
+  private async notifying<T>(scope: string, key: string, deleted: boolean, work: () => Promise<T>): Promise<T> {
+    try {
+      const result = await work();
       this.notify(scope, key, deleted);
       return result;
+    } catch (error) {
+      this.notify(scope, key, false);
+      throw error;
     }
-    return this.lock(sessionId, async () => {
-      const before = await this.loadLocked(sessionId);
-      const oldRow = await this.base.get(scope, key);
-      const result = await write();
-      const newRow = await read();
-      const after = shift(before, contribution(oldRow), contribution(newRow));
-      await this.storeLocked(sessionId, after, before.rows);
-      await this.important?.applyLocked(sessionId, key, oldRow, newRow, before.rows, after.rows);
-      this.notify(scope, key, deleted);
-      return result;
-    });
   }
 
   private async loadLocked(sessionId: string): Promise<Tally> {
