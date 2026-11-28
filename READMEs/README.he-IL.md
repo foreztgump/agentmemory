@@ -1208,15 +1208,16 @@ curl -H "Authorization: Bearer $(cat ~/.agentmemory/secret)" http://localhost:31
 
 </details>
 
-**מסירת לכידה (capture delivery).** hooks שולחים כל תצפית פעם אחת ל-`POST /agentmemory/observe` עם `eventId`. זה המזהה של ה-host עצמו לקריאה כשה-payload כולל אחד (למשל `tool_use_id` של Claude Code), אחרת hash של ה-session, סוג ה-hook, שם ה-tool, קלט, פלט, וחותמת הזמן של ה-host. השרת כותב את האירוע ל-inbox לכידה ב-state store, שומר את התצפית, ואז מסיר את רשומת ה-inbox. קוד הסטטוס אומר מה קרה:
+**מסירת לכידה (capture delivery).** hooks שולחים כל תצפית פעם אחת ל-`POST /agentmemory/observe` עם `eventId`. זה המזהה של ה-host עצמו לקריאה כשה-payload כולל אחד (למשל `tool_use_id` של Claude Code), אחרת hash של ה-session, סוג ה-hook, שם ה-tool, קלט, פלט, וחותמת הזמן של ה-host. השרת כותב את האירוע ל-inbox לכידה ב-state store ועונה. הוא שומר את התצפית ברקע, ואז מסיר את רשומת ה-inbox. העבודה ברקע מטפלת באירוע אחד בכל פעם לכל session, לפי סדר הקבלה, לכל היותר עבור `AGENTMEMORY_CAPTURE_WORKERS` (2) sessions בו-זמנית. אירוע ששמירתו נכשלה ממתין לניסיון החוזר שלו בלי לעכב את האירועים המאוחרים יותר של ה-session שלו, כך שאפשר לשמור אותם לפניו. רשומת inbox שנשארה אחרי הפעלה מחדש נשמרת בהפעלה הבאה לפני כל אירוע שהתקבל אחריה, ו-`POST /agentmemory/session/end` והסיכומים מסיימים קודם את האירועים שכבר התקבלו עבור אותו session (עד 10 שניות). קוד הסטטוס אומר מה קרה:
 
 | Status | שדה `status` | משמעות |
 |---|---|---|
-| `201` | `accepted` | נשמר. `observationId` הוא התצפית החדשה. |
-| `202` | `accepted` (`state: "retrying"`) | התקבל, אבל השמירה נכשלה. השרת מנסה שוב, גם אחרי הפעלה מחדש. |
-| `200` | `duplicate` | ה-`eventId` הזה התקבל כבר. `observationId` הוא התצפית הקיימת; שום דבר חדש לא נשמר. |
-| `400` / `422` | `rejected` | payload לא תקין, או שהשמירה נכשלה לחלוטין (האירוע נשמר כ-dead letter). |
+| `202` | `accepted` (`state: "pending"`) | התקבל ל-inbox. `observationId` הוא המזהה שיהיה לתצפית. |
+| `200` | `duplicate` | ה-`eventId` הזה התקבל כבר. `observationId` הוא התצפית הקיימת או הממתינה; שום דבר חדש לא נשמר. |
+| `400` | `rejected` | payload לא תקין. |
 | `503` | `rejected` (`retryable: true`) | ה-inbox מלא (`AGENTMEMORY_CAPTURE_INBOX_MAX`). hooks שומרים את האירוע ב-spool ושולחים אותו אחר כך. |
+
+אירוע שאי אפשר לשמור, למשל כי ה-session שלו כבר מכיל `MAX_OBS_PER_SESSION` תצפיות, נשאר ב-inbox כ-dead letter. קוראים פנימיים של `mem::capture` בלי `defer` עדיין ממתינים לשמירה ומקבלים `201` (`state: "completed"`), `202` (`state: "retrying"`) או `422` (השמירה נכשלה לחלוטין).
 
 אירועים שנכשלים מקבלים ניסיון חזרה כל `AGENTMEMORY_CAPTURE_RETRY_INTERVAL_MS` (10 שניות) עם backoff מכפיל, עד `AGENTMEMORY_CAPTURE_MAX_ATTEMPTS` (5). אירועים שעדיין נכשלים נשארים ב-inbox כ-dead letters, רשומים ב-`/agentmemory/status` ובעמוד ה-Health של המציג, וניתן לנסות אותם שוב עם `POST /agentmemory/capture/retry` (`{"eventId": "..."}` או `{"all": true}`). מזהי אירועים שהתקבלו נזכרים למשך `AGENTMEMORY_CAPTURE_DEDUP_HOURS` (168 שעות, לכל היותר `AGENTMEMORY_CAPTURE_EVENTS_MAX` מזהים), כך ש-hook שעובר replay אחרי timeout או הפעלה מחדש נשמר פעם אחת, בעוד ששתי קריאות tool נפרדות עם מזהי host משלהן נשמרות פעמיים גם אם התוכן שלהן זהה. כשתצפית נמחקת (forget, מחיקת session, eviction, שכחה אוטומטית, או ייבוא שמחליף את המאגר), האירוע שלה מסומן כנמחק לפני שהתצפית מוסרת, כך ש-replay של אותו אירוע באותו חלון נענה כ-duplicate ולא שומר שום דבר. ה-state store כותב לדיסק כל 2 שניות, כך שאירוע שנענה יכול עדיין להיות רק בזיכרון לרגע. כדי לכסות את זה, כל תשובת `2xx` נושאת גם את `bootId` של השרת (חדש בכל הפעלה), `acceptedAt`, ו-`durableAfterMs` (מרווח השמירה בתוספת 1.5 שניות במאגר הקבצים, 1.5 שניות ב-redis, שם ה-persistence היא הגדרת המפעיל). hooks שומרים את האירוע ב-spool המקומי עד שהחלון הזה עובר ומוחקים אותו בקריאה מאוחרת יותר בלי בקשה נוספת. אם `bootId` השתנה עד אז, השרת הופעל מחדש, אז ה-hook שולח את האירוע שוב עם אותו `eventId`; אירוע שהגיע לדיסק לא נשמר פעמיים. השרת גם שולח אירועים כאלה בעצמו בהפעלה ובכל מרווח ניסיון חזרה, כך שהפעלה מחדש לא מפסידה כלום גם כשאף hook לא רץ אחרי כן. hooks ישנים מתעלמים מהשדות הנוספים, ו-hooks חדשים מול שרת ישן מוחקים את האירוע ב-`2xx` כמו קודם.
 
