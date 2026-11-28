@@ -5,11 +5,13 @@
 //   capture         10 documents a second, as capture hooks write them
 //   capture-prefix  the same, with every query word cut to 60% of its length
 //   import          256-document batches back to back
-// Exits 1 when the capture phase's p99 passes --ceiling-p99-ms in either run; the other phases are reported, not gated.
+// Exits 1 when, in either run, the capture phase's p99 passes --ceiling-p99-ms or the capture-prefix phase's passes
+// --ceiling-prefix-p99-ms; idle and import are reported, not gated.
 //
-//   node --import tsx bench/fork/qdrant/keyword-capture.ts --qdrant http://127.0.0.1:16345 [--count 200000] [--seconds 60] [--ceiling-p99-ms 60]
+//   node --import tsx bench/fork/qdrant/keyword-capture.ts --qdrant http://127.0.0.1:16345 [--count 200000] [--seconds 60] [--ceiling-p99-ms 20] [--ceiling-prefix-p99-ms 60]
 //
-// Measured 2026-11-20 at 200,000 documents, Qdrant 1.20.2 with a 1 GB limit: capture p99 41-44 ms.
+// Measured 2026-11-28 at 200,000 documents, Qdrant 1.20.2 with a 1 GB limit (TEE-1213): capture p99 10.6-12.2 ms,
+// capture-prefix p99 26.7-40.8 ms. The prefix tail is two-letter stems whose ~1,700 completions the exact re-score reads.
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { docOp, type DocOp } from "../../../src/fork/search/protocol.js";
@@ -27,16 +29,17 @@ const { values: args } = parseArgs({
     count: { type: "string", default: "200000" },
     seconds: { type: "string", default: "60" },
     phases: { type: "string", default: "idle,capture,capture-prefix,import" },
-    "ceiling-p99-ms": { type: "string", default: "60" },
+    "ceiling-p99-ms": { type: "string", default: "20" },
+    "ceiling-prefix-p99-ms": { type: "string", default: "60" },
   },
 });
-const COUNT = Number(args.count), SECONDS = Number(args.seconds), CEILING = Number(args["ceiling-p99-ms"]);
+const COUNT = Number(args.count), SECONDS = Number(args.seconds), CEILING = Number(args["ceiling-p99-ms"]), PREFIX_CEILING = Number(args["ceiling-prefix-p99-ms"]);
 const PHASES = ["idle", "capture", "capture-prefix", "import"];
 const phases = new Set(args.phases!.split(","));
 const unknown = [...phases].filter((p) => !PHASES.includes(p));
 if (unknown.length > 0) throw new Error(`--phases takes ${PHASES.join(",")}; got ${unknown.join(",")}`);
-if (!(Number.isInteger(COUNT) && COUNT >= 1000) || !(Number.isFinite(SECONDS) && SECONDS > 0) || !(Number.isFinite(CEILING) && CEILING > 0)) {
-  throw new Error("--count must be a whole number of at least 1000, --seconds and --ceiling-p99-ms finite numbers above 0");
+if (!(Number.isInteger(COUNT) && COUNT >= 1000) || !(Number.isFinite(SECONDS) && SECONDS > 0) || !(Number.isFinite(CEILING) && CEILING > 0) || !(Number.isFinite(PREFIX_CEILING) && PREFIX_CEILING > 0)) {
+  throw new Error("--count must be a whole number of at least 1000, --seconds, --ceiling-p99-ms and --ceiling-prefix-p99-ms finite numbers above 0");
 }
 const profile = JSON.parse(readFileSync(new URL("../profiles/buddy-2026-11-16.json", import.meta.url), "utf8"));
 const qdrant = new Qdrant({ url: args.qdrant!, apiKey: args.key || undefined, collection: args.collection!, dimensions: 1024, oversampling: 6, timeoutMs: 120_000 });
@@ -122,7 +125,10 @@ for (const run of [1, 2]) {
     const p99 = await phase("capture", run, qs, trickle(docs(7000 + run, 20_000)));
     if (p99 > CEILING) failures.push(`capture run ${run}: p99 ${p99} ms above the ceiling ${CEILING} ms`);
   }
-  if (phases.has("capture-prefix")) await phase("capture-prefix", run, queries(9100 + run, true), trickle(docs(7100 + run, 20_000)));
+  if (phases.has("capture-prefix")) {
+    const p99 = await phase("capture-prefix", run, queries(9100 + run, true), trickle(docs(7100 + run, 20_000)));
+    if (p99 > PREFIX_CEILING) failures.push(`capture-prefix run ${run}: p99 ${p99} ms above the ceiling ${PREFIX_CEILING} ms`);
+  }
   if (phases.has("import")) {
     await phase("import", run, qs, async (stop) => {
       for (let i = 0; !stop.v; i = (i + 256) % (tail.length - 256)) await apply(tail.slice(i, i + 256));

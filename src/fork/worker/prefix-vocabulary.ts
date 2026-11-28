@@ -3,7 +3,6 @@ import { logger } from "../../logger.js";
 import { bareForm, PREFIX_WEIGHT, termId, type Sparse } from "./bm25-sparse.js";
 import { lowerBound, storedDocument } from "./lexical-bm25.js";
 import type { Qdrant } from "./qdrant.js";
-import { TOMBSTONE } from "./versioned.js";
 
 export interface VocabularyLimits {
   /** Distinct terms held. Past it new terms are not learned; their exact matches still work. */
@@ -32,8 +31,23 @@ const COMPLETE_EXPANSION_MAX = 2048;
 const BOUND_SLACK = 1 + 1e-5;
 const FILL_PAGE = 1000;
 
+type StoredDocument = { terms: readonly string[]; dl: number };
+
+/**
+ * A point written while the first scroll runs. The scroll skips it if the write registered before the scroll read it;
+ * otherwise the scroll counted the state the write's own read saw first. Resolved once both are known.
+ */
+interface FillWrite {
+  skipped: boolean;
+  observed: boolean;
+  /** Its write failed after the scroll skipped it, so it is read back and counted unless another write takes it first. */
+  abandoned?: boolean;
+  first?: StoredDocument;
+  latest?: StoredDocument;
+}
+
 interface ScrollPage {
-  points: Array<{ payload?: { terms?: unknown; dl?: number; ad?: number } }>;
+  points: Array<{ id: string; payload?: { terms?: unknown; dl?: number; ad?: number } }>;
   next_page_offset?: string | null;
 }
 
@@ -48,6 +62,12 @@ export class PrefixVocabulary {
   private refused = 0;
   private documents = 0;
   private totalLength = 0;
+  /** Points written since the running scroll started, by point id; empty outside a fill once each is resolved. */
+  private fillWrites = new Map<string, FillWrite>();
+  private recounts = new Set<Promise<void>>();
+  /** Skipped points whose read-back failed, so the counts miss them; ranking is not ready until a search reads them back. */
+  private owed = new Set<string>();
+  private repaying = false;
 
   constructor(
     private readonly qdrant: Qdrant,
@@ -65,10 +85,10 @@ export class PrefixVocabulary {
   }
 
   get isReady(): boolean {
-    return this.filled;
+    return this.filled && this.owed.size === 0;
   }
 
-  /** A fill has started, so a write that lands now is not one the fill's scroll is sure to see. */
+  /** A fill has started, so a write that lands now must register (touch) and report its outcome (changed). */
   get counting(): boolean {
     return this.filled || this.filling !== null;
   }
@@ -129,21 +149,37 @@ export class PrefixVocabulary {
     return ratio * Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK;
   }
 
-  documentScoreUpperBound(query: readonly WeightedTerm[]): (document: Sparse) => number {
+  /**
+   * Per query term, every known term the exact scorer matches it by (itself, then its prefix terms) with the coefficient
+   * that, times `drift` and a document's stored weight at that term's id, bounds the term's exact score; null when an
+   * expansion is past COMPLETE_EXPANSION_MAX.
+   */
+  expansionBounds(query: readonly WeightedTerm[]): { drift: number; terms: Array<Array<{ term: string; coefficient: number }>> } | null {
     const expansions = query.map(({ term }) => this.completePrefixes(term));
-    if (expansions.some((prefixes) => !prefixes)) return () => Infinity;
-    const coefficients = query.map((exact, q) => {
-      const weights = new Map<number, number>();
+    if (expansions.some((prefixes) => !prefixes)) return null;
+    const terms = query.map((exact, q) => {
+      const expansion: Array<{ term: string; coefficient: number }> = [];
       for (const { term, weight } of [exact, ...expansions[q]!.map((prefix) => ({ term: prefix, weight: exact.weight * PREFIX_WEIGHT }))]) {
         const df = this.df.get(term) ?? 0;
-        if (df <= 0) continue;
+        if (df > 0) expansion.push({ term, coefficient: weight * Math.log((this.documents - df + 0.5) / (df + 0.5) + 1) });
+      }
+      return expansion;
+    });
+    return { drift: Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK, terms };
+  }
+
+  documentScoreUpperBound(query: readonly WeightedTerm[]): (document: Sparse) => number {
+    const bounds = this.expansionBounds(query);
+    if (!bounds) return () => Infinity;
+    const coefficients = bounds.terms.map((expansion) => {
+      const weights = new Map<number, number>();
+      for (const { term, coefficient } of expansion) {
         const id = termId(term);
-        const coefficient = weight * Math.log((this.documents - df + 0.5) / (df + 0.5) + 1);
         weights.set(id, Math.max(weights.get(id) ?? 0, coefficient));
       }
       return weights;
     });
-    const drift = Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK;
+    const { drift } = bounds;
     return (document) => coefficients.reduce((sum, weights) => {
       let best = 0;
       for (let i = 0; i < document.indices.length; i++) {
@@ -151,6 +187,90 @@ export class PrefixVocabulary {
       }
       return sum + best;
     }, 0) * drift;
+  }
+
+  /** Registers points a write is about to change; call before the write is sent. Outside a running fill it does nothing. */
+  touch(pointIds: readonly string[]): void {
+    const filling = this.filling !== null && !this.filled;
+    for (const id of pointIds) {
+      const write = this.fillWrites.get(id);
+      if (write) this.claim(id, write);
+      else if (filling) this.fillWrites.set(id, { skipped: false, observed: false });
+    }
+  }
+
+  /**
+   * A counting write's outcome for one point: what its read saw before it was sent and what is stored now. `applied`
+   * says the stored state is this write's; a registered point resolves from the states alone, applied or not.
+   */
+  changed(pointId: string, previous: StoredDocument | undefined, current: StoredDocument | undefined, applied: boolean): void {
+    const write = this.fillWrites.get(pointId);
+    if (!write) {
+      if (applied) this.replace(previous, current);
+      return;
+    }
+    this.claim(pointId, write);
+    if (!write.observed) {
+      write.observed = true;
+      write.first = previous;
+    }
+    write.latest = current;
+    if (this.filled) this.resolve(pointId, write);
+  }
+
+  /**
+   * The write that registered these points failed before it reported them. A point the scroll has not reached yet is
+   * left for the scroll to count; one it already skipped is read back and counted as it is stored now.
+   */
+  abandon(pointIds: readonly string[]): void {
+    const skipped = pointIds.filter((id) => {
+      const write = this.fillWrites.get(id);
+      if (!write || write.observed) return false;
+      if (!write.skipped) this.fillWrites.delete(id);
+      else write.abandoned = true;
+      return write.skipped;
+    });
+    if (skipped.length > 0) this.track(this.recount(skipped));
+  }
+
+  /** A write takes over an abandoned point, so its outcome counts it rather than a read-back. */
+  private claim(pointId: string, write: FillWrite): void {
+    write.abandoned = false;
+    this.owed.delete(pointId);
+  }
+
+  private track(recount: Promise<void>): Promise<void> {
+    const tracked = recount.finally(() => this.recounts.delete(tracked));
+    this.recounts.add(tracked);
+    return tracked;
+  }
+
+  private async recount(pointIds: string[]): Promise<void> {
+    const epoch = this.epoch;
+    try {
+      const points = await this.qdrant.call<Array<{ id: string; payload?: { terms?: unknown; dl?: number; ad?: number; deleted?: boolean } }>>("POST", `${this.qdrant.path}/points`, {
+        ids: pointIds, with_payload: ["terms", "dl", "ad", "deleted"], with_vector: false,
+      });
+      if (epoch !== this.epoch) return;
+      const stored = new Map(points.map(({ id, payload }) => [id, payload]));
+      for (const id of pointIds) {
+        if (!this.fillWrites.get(id)?.abandoned) continue;
+        this.fillWrites.delete(id);
+        this.owed.delete(id);
+        const payload = stored.get(id);
+        this.noteIndexedAverageLength(payload?.ad ?? 0);
+        if (!payload?.deleted) this.replace(undefined, storedDocument(payload));
+      }
+    } catch (error) {
+      if (epoch !== this.epoch) return;
+      for (const id of pointIds) if (this.fillWrites.get(id)?.abandoned) this.owed.add(id);
+      logger.warn("am-search could not recount points after a failed write; ranking is inexact until a search reads them back", { points: pointIds.length, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  private resolve(pointId: string, write: FillWrite): void {
+    this.fillWrites.delete(pointId);
+    this.replace(write.skipped ? undefined : write.first, write.latest);
   }
 
   observe(terms: readonly string[]): void {
@@ -185,8 +305,12 @@ export class PrefixVocabulary {
     return out;
   }
 
-  /** Starts the one read of the collection; a no-op once filled or while running. A search never awaits it. */
+  /** Starts the one read of the collection, and reads back points a failed recount missed; a search never awaits either. */
   fillInBackground(): void {
+    if (this.owed.size > 0 && !this.repaying) {
+      this.repaying = true;
+      void this.track(this.recount([...this.owed])).finally(() => { this.repaying = false; });
+    }
     if (this.filled || this.filling) return;
     const filling = this.fill()
       .catch((error) => logger.warn("am-search could not read the prefix vocabulary; the next search retries", { error: error instanceof Error ? error.message : String(error) }))
@@ -197,7 +321,7 @@ export class PrefixVocabulary {
   }
 
   async settled(): Promise<void> {
-    while (this.filling) await this.filling;
+    while (this.filling || this.recounts.size > 0) await (this.filling ?? Promise.all(this.recounts));
   }
 
   /** The collection was dropped; a running fill is discarded. */
@@ -211,6 +335,8 @@ export class PrefixVocabulary {
     this.refused = 0;
     this.documents = 0;
     this.totalLength = 0;
+    this.fillWrites = new Map();
+    this.owed = new Set();
     this.epoch++;
   }
 
@@ -281,19 +407,25 @@ export class PrefixVocabulary {
     let totalLength = 0;
     let offset: string | undefined;
     do {
+      // Tombstones too, carrying no terms: a point deleted during the fill is skipped like any other it registered.
       const page = await this.qdrant.call<ScrollPage>("POST", `${this.qdrant.path}/points/scroll`, {
-        filter: { must_not: [TOMBSTONE] },
         limit: FILL_PAGE,
         ...(offset ? { offset } : {}),
         with_payload: ["terms", "dl", "ad"],
         with_vector: false,
       });
       if (epoch !== this.epoch) return;
-      for (const { payload } of page.points) {
+      for (const { id, payload } of page.points) {
+        // Every stored mean the scroll reads, skipped points' too: a lower minimum only loosens the score bound.
+        this.noteIndexedAverageLength(payload?.ad ?? 0);
+        const write = this.fillWrites.get(id);
+        if (write) {
+          write.skipped = true;
+          continue;
+        }
         // The engine's stored-document read too, so a later replace or delete subtracts what was added here.
         const stored = storedDocument(payload);
         if (!stored) continue;
-        this.noteIndexedAverageLength(payload?.ad ?? 0);
         documents++;
         totalLength += stored.dl;
         for (const term of new Set(stored.terms)) {
@@ -305,19 +437,13 @@ export class PrefixVocabulary {
       }
       offset = page.next_page_offset ?? undefined;
     } while (offset);
-    // ponytail: scrolls are not snapshots; error is bounded by the doc/del operations overlapping this fill and their lengths.
-    for (const [term, count] of counted) {
-      if (this.df.has(term)) {
-        const previous = this.df.get(term)!;
-        this.df.set(term, Math.max(previous, count));
-      }
-      else this.learn(term, count);
-    }
-    // Writes that landed during the scroll were counted as they applied, so the scroll's counts add to theirs.
+    for (const [term, count] of counted) this.learn(term, count);
     this.documents += documents;
     this.totalLength += totalLength;
-    this.fold();
     this.filled = true;
+    // ponytail: a write decided before the fill started that lands during the scroll is not reconciled by touch/changed; its count stays off by that one point until the point is written again or the next fill.
+    for (const [pointId, write] of this.fillWrites) if (write.observed) this.resolve(pointId, write);
+    this.fold();
     logger.info("am-search prefix vocabulary ready", { terms: this.df.size, refused: this.refused });
   }
 }

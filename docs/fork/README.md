@@ -82,14 +82,14 @@ The server writes the records to `scope-guard-inventory.json` in the data direct
 
 Disk keyword search expands query prefixes and ranks with SearchIndex's exact BM25 (TEE-1195). Two checks hold its costs:
 
-- **Latency under capture writes.** Keyword search p99 under capture writes must stay at or under 60 ms at 200,000 documents. Measured on 2026-11-20 at 41–44 ms. Run it before a change to the keyword path ships. It needs a Qdrant of its own with a 1 GB limit and takes about 15 minutes:
+- **Latency under capture writes.** At 200,000 documents, keyword search p99 under capture writes must stay at or under 20 ms, and with every query word cut to a prefix at or under 60 ms. Measured on 2026-11-28 (TEE-1213) at 10.6–12.2 ms and 26.7–40.8 ms. The prefix tail is two-letter stems, whose roughly 1,700 completions the exact re-score reads past the deep read's depth. Run it before a change to the keyword path ships. It needs a Qdrant of its own with a 1 GB limit and takes about 15 minutes:
 
   ```
   docker run -d --name kw-qdrant -m 1g --memory-swap 1g -p 127.0.0.1:16345:6333 qdrant/qdrant:v1.20.2
   node --import tsx bench/fork/qdrant/keyword-capture.ts --qdrant http://127.0.0.1:16345 --count 200000
   ```
 
-  It prints p50, p95 and p99 for each phase. It exits 1 when a capture phase's p99 is above `--ceiling-p99-ms` (default 60).
+  It prints p50, p95 and p99 for each phase. It exits 1 when the capture phase's p99 is above `--ceiling-p99-ms` (default 20) or the capture-prefix phase's is above `--ceiling-prefix-p99-ms` (default 60).
 - **Worker heap.** `bench/fork/qdrant/prefix-vocabulary-heap.ts` fills the prefix vocabulary to its 1,000,000-term bound and exits 1 above 78 MiB. `npm test` runs it, in `test/fork-prefix-vocabulary-heap.test.ts`.
 
 ## Search engine spikes

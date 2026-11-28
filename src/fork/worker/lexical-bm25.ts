@@ -3,6 +3,11 @@ import type { Hit } from "../search/protocol.js";
 
 const K1 = 1.2;
 const B = 0.75;
+/**
+ * No document's exact BM25 weight for one term reaches this: tf(K1 + 1) / (tf + K1(1 - B + B dl/avgdl)) with 1 - B > 0.
+ * A stored weight at a hashed id can pass it when two terms collide, but a bound on one term's weight may still clamp to it.
+ */
+export const TERM_WEIGHT_CAP = K1 + 1;
 
 export interface LexicalDocument {
   id: string;
@@ -54,6 +59,47 @@ export function expandLexicalTerms(query: readonly WeightedTerm[], frequencies: 
   });
 }
 
+function termScore(df: number, documentCount: number, tf: number, dl: number, averageLength: number, weight: number, prefix: boolean): number {
+  const idf = Math.log((documentCount - df + 0.5) / (df + 0.5) + 1) * (prefix ? 0.5 : 1);
+  const numerator = tf * (K1 + 1);
+  const denominator = tf + K1 * (1 - B + B * (dl / averageLength));
+  return idf * (numerator / denominator) * weight;
+}
+
+/**
+ * One document's lexicalBm25 score with the same arithmetic in the same order, or undefined when it matches no query term.
+ * A term the vocabulary lacks scores 0 here, where lexicalBm25 falls back to its candidates' df, so this never exceeds
+ * lexicalBm25's score for the document in any candidate set.
+ */
+export function documentBm25(
+  document: LexicalDocument,
+  query: readonly WeightedTerm[],
+  frequencies: ReadonlyMap<string, number>,
+  documentCount: number,
+  averageLength: number,
+): number | undefined {
+  if (documentCount === 0) return undefined;
+  const counts = new Map<string, number>();
+  for (const term of document.terms) counts.set(term, (counts.get(term) ?? 0) + 1);
+  const score = (term: string, tf: number, weight: number, prefix: boolean) => {
+    const df = frequencies.get(term);
+    return df ? termScore(df, documentCount, tf, document.dl, averageLength, weight, prefix) : 0;
+  };
+  let total: number | undefined;
+  for (const { term, weight } of query) {
+    const exact = counts.get(term);
+    let value: number | undefined;
+    if (exact !== undefined) value = score(term, exact, weight, false);
+    else {
+      for (const [candidate, tf] of counts) {
+        if (candidate !== term && candidate.startsWith(term)) value = Math.max(value ?? 0, score(candidate, tf, weight, true));
+      }
+    }
+    if (value !== undefined) total = (total ?? 0) + value;
+  }
+  return total;
+}
+
 export function lexicalBm25(
   documents: readonly LexicalDocument[],
   query: readonly LexicalTerm[],
@@ -76,10 +122,7 @@ export function lexicalBm25(
     // ponytail: beyond the vocabulary's maxTerms ceiling (or during a concurrent fill), candidate df is the bounded fallback.
     const candidateDocumentFrequency = postings.get(term)?.size ?? 1;
     const df = frequencies.get(term) || candidateDocumentFrequency;
-    const idf = Math.log((documentCount - df + 0.5) / (df + 0.5) + 1) * (prefix ? 0.5 : 1);
-    const numerator = tf * (K1 + 1);
-    const denominator = tf + K1 * (1 - B + B * (dl / averageLength));
-    return idf * (numerator / denominator) * weight;
+    return termScore(df, documentCount, tf, dl, averageLength, weight, prefix);
   };
   for (const { term, weight, prefixes } of query) {
     const exact = postings.get(term);

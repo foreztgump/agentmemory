@@ -3,7 +3,7 @@
 // effective idf per query term against the exact one. Ids and numbers only.
 //
 //   node --max-old-space-size=6000 --import tsx bench/fork/qdrant/score-parity.ts --docs 200000 \
-//     [--qdrant http://127.0.0.1:16344] [--collection parity_200k] [--reuse] [--queries 300]
+//     [--qdrant http://127.0.0.1:16344] [--collection parity_200k] [--reuse] [--queries 300] [--k 10] [--prefix-share 0.5]
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { contentRev, type DocOp } from "../../../src/fork/search/protocol.js";
@@ -26,10 +26,16 @@ const { values: args } = parseArgs({
     profile: { type: "string", default: "bench/fork/profiles/buddy-2026-11-16.json" },
     reuse: { type: "boolean", default: false },
     k: { type: "string", default: "10" },
+    // Share of queries whose every word is cut to 60% of its length (at least 3 characters), so they match only through prefixes.
+    "prefix-share": { type: "string", default: "0" },
   },
 });
 const DOCS = Number(args.docs);
 const K = Number(args.k);
+const PREFIX_SHARE = Number(args["prefix-share"]);
+if (!(PREFIX_SHARE >= 0 && PREFIX_SHARE <= 1)) throw new Error("--prefix-share must be a number from 0 to 1");
+const cutRand = mulberry32(13);
+const cut = (w: string) => w.slice(0, Math.max(3, Math.ceil(w.length * 0.6)));
 const profile = JSON.parse(readFileSync(args.profile!, "utf8")) as Profile;
 const qdrant = new Qdrant({ url: args.qdrant!, collection: args.collection ?? `parity_${DOCS}`, dimensions: 16, oversampling: 6, timeoutMs: 120_000 });
 const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
@@ -56,7 +62,8 @@ for (let s = 0; memory.size < DOCS; s++) {
     if (queries.length < Number(args.queries) && rand() < 0.02) {
       const words = `${o.title} ${o.narrative}`.split(/\s+/).filter((w) => w.length > 3);
       const n = 1 + Math.floor(rand() * 3);
-      queries.push(Array.from({ length: n }, () => words[Math.floor(rand() * words.length)]!).join(" "));
+      const picked = Array.from({ length: n }, () => words[Math.floor(rand() * words.length)]!);
+      queries.push((cutRand() < PREFIX_SHARE ? picked.map(cut) : picked).join(" "));
     }
     if (args.reuse) continue;
     const fields = termSourceOf(o);
