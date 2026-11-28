@@ -1,0 +1,858 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > invalid iso anchor 1`] = `
+{
+  "anchor": "2026-13-45",
+  "entries": [],
+  "reason": "invalid_date",
+}
+`;
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > iso anchor everywhere 1`] = `
+{
+  "anchorIndex": 0,
+  "entries": [
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/3.ts",
+        ],
+        "id": "obs_27x3",
+        "importance": 0,
+        "narrative": "narrative 27/3",
+        "sessionId": "ses_027",
+        "timestamp": "2026-03-08T00:00:00.000Z",
+        "title": "deploy step 3 of ses_027",
+        "type": "file_edit",
+      },
+      "relativePosition": 0,
+      "sessionId": "ses_027",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/3.ts",
+        ],
+        "id": "obs_67x3",
+        "importance": 0,
+        "narrative": "narrative 67/3",
+        "sessionId": "ses_067",
+        "timestamp": "2026-03-08T00:00:00.000Z",
+        "title": "deploy step 3 of ses_067",
+        "type": "file_edit",
+      },
+      "relativePosition": 1,
+      "sessionId": "ses_067",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/3.ts",
+        ],
+        "id": "obs_107x3",
+        "importance": 0,
+        "narrative": "narrative 107/3",
+        "sessionId": "ses_107",
+        "timestamp": "2026-03-08T00:00:00.000Z",
+        "title": "deploy step 3 of ses_107",
+        "type": "file_edit",
+      },
+      "relativePosition": 2,
+      "sessionId": "ses_107",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/0.ts",
+        ],
+        "id": "obs_4x0",
+        "importance": 4,
+        "narrative": "narrative 4/0",
+        "sessionId": "ses_004",
+        "timestamp": "2026-03-08T00:00:04.000Z",
+        "title": "rollback step 0 of ses_004",
+        "type": "decision",
+      },
+      "relativePosition": 3,
+      "sessionId": "ses_004",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "kvrocks",
+          "latency",
+        ],
+        "facts": [],
+        "files": [
+          "src/2.ts",
+        ],
+        "id": "obs_6x2",
+        "importance": 8,
+        "narrative": "narrative 6/2",
+        "sessionId": "ses_006",
+        "timestamp": "2026-03-08T00:00:06.000Z",
+        "title": "deploy step 2 of ses_006",
+        "type": "decision",
+      },
+      "relativePosition": 4,
+      "sessionId": "ses_006",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/4.ts",
+        ],
+        "id": "obs_8x4",
+        "importance": 2,
+        "narrative": "narrative 8/4",
+        "sessionId": "ses_008",
+        "timestamp": "2026-03-08T00:00:08.000Z",
+        "title": "rollback step 4 of ses_008",
+        "type": "decision",
+      },
+      "relativePosition": 5,
+      "sessionId": "ses_008",
+    },
+  ],
+}
+`;
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > iso anchor in one project 1`] = `
+{
+  "anchorIndex": 4,
+  "entries": [
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/1.ts",
+        ],
+        "id": "obs_52x1",
+        "importance": 3,
+        "narrative": "narrative 52/1",
+        "sessionId": "ses_052",
+        "timestamp": "2026-03-05T06:00:52.000Z",
+        "title": "deploy step 1 of ses_052",
+        "type": "file_edit",
+      },
+      "relativePosition": -4,
+      "sessionId": "ses_052",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/7.ts",
+        ],
+        "id": "obs_58x7",
+        "importance": 5,
+        "narrative": "narrative 58/7",
+        "sessionId": "ses_058",
+        "timestamp": "2026-03-05T06:00:58.000Z",
+        "title": "deploy step 7 of ses_058",
+        "type": "file_edit",
+      },
+      "relativePosition": -3,
+      "sessionId": "ses_058",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "kvrocks",
+          "latency",
+        ],
+        "facts": [],
+        "files": [
+          "src/2.ts",
+        ],
+        "id": "obs_73x2",
+        "importance": 5,
+        "narrative": "narrative 73/2",
+        "sessionId": "ses_073",
+        "timestamp": "2026-03-05T06:01:13.000Z",
+        "title": "deploy step 2 of ses_073",
+        "type": "decision",
+      },
+      "relativePosition": -2,
+      "sessionId": "ses_073",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/4.ts",
+        ],
+        "id": "obs_115x4",
+        "importance": 9,
+        "narrative": "narrative 115/4",
+        "sessionId": "ses_115",
+        "timestamp": "2026-03-05T06:01:55.000Z",
+        "title": "rollback step 4 of ses_115",
+        "type": "decision",
+      },
+      "relativePosition": -1,
+      "sessionId": "ses_115",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/3.ts",
+        ],
+        "id": "obs_37x3",
+        "importance": 0,
+        "narrative": "narrative 37/3",
+        "sessionId": "ses_037",
+        "timestamp": "2026-03-05T12:00:00.000Z",
+        "title": "deploy step 3 of ses_037",
+        "type": "file_edit",
+      },
+      "relativePosition": 0,
+      "sessionId": "ses_037",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/7.ts",
+        ],
+        "id": "obs_1x7",
+        "importance": 8,
+        "narrative": "narrative 1/7",
+        "sessionId": "ses_001",
+        "timestamp": "2026-03-05T12:00:01.000Z",
+        "title": "deploy step 7 of ses_001",
+        "type": "file_edit",
+      },
+      "relativePosition": 1,
+      "sessionId": "ses_001",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "kvrocks",
+          "latency",
+        ],
+        "facts": [],
+        "files": [
+          "src/2.ts",
+        ],
+        "id": "obs_16x2",
+        "importance": 8,
+        "narrative": "narrative 16/2",
+        "sessionId": "ses_016",
+        "timestamp": "2026-03-05T12:00:16.000Z",
+        "title": "deploy step 2 of ses_016",
+        "type": "decision",
+      },
+      "relativePosition": 2,
+      "sessionId": "ses_016",
+    },
+  ],
+}
+`;
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > keyword everywhere 1`] = `
+{
+  "anchorIndex": 5,
+  "entries": [
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/1.ts",
+        ],
+        "id": "obs_78x1",
+        "importance": 9,
+        "narrative": "narrative 78/1",
+        "sessionId": "ses_078",
+        "timestamp": "2026-03-10T18:01:18.000Z",
+        "title": "deploy step 1 of ses_078",
+        "type": "file_edit",
+      },
+      "relativePosition": -5,
+      "sessionId": "ses_078",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/5.ts",
+        ],
+        "id": "obs_82x5",
+        "importance": 7,
+        "narrative": "narrative 82/5",
+        "sessionId": "ses_082",
+        "timestamp": "2026-03-10T18:01:22.000Z",
+        "title": "deploy step 5 of ses_082",
+        "type": "file_edit",
+      },
+      "relativePosition": -4,
+      "sessionId": "ses_082",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/7.ts",
+        ],
+        "id": "obs_84x7",
+        "importance": 1,
+        "narrative": "narrative 84/7",
+        "sessionId": "ses_084",
+        "timestamp": "2026-03-10T18:01:24.000Z",
+        "title": "deploy step 7 of ses_084",
+        "type": "file_edit",
+      },
+      "relativePosition": -3,
+      "sessionId": "ses_084",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/0.ts",
+        ],
+        "id": "obs_97x0",
+        "importance": 7,
+        "narrative": "narrative 97/0",
+        "sessionId": "ses_097",
+        "timestamp": "2026-03-10T18:01:37.000Z",
+        "title": "rollback step 0 of ses_097",
+        "type": "decision",
+      },
+      "relativePosition": -2,
+      "sessionId": "ses_097",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "kvrocks",
+          "latency",
+        ],
+        "facts": [],
+        "files": [
+          "src/2.ts",
+        ],
+        "id": "obs_99x2",
+        "importance": 1,
+        "narrative": "narrative 99/2",
+        "sessionId": "ses_099",
+        "timestamp": "2026-03-10T18:01:39.000Z",
+        "title": "deploy step 2 of ses_099",
+        "type": "decision",
+      },
+      "relativePosition": -1,
+      "sessionId": "ses_099",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/4.ts",
+        ],
+        "id": "obs_101x4",
+        "importance": 5,
+        "narrative": "narrative 101/4",
+        "sessionId": "ses_101",
+        "timestamp": "2026-03-10T18:01:41.000Z",
+        "title": "rollback step 4 of ses_101",
+        "type": "decision",
+      },
+      "relativePosition": 0,
+      "sessionId": "ses_101",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/6.ts",
+        ],
+        "id": "obs_103x6",
+        "importance": 9,
+        "narrative": "narrative 103/6",
+        "sessionId": "ses_103",
+        "timestamp": "2026-03-10T18:01:43.000Z",
+        "title": "deploy step 6 of ses_103",
+        "type": "decision",
+      },
+      "relativePosition": 1,
+      "sessionId": "ses_103",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/1.ts",
+        ],
+        "id": "obs_118x1",
+        "importance": 9,
+        "narrative": "narrative 118/1",
+        "sessionId": "ses_118",
+        "timestamp": "2026-03-10T18:01:58.000Z",
+        "title": "deploy step 1 of ses_118",
+        "type": "file_edit",
+      },
+      "relativePosition": 2,
+      "sessionId": "ses_118",
+    },
+  ],
+}
+`;
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > keyword in concepts 1`] = `
+{
+  "anchorIndex": 2,
+  "entries": [
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/7.ts",
+        ],
+        "id": "obs_84x7",
+        "importance": 1,
+        "narrative": "narrative 84/7",
+        "sessionId": "ses_084",
+        "timestamp": "2026-03-10T18:01:24.000Z",
+        "title": "deploy step 7 of ses_084",
+        "type": "file_edit",
+      },
+      "relativePosition": -2,
+      "sessionId": "ses_084",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/0.ts",
+        ],
+        "id": "obs_97x0",
+        "importance": 7,
+        "narrative": "narrative 97/0",
+        "sessionId": "ses_097",
+        "timestamp": "2026-03-10T18:01:37.000Z",
+        "title": "rollback step 0 of ses_097",
+        "type": "decision",
+      },
+      "relativePosition": -1,
+      "sessionId": "ses_097",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "kvrocks",
+          "latency",
+        ],
+        "facts": [],
+        "files": [
+          "src/2.ts",
+        ],
+        "id": "obs_99x2",
+        "importance": 1,
+        "narrative": "narrative 99/2",
+        "sessionId": "ses_099",
+        "timestamp": "2026-03-10T18:01:39.000Z",
+        "title": "deploy step 2 of ses_099",
+        "type": "decision",
+      },
+      "relativePosition": 0,
+      "sessionId": "ses_099",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/4.ts",
+        ],
+        "id": "obs_101x4",
+        "importance": 5,
+        "narrative": "narrative 101/4",
+        "sessionId": "ses_101",
+        "timestamp": "2026-03-10T18:01:41.000Z",
+        "title": "rollback step 4 of ses_101",
+        "type": "decision",
+      },
+      "relativePosition": 1,
+      "sessionId": "ses_101",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/6.ts",
+        ],
+        "id": "obs_103x6",
+        "importance": 9,
+        "narrative": "narrative 103/6",
+        "sessionId": "ses_103",
+        "timestamp": "2026-03-10T18:01:43.000Z",
+        "title": "deploy step 6 of ses_103",
+        "type": "decision",
+      },
+      "relativePosition": 2,
+      "sessionId": "ses_103",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/1.ts",
+        ],
+        "id": "obs_118x1",
+        "importance": 9,
+        "narrative": "narrative 118/1",
+        "sessionId": "ses_118",
+        "timestamp": "2026-03-10T18:01:58.000Z",
+        "title": "deploy step 1 of ses_118",
+        "type": "file_edit",
+      },
+      "relativePosition": 3,
+      "sessionId": "ses_118",
+    },
+  ],
+}
+`;
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > keyword in one project 1`] = `
+{
+  "anchorIndex": 3,
+  "entries": [
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/3.ts",
+        ],
+        "id": "obs_0x3",
+        "importance": 3,
+        "narrative": "narrative 0/3",
+        "sessionId": "ses_000",
+        "timestamp": "2026-03-10T18:00:00.000Z",
+        "title": "deploy step 3 of ses_000",
+        "type": "file_edit",
+      },
+      "relativePosition": -3,
+      "sessionId": "ses_000",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/4.ts",
+        ],
+        "id": "obs_21x4",
+        "importance": 5,
+        "narrative": "narrative 21/4",
+        "sessionId": "ses_021",
+        "timestamp": "2026-03-10T18:00:21.000Z",
+        "title": "rollback step 4 of ses_021",
+        "type": "decision",
+      },
+      "relativePosition": -2,
+      "sessionId": "ses_021",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/5.ts",
+        ],
+        "id": "obs_42x5",
+        "importance": 7,
+        "narrative": "narrative 42/5",
+        "sessionId": "ses_042",
+        "timestamp": "2026-03-10T18:00:42.000Z",
+        "title": "deploy step 5 of ses_042",
+        "type": "file_edit",
+      },
+      "relativePosition": -1,
+      "sessionId": "ses_042",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/0.ts",
+        ],
+        "id": "obs_57x0",
+        "importance": 7,
+        "narrative": "narrative 57/0",
+        "sessionId": "ses_057",
+        "timestamp": "2026-03-10T18:00:57.000Z",
+        "title": "rollback step 0 of ses_057",
+        "type": "decision",
+      },
+      "relativePosition": 0,
+      "sessionId": "ses_057",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/6.ts",
+        ],
+        "id": "obs_63x6",
+        "importance": 9,
+        "narrative": "narrative 63/6",
+        "sessionId": "ses_063",
+        "timestamp": "2026-03-10T18:01:03.000Z",
+        "title": "deploy step 6 of ses_063",
+        "type": "decision",
+      },
+      "relativePosition": 1,
+      "sessionId": "ses_063",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/1.ts",
+        ],
+        "id": "obs_78x1",
+        "importance": 9,
+        "narrative": "narrative 78/1",
+        "sessionId": "ses_078",
+        "timestamp": "2026-03-10T18:01:18.000Z",
+        "title": "deploy step 1 of ses_078",
+        "type": "file_edit",
+      },
+      "relativePosition": 2,
+      "sessionId": "ses_078",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/7.ts",
+        ],
+        "id": "obs_84x7",
+        "importance": 1,
+        "narrative": "narrative 84/7",
+        "sessionId": "ses_084",
+        "timestamp": "2026-03-10T18:01:24.000Z",
+        "title": "deploy step 7 of ses_084",
+        "type": "file_edit",
+      },
+      "relativePosition": 3,
+      "sessionId": "ses_084",
+    },
+  ],
+}
+`;
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > keyword only an untitled observation matches 1`] = `
+{
+  "anchorIndex": 2,
+  "entries": [
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/6.ts",
+        ],
+        "id": "obs_58x6",
+        "importance": 4,
+        "narrative": "narrative 58/6",
+        "sessionId": "ses_058",
+        "timestamp": "2026-03-02T00:00:58.000Z",
+        "title": "deploy step 6 of ses_058",
+        "type": "decision",
+      },
+      "relativePosition": -2,
+      "sessionId": "ses_058",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/1.ts",
+        ],
+        "id": "obs_73x1",
+        "importance": 4,
+        "narrative": "narrative 73/1",
+        "sessionId": "ses_073",
+        "timestamp": "2026-03-02T00:01:13.000Z",
+        "title": "deploy step 1 of ses_073",
+        "type": "file_edit",
+      },
+      "relativePosition": -1,
+      "sessionId": "ses_073",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/5.ts",
+        ],
+        "id": "obs_77x5",
+        "importance": 2,
+        "narrative": "untitled kvrocks outage note",
+        "sessionId": "ses_077",
+        "timestamp": "2026-03-02T00:01:17.000Z",
+        "title": "deploy step 5 of ses_077",
+        "type": "file_edit",
+      },
+      "relativePosition": 0,
+      "sessionId": "ses_077",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/7.ts",
+        ],
+        "id": "obs_79x7",
+        "importance": 6,
+        "narrative": "narrative 79/7",
+        "sessionId": "ses_079",
+        "timestamp": "2026-03-02T00:01:19.000Z",
+        "title": "deploy step 7 of ses_079",
+        "type": "file_edit",
+      },
+      "relativePosition": 1,
+      "sessionId": "ses_079",
+    },
+    {
+      "observation": {
+        "concepts": [
+          "deploy",
+        ],
+        "facts": [],
+        "files": [
+          "src/0.ts",
+        ],
+        "id": "obs_92x0",
+        "importance": 2,
+        "narrative": "narrative 92/0",
+        "sessionId": "ses_092",
+        "timestamp": "2026-03-02T00:01:32.000Z",
+        "title": "rollback step 0 of ses_092",
+        "type": "decision",
+      },
+      "relativePosition": 2,
+      "sessionId": "ses_092",
+    },
+  ],
+}
+`;
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > keyword with no match 1`] = `
+{
+  "anchor": "no-such-word",
+  "entries": [],
+  "reason": "no_match",
+}
+`;
+
+exports[`timeline read cost (TEE-1451) > returns the same timeline for the anchors agents send > project with no sessions 1`] = `
+{
+  "anchor": "rollback",
+  "entries": [],
+  "reason": "no_match",
+}
+`;
