@@ -1,7 +1,7 @@
 // Per-tool MCP latency on a replica (TEE-1451). Calls /agentmemory/mcp/call with the argument shapes agents send
 // (from a week of transcripts: smart search scoped to a project and the memory layer, expandIds, lesson recall by
 // project), one call at a time, tools interleaved round-robin so host noise spreads evenly. Read-only tools first;
-// the write tools (save, lesson save, consolidate, reflect) run after, so the golden read pass sees the loaded store.
+// the write tools (save, lesson save, consolidate, reflect) run after the reads, and not at all in golden mode.
 // Runs on the replica network (replica.sh client), keyword-only.
 //
 //   node --import tsx bench/fork/mcp-tools.ts --cases <eval cases.json> --project <name>... [--rounds 30]
@@ -62,7 +62,8 @@ async function discover() {
   const memoryIds = [...new Set(ids.filter((id) => id.startsWith("mem_")))];
   const obsIds = [...new Set(ids.filter((id) => !id.startsWith("mem_")))];
   if (!memoryIds.length || !obsIds.length) throw new Error(`discover found ${memoryIds.length} memory and ${obsIds.length} observation ids`);
-  return { memoryIds, obsIds };
+  const commits = (JSON.parse((await call("memory_commits", { limit: 1 })).text) as { commits?: { sha: string }[] }).commits ?? [];
+  return { memoryIds, obsIds, sha: commits[0]?.sha };
 }
 
 interface Case {
@@ -71,7 +72,7 @@ interface Case {
   args: (i: number) => Args;
 }
 
-function readCases(ids: { memoryIds: string[]; obsIds: string[] }): Case[] {
+function readCases(ids: { memoryIds: string[]; obsIds: string[]; sha?: string }): Case[] {
   const q = (i: number) => queries[i % queries.length]!;
   const p = (i: number) => projects[i % projects.length]!;
   const mem = (i: number) => ids.memoryIds[i % ids.memoryIds.length]!;
@@ -93,7 +94,7 @@ function readCases(ids: { memoryIds: string[]; obsIds: string[] }): Case[] {
     { key: "memory_timeline", tool: "memory_timeline", args: (i) => ({ anchor: obs(i), before: 5, after: 5 }) },
     { key: "memory_relations", tool: "memory_relations", args: (i) => ({ memoryId: mem(i) }) },
     { key: "memory_commits", tool: "memory_commits", args: () => ({ limit: 20 }) },
-    { key: "memory_commit_lookup", tool: "memory_commit_lookup", args: () => ({ sha: "0000000" }) },
+    ...(ids.sha ? [{ key: "memory_commit_lookup", tool: "memory_commit_lookup", args: () => ({ sha: ids.sha }) }] : []),
     { key: "memory_graph_query", tool: "memory_graph_query", args: (i) => ({ query: words(i), maxDepth: 2 }) },
     { key: "memory_team_feed", tool: "memory_team_feed", args: () => ({ limit: 20 }) },
     { key: "memory_audit", tool: "memory_audit", args: () => ({ limit: 50 }) },
@@ -110,8 +111,8 @@ function readCases(ids: { memoryIds: string[]; obsIds: string[] }): Case[] {
 function writeCases(): Case[] {
   const p = (i: number) => projects[i % projects.length]!;
   return [
-    { key: "memory_save", tool: "memory_save", args: (i) => ({ content: `TEE-1451 bench memory ${i}: the replica bench saved this to time memory_save.`, type: "fact", concepts: "bench,tee-1451", project: p(i) }) },
-    { key: "memory_lesson_save", tool: "memory_lesson_save", args: (i) => ({ content: `TEE-1451 bench lesson ${i}: time lesson saves on the replica.`, project: p(i), tags: "bench" }) },
+    { key: "memory_save", tool: "memory_save", args: (i) => ({ content: `TEE-1451 bench marker ${i}: written by the memory_save write path of the replica latency bench.`, type: "fact", concepts: "bench,tee-1451", project: p(i) }) },
+    { key: "memory_lesson_save", tool: "memory_lesson_save", args: (i) => ({ content: `TEE-1451 bench lesson marker ${i}: written by the memory_lesson_save write path of the replica latency bench.`, project: p(i), tags: "bench" }) },
     { key: "memory_consolidate", tool: "memory_consolidate", args: () => ({}) },
     { key: "memory_reflect", tool: "memory_reflect", args: (i) => ({ project: p(i), maxClusters: 5 }) },
   ];
@@ -128,11 +129,20 @@ async function run(cases: Case[], rounds: number, samples: Map<string, number[]>
   }
 }
 
+const readRounds = Number(args.rounds);
+const writeRounds = Number(args["write-rounds"]);
+if (!Number.isInteger(readRounds) || readRounds < 1) throw new Error(`--rounds must be a positive integer, got "${args.rounds}"`);
+if (!Number.isInteger(writeRounds) || writeRounds < 0) throw new Error(`--write-rounds must be a non-negative integer, got "${args["write-rounds"]}"`);
+const goldenMode = args["golden-out"] !== undefined || args["golden-compare"] !== undefined;
+
 const ids = await discover();
 const reads = readCases(ids);
 
 // The golden pass: the same fixed inputs before and after a change must give the same bodies. Ranked lists keep
-// their order; volatile fields (timing, generated ids, access counters) are dropped.
+// their order; volatile fields (timing, generated ids, access counters) are dropped. Frontier and next score
+// actions by their age, so they are timed but not compared. Golden mode skips the write pass, so a second run on
+// the same replica sees the store the first one did.
+const UNCOMPARED = new Set(["memory_frontier", "memory_next"]);
 const VOLATILE = /^(timestamp|generatedAt|exportedAt|elapsedMs|durationMs|ms|took|now|checkedAt|lastAccessedAt|accessCount|uptime.*)$/;
 const normalize = (text: string) => {
   try {
@@ -141,9 +151,9 @@ const normalize = (text: string) => {
     return text;
   }
 };
-if (args["golden-out"] || args["golden-compare"]) {
+if (goldenMode) {
   const golden: Record<string, string> = {};
-  for (const c of reads) for (let i = 0; i < 3; i++) golden[`${c.key}#${i}`] = normalize((await call(c.tool, c.args(i))).text);
+  for (const c of reads.filter((r) => !UNCOMPARED.has(r.tool))) for (let i = 0; i < 3; i++) golden[`${c.key}#${i}`] = normalize((await call(c.tool, c.args(i))).text);
   if (args["golden-out"]) writeFileSync(args["golden-out"], JSON.stringify(golden, null, 1));
   if (args["golden-compare"]) {
     const before = JSON.parse(readFileSync(args["golden-compare"], "utf8")) as Record<string, string>;
@@ -155,8 +165,8 @@ if (args["golden-out"] || args["golden-compare"]) {
 
 const samples = new Map<string, number[]>();
 const errors = new Map<string, string[]>();
-await run(reads, Number(args.rounds), samples, errors);
-await run(writeCases(), Number(args["write-rounds"]), samples, errors);
+await run(reads, readRounds, samples, errors);
+if (!goldenMode) await run(writeCases(), writeRounds, samples, errors);
 
 const tools: Record<string, Record<string, number>> = {};
 const measured: Record<string, number> = {};
