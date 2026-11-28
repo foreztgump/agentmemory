@@ -76,6 +76,7 @@ export const SCOPE_CLASS = {
   captureEvents: "paged-only",
   capturePrompts: "paged-only",
   obsStats: "point-read-only",
+  obsImportant: "point-read-only",
   retentionVault: "paged-only",
   retentionItems: "point-read-only",
   retentionDemoted: "paged-only",

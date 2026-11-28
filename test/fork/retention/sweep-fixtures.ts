@@ -58,12 +58,12 @@ const OWN_SCOPE = /^mem:(retention:|audit:)/;
 
 /**
  * Every user collection, whole: counts and content. Retention's own bookkeeping and the audit log are not user data,
- * and the observation stats are derived (they carry an update time). A scope emptied by a round trip equals one never made.
+ * and the observation stats and important-observation index are derived (they carry an update time). A scope emptied by a round trip equals one never made.
  */
 export function userData(r: Rig): Record<string, unknown[]> {
   return Object.fromEntries(
     [...r.h.store]
-      .filter(([scope, rows]) => !OWN_SCOPE.test(scope) && scope !== KV.obsStats && rows.size > 0)
+      .filter(([scope, rows]) => !OWN_SCOPE.test(scope) && scope !== KV.obsStats && scope !== KV.obsImportant && rows.size > 0)
       .map(([scope, rows]) => [scope, [...rows].sort(([a], [b]) => a.localeCompare(b))] as const),
   );
 }

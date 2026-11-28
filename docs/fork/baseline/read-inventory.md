@@ -203,7 +203,7 @@ The same day was replayed on the TEE-1160 branch (image built at 86e42d1) with `
 | Everything else | 234 | 250 | Unchanged reads of bounded scopes (summaries of one session, metrics), plus paged reads. |
 
 Reads that remain by design:
-- Context injection still reads up to 10 recent sessions without a summary in pages. Its bytes did not fall. Cutting them would need a per-session index of important observations.
+- Context injection still reads up to 10 recent sessions without a summary in pages. Its bytes did not fall. Cutting them would need a per-session index of important observations (done in TEE-1189, below).
 - Export, consolidation, timeline and profile still walk every session's `mem:obs:<session>` scope. That scope is `bounded`, and these run only on demand. The boot index rebuild also walks every session once per start.
 
 **Same output.** `scripts/fork/feature-diff.mjs` ran 35 feature calls and the export pages on a fresh restore with the old image (rebuilt from 817c594) and with the new one (120603f). Times, ids and latencies made during the run were normalized.
@@ -221,6 +221,24 @@ Reads that remain by design:
 
 Paging all export pages back to back OOMs the worker on both images at this limit. The old image failed after 13 pages and the new one after 19 to 29. That limit is outside TEE-1160 (TEE-1182, TEE-1183).
 
+## After TEE-1189, 2026-11-28
+
+Context injection now reads a session's observations through `mem:obs-important`, one row per session with its top 20 injectable entries. It point-reads the five rows it shows instead of paging the whole session. The same day was replayed on the base image (557782f) and on the TEE-1189 image, each on a fresh restore of buddy's 2026-11-16 backup, with `AGENTMEMORY_SCOPE_GUARD=warn`.
+
+| Measure | Before | After |
+|---|---|---|
+| Context reads of `mem:obs:*` (recurring row) | 790 MB/day, 2,867 paged scans | none: no `mem:obs:*` row for `mem::context` |
+| All recurring reads | 1,089 MB/day | 298 MB/day |
+| Context latency in the replay (207 calls) | p50 196 ms, p99 463 ms | p50 25.5 ms, p99 69.7 ms |
+| Context latency, golden probe, cold pass (213 calls) | p50 45.5 ms, p99 391 ms | p50 19.2 ms, p99 34.3 ms |
+| Capture latency (12,200 calls) | p50 13.5 ms, p99 273 ms | p50 13.8 ms, p99 226 ms |
+
+- **Point reads are not in the inventory.** The guard records whole and paged reads only. Each context call now reads at most 10 index rows (about 2 KB each) and 50 observation rows. At about 1.7 KB a row, that is about 100 KB a call, or about 21 MB/day for the replay's 207 calls (inferred, not measured).
+- **Same output.** `scripts/fork/context-golden.ts` called context for each of the 37 projects: once with an unknown session and once per recent session, up to 12, for 213 calls a pass. It made two passes. All 426 bodies were byte-identical across the images, and 380 of them carried context.
+- **Backfill.** A session gets its index row the first time it is scanned: in the observation-stats recount, or lazily on its first context read. The backup's stats marker is older than v2, so this restore recounted every session at boot and built every index in that same scan. A stack whose marker is current builds each row lazily, with one paged scan, only for sessions that context reads.
+- The boot table keeps 206 `mem:obs:*` scans from `important-observations.ts`, all returning 0 rows: sessions with no observations get no index row, so the probe rescans them, at 0 bytes.
+- 3 replicas shared the host during both runs, so the latencies hold for comparing the two images, not as absolute numbers.
+
 ## Reproduce
 
 ```sh
@@ -231,6 +249,9 @@ bench/fork/replica.sh up /home/cownose/am-staging/buddy-2026-11-16
 # The replica network is internal. To reach REST from the host, attach a
 # TCP forwarder (any container with Node) to both inv_replica and a published
 # 127.0.0.1 port, forwarding to agentmemory:3111.
+# Context golden probe (TEE-1189), before the boot snapshot, once per image; then compare the two files:
+bench/fork/replica.sh client sh -c "AGENTMEMORY_SECRET=replica-dummy-secret npx tsx scripts/fork/context-golden.ts --out /tmp/golden.jsonl"
+#   npx tsx scripts/fork/context-golden.ts --compare base.jsonl new.jsonl
 # Take the boot snapshot once "observation stats repaired" is logged and the next 30 s dump lands:
 docker exec inv-agentmemory-1 cat /data/scope-guard-inventory.json > s0.json
 AGENTMEMORY_SECRET=replica-dummy-secret npx tsx scripts/fork/replay-day.ts --replica \
