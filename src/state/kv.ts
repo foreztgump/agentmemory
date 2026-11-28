@@ -112,12 +112,55 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
     .map((entry) => entry.value)
 }
 
+/** Results keep input order. A failure stops new work, waits for work already started, and rethrows the error a sequential loop would have hit first; no partial results are returned. */
+export async function mapPooled<T, R>(
+  items: readonly T[],
+  run: (item: T) => Promise<R>,
+  concurrency = 16,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  const failures = new Map<number, unknown>()
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++
+      try {
+        results[index] = await run(items[index]!)
+      } catch (error) {
+        failures.set(index, error)
+        next = items.length
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker))
+  if (failures.size > 0) throw failures.get(Math.min(...failures.keys()))
+  return results
+}
+
 export async function collectAll<T = unknown>(kv: StateKV, scope: string): Promise<T[]> {
   if (typeof kv.iterate !== 'function') return kv.list<T>(scope)
   const out: T[] = []
   for await (const page of kv.iterate<T>(scope)) out.push(...page)
   if (kv.backend === 'redis') return orderLikeInsertion(out)
   return out
+}
+
+export type ScopeReader = <T>(scope: string) => Promise<readonly T[]>
+
+/** collectAll that reads each scope at most once; a failed read is dropped so the next one retries. Callers share the rows, so none may mutate them. */
+export function scopeReader(kv: StateKV): ScopeReader {
+  const reads = new Map<string, Promise<unknown[]>>()
+  return <T>(scope: string) => {
+    let rows = reads.get(scope)
+    if (!rows) {
+      const read = collectAll(kv, scope)
+      reads.set(scope, (rows = read))
+      read.catch(() => {
+        if (reads.get(scope) === read) reads.delete(scope)
+      })
+    }
+    return rows as Promise<readonly T[]>
+  }
 }
 
 export class StateKV {

@@ -1,0 +1,136 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`smart search read cost (TEE-1451) > returns the same ranked results for the shapes agents send > memory 1`] = `
+{
+  "ids": [
+    "mem_0",
+    "mem_3",
+    "mem_6",
+    "mem_9",
+    "mem_12",
+    "mem_15",
+    "mem_18",
+    "mem_21",
+    "mem_24",
+    "mem_27",
+  ],
+  "types": [
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+  ],
+}
+`;
+
+exports[`smart search read cost (TEE-1451) > returns the same ranked results for the shapes agents send > project memory 1`] = `
+{
+  "ids": [
+    "mem_3",
+    "mem_27",
+    "mem_51",
+    "mem_75",
+    "mem_99",
+    "mem_123",
+    "mem_147",
+    "mem_171",
+    "mem_195",
+    "mem_219",
+  ],
+  "types": [
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+  ],
+}
+`;
+
+exports[`smart search read cost (TEE-1451) > returns the same ranked results for the shapes agents send > project memory, limit 5 1`] = `
+{
+  "ids": [
+    "mem_21",
+    "mem_45",
+    "mem_69",
+    "mem_93",
+    "mem_117",
+  ],
+  "types": [
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+  ],
+}
+`;
+
+exports[`smart search read cost (TEE-1451) > returns the same ranked results for the shapes agents send > rare project memory 1`] = `
+{
+  "ids": [
+    "mem_0",
+    "mem_150",
+    "mem_300",
+    "mem_450",
+    "mem_600",
+    "mem_750",
+    "mem_50",
+    "mem_100",
+    "mem_200",
+    "mem_250",
+  ],
+  "types": [
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+  ],
+}
+`;
+
+exports[`smart search read cost (TEE-1451) > returns the same ranked results for the shapes agents send > rare project, every layer 1`] = `
+{
+  "ids": [
+    "mem_0",
+    "mem_150",
+    "mem_300",
+    "mem_450",
+    "mem_600",
+    "mem_750",
+    "mem_50",
+    "mem_100",
+    "mem_200",
+    "mem_250",
+  ],
+  "types": [
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+    "fact",
+  ],
+}
+`;

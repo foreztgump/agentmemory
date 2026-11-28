@@ -1,0 +1,71 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`file history read cost (TEE-1451) > returns the same file context for the requests agents send > no files 1`] = `
+{
+  "context": "",
+  "files": [],
+}
+`;
+
+exports[`file history read cost (TEE-1451) > returns the same file context for the requests agents send > no history 1`] = `
+{
+  "context": "",
+}
+`;
+
+exports[`file history read cost (TEE-1451) > returns the same file context for the requests agents send > one file 1`] = `
+{
+  "context": "<agentmemory-file-context>
+## src/kv.ts
+- [decision] change 0 in ses_29: narrative 29/0
+- [decision] change 6 in ses_16: narrative 16/6
+- [decision] change 3 in ses_50: narrative 50/3
+- [decision] change 9 in ses_37: narrative 37/9
+- [decision] change 0 in ses_47: narrative 47/0
+</agentmemory-file-context>",
+}
+`;
+
+exports[`file history read cost (TEE-1451) > returns the same file context for the requests agents send > one project 1`] = `
+{
+  "context": "<agentmemory-file-context>
+## src/export.ts
+- [file_edit] change 2 in ses_21: narrative 21/2
+- [file_edit] change 11 in ses_29: narrative 29/11
+- [file_edit] change 8 in ses_19: narrative 19/8
+- [file_edit] change 5 in ses_53: narrative 53/5
+- [file_edit] change 5 in ses_09: narrative 9/5
+## src/kv.ts
+- [decision] change 0 in ses_29: narrative 29/0
+- [decision] change 9 in ses_37: narrative 37/9
+- [decision] change 6 in ses_27: narrative 27/6
+- [decision] change 0 in ses_47: narrative 47/0
+- [decision] change 9 in ses_55: narrative 55/9
+</agentmemory-file-context>",
+}
+`;
+
+exports[`file history read cost (TEE-1451) > returns the same file context for the requests agents send > several files, one excluded session 1`] = `
+{
+  "context": "<agentmemory-file-context>
+## ./src/timeline.ts
+- [file_edit] change 1 in ses_47: narrative 47/1
+- [file_edit] change 10 in ses_55: narrative 55/10
+- [file_edit] change 1 in ses_03: narrative 3/1
+- [file_edit] change 4 in ses_24: narrative 24/4
+- [file_edit] change 10 in ses_11: narrative 11/10
+## src/diagnostics.ts
+- [file_edit] change 8 in ses_08: narrative 8/8
+- [decision] change 0 in ses_29: narrative 29/0
+- [file_edit] change 4 in ses_24: narrative 24/4
+- [decision] change 0 in ses_47: narrative 47/0
+- [file_edit] change 4 in ses_42: narrative 42/4
+## README.md
+- [file_edit] change 1 in ses_47: narrative 47/1
+- [file_edit] change 2 in ses_21: narrative 21/2
+- [file_edit] change 10 in ses_55: narrative 55/10
+- [file_edit] change 5 in ses_42: narrative 42/5
+- [file_edit] change 11 in ses_29: narrative 29/11
+</agentmemory-file-context>",
+}
+`;

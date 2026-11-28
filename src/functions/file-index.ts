@@ -1,7 +1,7 @@
 import type { IIIClient } from "iii-sdk";
 import type { CompressedObservation, Session } from "../types.js";
 import { KV } from "../state/schema.js";
-import { StateKV, collectAll } from "../state/kv.js";
+import { StateKV, collectAll, mapPooled } from "../state/kv.js";
 import { observationStatsOf } from "../fork/kv/observation-stats.js";
 import { FileContextIndex, basenameOf } from "../fork/kv/file-context-index.js";
 import { recordAudit } from "./audit.js";
@@ -42,10 +42,8 @@ function recentSessions<S extends SessionRef>(sessions: readonly S[], sessionId:
 
 async function scannedRows(kv: StateKV, sessionId: string, project?: string): Promise<SessionRows> {
   const sessions = recentSessions(await collectAll<Session>(kv, KV.sessions), sessionId, project);
-  const obsCache = new Map<string, CompressedObservation[]>();
-  for (const session of sessions) {
-    obsCache.set(session.id, await kv.list<CompressedObservation>(KV.observations(session.id)));
-  }
+  const lists = await mapPooled(sessions, (session) => kv.list<CompressedObservation>(KV.observations(session.id)));
+  const obsCache = new Map(sessions.map((session, i) => [session.id, lists[i]!]));
   return { sessionIds: sessions.map((s) => s.id), rowsOf: (id) => obsCache.get(id) || [] };
 }
 
