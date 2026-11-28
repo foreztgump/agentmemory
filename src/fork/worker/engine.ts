@@ -252,6 +252,7 @@ export class SearchEngine {
     const corpusIds = this.prefixes?.counting ? [...writtenFirst] : [];
     const epoch = this.collectionEpoch;
     for (const id of corpusIds) lookup.add(id);
+    this.prefixes?.touch(corpusIds.map(pointId));
     await this.ready();
     const stored = await this.storedPayloads([...lookup]);
     const rev = new Map<string, ContentRev | null>();
@@ -351,11 +352,11 @@ export class SearchEngine {
     // A vector delete on a tombstone or an absent point leaves no vector either way.
     if (written.length > 0 || vecDeletes.length > 0 || corpusIds.length > 0) {
       const now = await this.storedPayloads([...new Set([...written.map((w) => w.id), ...vecDeletes, ...corpusIds])]);
+      const live = (p: StoredPayload | undefined) => (p && !p.deleted ? p.document : undefined);
       for (const id of corpusIds) {
+        if (epoch !== this.collectionEpoch || !this.prefixes) continue;
         const current = now.get(id);
-        if (epoch !== this.collectionEpoch || !this.prefixes || current?.v !== version) continue;
-        const previous = stored.get(id);
-        this.prefixes.replace(previous?.deleted ? undefined : previous?.document, current.deleted ? undefined : current.document);
+        this.prefixes.changed(pointId(id), live(stored.get(id)), live(current), current?.v === version);
       }
       const lost = [
         ...written.filter((w) => { const p = now.get(w.id); return !(p && !p.deleted && p.rev === w.rev && p.v === version); }).map((w) => w.id),

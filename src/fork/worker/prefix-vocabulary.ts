@@ -3,7 +3,6 @@ import { logger } from "../../logger.js";
 import { bareForm, PREFIX_WEIGHT, termId, type Sparse } from "./bm25-sparse.js";
 import { lowerBound, storedDocument } from "./lexical-bm25.js";
 import type { Qdrant } from "./qdrant.js";
-import { TOMBSTONE } from "./versioned.js";
 
 export interface VocabularyLimits {
   /** Distinct terms held. Past it new terms are not learned; their exact matches still work. */
@@ -32,8 +31,21 @@ const COMPLETE_EXPANSION_MAX = 2048;
 const BOUND_SLACK = 1 + 1e-5;
 const FILL_PAGE = 1000;
 
+type StoredDocument = { terms: readonly string[]; dl: number };
+
+/**
+ * A point written while the first scroll runs. The scroll skips it if the write registered before the scroll read it;
+ * otherwise the scroll counted the state the write's own read saw first. Resolved once both are known.
+ */
+interface FillWrite {
+  skipped: boolean;
+  observed: boolean;
+  first?: StoredDocument;
+  latest?: StoredDocument;
+}
+
 interface ScrollPage {
-  points: Array<{ payload?: { terms?: unknown; dl?: number; ad?: number } }>;
+  points: Array<{ id: string; payload?: { terms?: unknown; dl?: number; ad?: number } }>;
   next_page_offset?: string | null;
 }
 
@@ -48,6 +60,8 @@ export class PrefixVocabulary {
   private refused = 0;
   private documents = 0;
   private totalLength = 0;
+  /** Points written since the running scroll started, by point id; empty outside a fill once each is resolved. */
+  private fillWrites = new Map<string, FillWrite>();
 
   constructor(
     private readonly qdrant: Qdrant,
@@ -68,7 +82,7 @@ export class PrefixVocabulary {
     return this.filled;
   }
 
-  /** A fill has started, so a write that lands now is not one the fill's scroll is sure to see. */
+  /** A fill has started, so a write that lands now must register (touch) and report its outcome (changed). */
   get counting(): boolean {
     return this.filled || this.filling !== null;
   }
@@ -169,6 +183,35 @@ export class PrefixVocabulary {
     }, 0) * drift;
   }
 
+  /** Registers points a write is about to change; call before the write is sent. Outside a running fill it does nothing. */
+  touch(pointIds: readonly string[]): void {
+    if (!this.filling || this.filled) return;
+    for (const id of pointIds) if (!this.fillWrites.has(id)) this.fillWrites.set(id, { skipped: false, observed: false });
+  }
+
+  /**
+   * A counting write's outcome for one point: what its read saw before it was sent and what is stored now. `applied`
+   * says the stored state is this write's; a registered point resolves from the states alone, applied or not.
+   */
+  changed(pointId: string, previous: StoredDocument | undefined, current: StoredDocument | undefined, applied: boolean): void {
+    const write = this.fillWrites.get(pointId);
+    if (!write) {
+      if (applied) this.replace(previous, current);
+      return;
+    }
+    if (!write.observed) {
+      write.observed = true;
+      write.first = previous;
+    }
+    write.latest = current;
+    if (this.filled) this.resolve(pointId, write);
+  }
+
+  private resolve(pointId: string, write: FillWrite): void {
+    this.fillWrites.delete(pointId);
+    this.replace(write.skipped ? undefined : write.first, write.latest);
+  }
+
   observe(terms: readonly string[]): void {
     this.replace(undefined, { terms, dl: terms.length });
   }
@@ -227,6 +270,7 @@ export class PrefixVocabulary {
     this.refused = 0;
     this.documents = 0;
     this.totalLength = 0;
+    this.fillWrites = new Map();
     this.epoch++;
   }
 
@@ -297,15 +341,20 @@ export class PrefixVocabulary {
     let totalLength = 0;
     let offset: string | undefined;
     do {
+      // Tombstones too, carrying no terms: a point deleted during the fill is skipped like any other it registered.
       const page = await this.qdrant.call<ScrollPage>("POST", `${this.qdrant.path}/points/scroll`, {
-        filter: { must_not: [TOMBSTONE] },
         limit: FILL_PAGE,
         ...(offset ? { offset } : {}),
         with_payload: ["terms", "dl", "ad"],
         with_vector: false,
       });
       if (epoch !== this.epoch) return;
-      for (const { payload } of page.points) {
+      for (const { id, payload } of page.points) {
+        const write = this.fillWrites.get(id);
+        if (write) {
+          write.skipped = true;
+          continue;
+        }
         // The engine's stored-document read too, so a later replace or delete subtracts what was added here.
         const stored = storedDocument(payload);
         if (!stored) continue;
@@ -321,19 +370,13 @@ export class PrefixVocabulary {
       }
       offset = page.next_page_offset ?? undefined;
     } while (offset);
-    // ponytail: scrolls are not snapshots; error is bounded by the doc/del operations overlapping this fill and their lengths.
-    for (const [term, count] of counted) {
-      if (this.df.has(term)) {
-        const previous = this.df.get(term)!;
-        this.df.set(term, Math.max(previous, count));
-      }
-      else this.learn(term, count);
-    }
-    // Writes that landed during the scroll were counted as they applied, so the scroll's counts add to theirs.
+    for (const [term, count] of counted) this.learn(term, count);
     this.documents += documents;
     this.totalLength += totalLength;
-    this.fold();
     this.filled = true;
+    // ponytail: a write decided before the fill started that lands during the scroll is not counted; the next write of that point corrects it.
+    for (const [pointId, write] of this.fillWrites) if (write.observed) this.resolve(pointId, write);
+    this.fold();
     logger.info("am-search prefix vocabulary ready", { terms: this.df.size, refused: this.refused });
   }
 }
