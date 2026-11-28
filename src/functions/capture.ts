@@ -205,7 +205,7 @@ const SESSION_DRAIN_TIMEOUT_MS = 10_000;
  */
 export async function awaitSessionCaptures(sessionId: string): Promise<void> {
   if (!activeController || (await activeController.drainSession(sessionId, SESSION_DRAIN_TIMEOUT_MS))) return;
-  logger.warn("captures of the session are still processing, reading it without them", {
+  logger.warn("captures of the session were not confirmed processed, reading it without them", {
     sessionId,
     timeoutMs: SESSION_DRAIN_TIMEOUT_MS,
   });
@@ -220,7 +220,8 @@ export interface CaptureController {
   idle(): Promise<void>;
   /**
    * Processes the session's accepted captures now, ahead of other sessions, and resolves true once
-   * none is waiting or running, or false when that takes longer than `timeoutMs`.
+   * none is waiting or running, or false when that takes longer than `timeoutMs` or the inbox rows
+   * left by a restart could not be read.
    */
   drainSession(sessionId: string, timeoutMs: number): Promise<boolean>;
   durability(): SentMark;
@@ -256,7 +257,8 @@ export function registerCaptureFunctions(
   const timers: Array<ReturnType<typeof setInterval>> = [];
   const runTimeoutMs = options.runTimeoutMs ?? RUN_TIMEOUT_MS;
   const lanes = new SessionLanes((key: string) => runWithDeadline(key), policy.workers);
-  let backlog: Promise<void> | null = null;
+  let backlog: Promise<boolean> | null = null;
+  const overdue = new Set<string>();
   let acceptSeq = 0;
   let inboxKeyCount: Promise<number> | null = null;
   let addedSinceKeyCount = 0;
@@ -409,6 +411,9 @@ export function registerCaptureFunctions(
         await kv.set(KV.captureInbox, key, rec);
         inboxIndex.put(rec);
         addedSinceKeyCount++;
+      } catch (err) {
+        counters.rejected++;
+        return { status: "rejected", eventId, error: `capture could not be stored: ${errorText(err)}`, retryable: true };
       } finally {
         reservedSlots--;
       }
@@ -428,10 +433,11 @@ export function registerCaptureFunctions(
   }
 
   /**
-   * Holds a slot for one new inbox row, or answers false when the inbox could already be full.
-   * Before the in-process copy of the inbox has loaded, the bound is the inbox's key count from
-   * one key listing plus the rows accepted since, so the first capture after a restart waits for
-   * that listing but not for the rows to be read.
+   * Holds a slot for one new inbox row, or answers false when the inbox is full. Before the
+   * in-process copy of the inbox has loaded, a slot under an upper bound (the inbox's key count from
+   * one key listing plus the rows accepted since) is granted at once, so the first capture after a
+   * restart waits for that listing but not for the rows to be read. The bound never subtracts
+   * processed rows, so near the cap the answer waits for the copy to load and uses its exact count.
    */
   async function reserveInboxSlot(): Promise<boolean> {
     if (inboxIndex.loadedSize() === undefined) {
@@ -442,25 +448,38 @@ export function registerCaptureFunctions(
           throw err;
         });
       }
-      await inboxKeyCount;
+      const listed = await inboxKeyCount;
+      if (inboxIndex.loadedSize() === undefined && listed + addedSinceKeyCount + reservedSlots < policy.inboxMax) {
+        reservedSlots++;
+        return true;
+      }
+      await inboxIndex.size();
     }
-    const rows = inboxIndex.loadedSize() ?? (await inboxKeyCount!) + addedSinceKeyCount;
-    if (rows + reservedSlots >= policy.inboxMax) return false;
+    if (inboxIndex.loadedSize()! + reservedSlots >= policy.inboxMax) return false;
     reservedSlots++;
     return true;
   }
 
+  /**
+   * Runs one row and gives up waiting once it has held the row's lock for `runTimeoutMs`, which
+   * frees the worker. The overdue run goes on holding the lock, and the sweep leaves the row alone
+   * until that run settles.
+   */
   async function runWithDeadline(key: string): Promise<RunOutcome> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_, reject) => {
+    let expire!: (err: Error) => void;
+    const deadline = new Promise<never>((_, reject) => (expire = reject));
+    const run = retryOne(key, false, () => {
       timer = setTimeout(() => {
-        logger.warn("capture run passed its deadline, freeing its worker; the sweep retries it", { key, runTimeoutMs });
-        reject(new Error(`capture run took longer than ${runTimeoutMs} ms`));
+        overdue.add(key);
+        void run.catch(() => undefined).finally(() => overdue.delete(key));
+        logger.warn("capture run passed its deadline, freeing its worker; the sweep retries it once the run ends", { key, runTimeoutMs });
+        expire(new Error(`capture run took longer than ${runTimeoutMs} ms`));
       }, runTimeoutMs);
       timer.unref?.();
     });
     try {
-      return await Promise.race([retryOne(key, false), deadline]);
+      return await Promise.race([run, deadline]);
     } finally {
       clearTimeout(timer);
     }
@@ -470,30 +489,32 @@ export function registerCaptureFunctions(
   async function submitDue(): Promise<Array<Promise<RunOutcome>>> {
     const now = Date.now();
     return (await inboxIndex.entries())
-      .filter((r) => r && r.status !== "dead")
+      .filter((r) => r && r.status !== "dead" && !overdue.has(r.key))
       .filter((r) => r.status === "pending" || !r.nextAttemptAt || Date.parse(r.nextAttemptAt) <= now)
       .sort(byAcceptance)
       .map((rec) => lanes.submit(rec.sessionId, rec.key).catch(() => "waiting" as const));
   }
 
   /**
-   * Resolves once the rows left in the inbox by an earlier process are submitted. New captures
-   * wait for it before they are submitted, so they cannot run ahead of older captures of the
-   * same session.
+   * Resolves true once the rows left in the inbox by an earlier process are submitted, or false
+   * when they could not be read. New captures wait for it before they are submitted, so they
+   * cannot run ahead of older captures of the same session.
    */
-  function backlogSubmitted(): Promise<void> {
+  function backlogSubmitted(): Promise<boolean> {
     backlog ??= submitDue().then(
-      () => undefined,
+      () => true,
       (err) => {
         backlog = null;
         logger.warn("inbox rows left by a restart could not be read; captures run without waiting for them until the next try", { error: errorText(err) });
+        return false;
       },
     );
     return backlog;
   }
 
-  async function retryOne(key: string, force: boolean): Promise<RunOutcome> {
+  async function retryOne(key: string, force: boolean, onLocked?: () => void): Promise<RunOutcome> {
     return withKeyedLock(`capture:${key}`, async () => {
+      onLocked?.();
       const rec = await kv.get<InboxRecord>(KV.captureInbox, key);
       if (!rec) {
         inboxIndex.drop(key);
@@ -700,7 +721,10 @@ export function registerCaptureFunctions(
     },
     async drainSession(sessionId, timeoutMs) {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const drained = backlogSubmitted().then(() => lanes.drain(sessionId)).then(() => true);
+      const drained = backlogSubmitted().then(async (submitted) => {
+        await lanes.drain(sessionId);
+        return submitted;
+      });
       const late = new Promise<false>((resolve) => {
         timer = setTimeout(() => resolve(false), timeoutMs);
         timer.unref?.();

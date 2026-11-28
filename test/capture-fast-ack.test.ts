@@ -14,16 +14,17 @@ const WHOLE_SCOPE_READS = new Set(["state::list", "state::list_keys"]);
  * The real StateKV over an in-memory engine, with every state call logged. Each boot imports
  * fresh modules, so a second boot on the same store behaves like a restarted process: the first
  * boot's locks and queued work are gone, only the store survives. `inboxScan` holds the reads of
- * the inbox rows that were in the store at boot; `gate` holds mem::observe, for every event or
- * for the events it returns a promise for.
+ * the inbox rows that were in the store at boot, or runs before each one (a throw fails the read);
+ * `gate` holds mem::observe, for every event or for the events it returns a promise for.
  */
 async function boot(
   store: Store,
   opts: {
     cap?: number;
     gate?: Promise<void> | ((eventId: string) => Promise<void> | undefined);
-    inboxScan?: Promise<void>;
+    inboxScan?: Promise<void> | (() => void);
     failInboxKeys?: boolean;
+    failInboxWrites?: boolean;
     runTimeoutMs?: number;
   } = {},
 ) {
@@ -49,8 +50,11 @@ async function boot(
     trigger: async (req: Req) => {
       const p = req.payload as { scope: string; key: string; value?: unknown };
       if (req.function_id.startsWith("state::")) calls.push({ fn: req.function_id, scope: p.scope });
-      if (req.function_id === "state::get" && p.scope === "mem:capture:inbox" && rowsAtBoot.has(p.key) && opts.inboxScan) await opts.inboxScan;
+      if (req.function_id === "state::get" && p.scope === "mem:capture:inbox" && rowsAtBoot.has(p.key) && opts.inboxScan) {
+        await (typeof opts.inboxScan === "function" ? opts.inboxScan() : opts.inboxScan);
+      }
       if (req.function_id === "state::list_keys" && p.scope === "mem:capture:inbox" && opts.failInboxKeys) throw new Error("state::list_keys timed out");
+      if (req.function_id === "state::set" && p.scope === "mem:capture:inbox" && opts.failInboxWrites) throw new Error("state::set timed out");
       switch (req.function_id) {
         case "state::get": return structuredClone(store.get(p.scope)?.get(p.key) ?? null);
         case "state::set": scope(p.scope).set(p.key, structuredClone(p.value)); return { new_value: p.value };
@@ -92,7 +96,8 @@ async function boot(
   const rows = (sessionId = SESSION) =>
     [...(store.get(`mem:obs:${sessionId}`)?.values() ?? [])] as Array<{ id: string; eventId?: string; captureKey?: string }>;
   const inbox = () => [...(store.get("mem:capture:inbox")?.values() ?? [])] as Array<{ status: string; lastError?: string }>;
-  return { calls, observed, controller, accept, rows, inbox, logger };
+  const retry = (key: string) => sdk.trigger({ function_id: "mem::capture-retry", payload: { key } });
+  return { calls, observed, controller, accept, rows, inbox, logger, retry };
 }
 
 const order = (eventIds: string[]) => eventIds.map((id) => Number(id.slice(-6)));
@@ -103,7 +108,10 @@ const deadRow = (key: string) => ({
 });
 
 describe("capture route answers before processing", () => {
-  beforeEach(() => vi.stubEnv("AGENTMEMORY_CAPTURE_RETRY_INTERVAL_MS", "60000"));
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("AGENTMEMORY_CAPTURE_RETRY_INTERVAL_MS", "60000");
+  });
   afterEach(() => vi.unstubAllEnvs());
 
   it("acknowledges with 202 after the inbox write alone, then stores the observation once", async () => {
@@ -259,7 +267,7 @@ describe("capture route answers before processing", () => {
     expect(order(restarted.observed)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 
-  it("holds the inbox at its cap while the inbox rows are still being read after a restart", async () => {
+  it("holds the inbox at its cap for captures that arrive while the inbox rows are still being read after a restart", async () => {
     vi.stubEnv("AGENTMEMORY_CAPTURE_INBOX_MAX", "4");
     const store: Store = new Map([["mem:capture:inbox", new Map<string, unknown>([
       ["cap_dead0", deadRow("cap_dead0")], ["cap_dead1", deadRow("cap_dead1")],
@@ -267,9 +275,12 @@ describe("capture route answers before processing", () => {
     let finishScan!: () => void;
     const h = await boot(store, { gate: new Promise<void>(() => {}), inboxScan: new Promise<void>((resolve) => (finishScan = resolve)) });
 
-    const answers = await Promise.all(Array.from({ length: 6 }, (_, i) => h.accept(i)));
-    const later = await h.accept(6);
+    const pending = Promise.all(Array.from({ length: 6 }, (_, i) => h.accept(i)));
+    const pendingLater = h.accept(6);
+    await new Promise((r) => setTimeout(r, 20));
     finishScan();
+    const answers = await pending;
+    const later = await pendingLater;
 
     expect(answers.filter((a) => a.status === 202)).toHaveLength(2);
     expect(answers.filter((a) => a.status === 503).every((a) => a.result.retryable === true)).toBe(true);
@@ -310,12 +321,135 @@ describe("capture route answers before processing", () => {
     const retry = h.controller.sweep();
     release();
     await retry;
-    await h.controller.idle();
+    await vi.waitFor(() => expect(h.rows("ses_hung")).toHaveLength(1));
     await h.controller.sweep();
     await h.controller.idle();
 
     expect(h.rows("ses_hung")).toHaveLength(1);
     expect(h.observed.filter((id) => id.endsWith("000001"))).toHaveLength(1);
     expect(h.inbox()).toEqual([]);
+  });
+
+  it("does not start another run of a capture whose timed-out run still holds it", async () => {
+    const store: Store = new Map();
+    let release!: () => void;
+    const hung = new Promise<void>((resolve) => (release = resolve));
+    let observeCalls = 0;
+    const h = await boot(store, {
+      runTimeoutMs: 30,
+      gate: () => {
+        observeCalls++;
+        return hung;
+      },
+    });
+
+    expect((await h.accept(1)).status).toBe(202);
+    await h.controller.idle();
+    for (let i = 0; i < 3; i++) {
+      await h.controller.sweep();
+      await h.controller.idle();
+    }
+    const deadlineWarnings = vi.mocked(h.logger.warn).mock.calls.filter(([message]) => /deadline/.test(String(message)));
+
+    expect(deadlineWarnings).toHaveLength(1);
+    release();
+    await vi.waitFor(() => expect(h.rows()).toHaveLength(1));
+    await h.controller.sweep();
+    await h.controller.idle();
+    expect(observeCalls).toBe(1);
+    expect(h.rows()).toHaveLength(1);
+    expect(h.inbox()).toEqual([]);
+  });
+
+  it("does not count the wait for a capture's lock against its run's deadline", async () => {
+    const store: Store = new Map();
+    const crashed = await boot(store, { gate: new Promise<void>(() => {}) });
+    expect((await crashed.accept(1)).status).toBe(202);
+    const { captureKey } = await import("../src/functions/capture.js");
+    const key = captureKey("p", SESSION, "evt_fastack_000001");
+
+    let entered!: () => void;
+    const inRetry = new Promise<void>((resolve) => (entered = resolve));
+    let release!: () => void;
+    const slow = new Promise<void>((resolve) => (release = resolve));
+    let observeCalls = 0;
+    const h = await boot(store, {
+      runTimeoutMs: 30,
+      gate: () => {
+        observeCalls++;
+        entered();
+        return slow;
+      },
+    });
+    const sdkRetry = h.retry(key);
+    await inRetry;
+    const sweep = h.controller.sweep();
+    await new Promise((r) => setTimeout(r, 100));
+    release();
+    await sdkRetry;
+    await sweep;
+    await h.controller.idle();
+
+    expect(vi.mocked(h.logger.warn).mock.calls.filter(([message]) => /deadline/.test(String(message)))).toEqual([]);
+    expect(observeCalls).toBe(1);
+    expect(h.rows()).toHaveLength(1);
+    expect(h.inbox()).toEqual([]);
+  });
+
+  it("accepts a capture after a restart when processed rows leave the inbox under its cap", async () => {
+    vi.stubEnv("AGENTMEMORY_CAPTURE_INBOX_MAX", "4");
+    const store: Store = new Map([["mem:capture:inbox", new Map<string, unknown>([
+      ["cap_dead0", deadRow("cap_dead0")], ["cap_dead1", deadRow("cap_dead1")],
+    ])]]);
+    let scanFails = true;
+    const h = await boot(store, {
+      inboxScan: () => {
+        if (scanFails) throw new Error("state::get timed out");
+      },
+    });
+
+    expect((await h.accept(0)).status).toBe(202);
+    expect((await h.accept(1)).status).toBe(202);
+    await vi.waitFor(() => expect(h.rows()).toHaveLength(2));
+    await h.controller.idle();
+    expect(h.inbox()).toHaveLength(2);
+    scanFails = false;
+
+    const third = await h.accept(2);
+    const fourth = await h.accept(3);
+
+    expect(third.status).toBe(202);
+    expect(fourth.status).toBe(202);
+    await h.controller.idle();
+    expect(h.rows()).toHaveLength(4);
+  });
+
+  it("reports a session as not drained when the inbox rows left by a restart cannot be read", async () => {
+    const store: Store = new Map();
+    const crashed = await boot(store, { gate: new Promise<void>(() => {}) });
+    for (let i = 0; i < 2; i++) expect((await crashed.accept(i)).status).toBe(202);
+
+    const h = await boot(store, {
+      inboxScan: () => {
+        throw new Error("state::get timed out");
+      },
+    });
+    const { awaitSessionCaptures } = await import("../src/functions/capture.js");
+
+    expect(await h.controller.drainSession(SESSION, 1000)).toBe(false);
+    await awaitSessionCaptures(SESSION);
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/not confirmed/), expect.objectContaining({ sessionId: SESSION }));
+  });
+
+  it("answers 503 retryable when the inbox write fails", async () => {
+    const store: Store = new Map();
+    const h = await boot(store, { failInboxWrites: true });
+
+    const { result, status } = await h.accept(1);
+
+    expect(status).toBe(503);
+    expect(result).toMatchObject({ status: "rejected", retryable: true });
+    expect(h.inbox()).toEqual([]);
+    expect((await h.controller.status()).sinceStart.rejected).toBe(1);
   });
 });
