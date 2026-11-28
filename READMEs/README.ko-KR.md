@@ -1220,15 +1220,16 @@ curl -H "Authorization: Bearer $(cat ~/.agentmemory/secret)" http://localhost:31
 
 </details>
 
-**캡처 전달.** hook은 각 관측을 `eventId`와 함께 `POST /agentmemory/observe`로 한 번 전송합니다. payload에 자체 id가 있으면(예: Claude Code의 `tool_use_id`) 그 호출의 호스트 고유 id를 사용하고, 없으면 세션, hook 유형, 도구 이름, 입력, 출력, 호스트 타임스탬프의 해시를 사용합니다. 서버는 이벤트를 state 저장소의 캡처 인박스에 기록하고, 관측을 저장한 다음, 인박스 항목을 제거합니다. 상태 코드는 무슨 일이 있었는지를 알려줍니다:
+**캡처 전달.** hook은 각 관측을 `eventId`와 함께 `POST /agentmemory/observe`로 한 번 전송합니다. payload에 자체 id가 있으면(예: Claude Code의 `tool_use_id`) 그 호출의 호스트 고유 id를 사용하고, 없으면 세션, hook 유형, 도구 이름, 입력, 출력, 호스트 타임스탬프의 해시를 사용합니다. 서버는 이벤트를 state 저장소의 캡처 인박스에 기록하고 응답합니다. 관측은 백그라운드에서 저장한 다음 인박스 항목을 제거합니다. 백그라운드 작업은 세션당 한 번에 하나의 이벤트를 수락된 순서대로 실행하며, 동시에 최대 `AGENTMEMORY_CAPTURE_WORKERS`(2)개의 세션을 처리합니다. 저장에 실패한 이벤트는 재시도를 기다리되 같은 세션의 이후 이벤트를 막지 않으므로, 이후 이벤트가 그보다 먼저 저장될 수 있습니다. 재시작으로 인박스에 남은 항목은 다음 시작 때, 그 뒤에 수락된 어떤 이벤트보다 먼저 저장되며, `POST /agentmemory/session/end`와 요약은 해당 세션에서 이미 수락된 이벤트를 먼저 끝냅니다(최대 10초). 상태 코드는 무슨 일이 있었는지를 알려줍니다:
 
 | 상태 코드 | `status` 필드 | 의미 |
 |---|---|---|
-| `201` | `accepted` | 저장됨. `observationId`는 새로운 관측입니다. |
-| `202` | `accepted` (`state: "retrying"`) | 수락되었지만 저장에 실패했습니다. 서버는 재시작 후에도 이를 재시도합니다. |
-| `200` | `duplicate` | 이 `eventId`는 이미 수락되었습니다. `observationId`는 기존 관측이며, 새로 저장되는 것은 없습니다. |
-| `400` / `422` | `rejected` | payload가 잘못되었거나 저장이 영구적으로 실패했습니다 (이벤트는 dead letter로 보관됩니다). |
+| `202` | `accepted` (`state: "pending"`) | 인박스에 수락되었습니다. `observationId`는 해당 관측이 갖게 될 id입니다. |
+| `200` | `duplicate` | 이 `eventId`는 이미 수락되었습니다. `observationId`는 기존 관측 또는 대기 중인 관측이며, 새로 저장되는 것은 없습니다. |
+| `400` | `rejected` | payload가 잘못되었습니다. |
 | `503` | `rejected` (`retryable: true`) | 인박스가 가득 찼습니다(`AGENTMEMORY_CAPTURE_INBOX_MAX`). hook은 이벤트를 spool에 저장해 두고 나중에 전송합니다. |
+
+저장할 수 없는 이벤트, 예를 들어 해당 세션이 이미 `MAX_OBS_PER_SESSION`개의 관측을 가지고 있는 경우는 dead letter로 인박스에 남습니다. `defer` 없이 `mem::capture`를 호출하는 내부 호출자는 여전히 저장을 기다리며 `201`(`state: "completed"`), `202`(`state: "retrying"`) 또는 `422`(저장이 영구적으로 실패)를 받습니다.
 
 실패한 이벤트는 `AGENTMEMORY_CAPTURE_RETRY_INTERVAL_MS`(10초)마다 백오프를 두 배씩 늘려가며 `AGENTMEMORY_CAPTURE_MAX_ATTEMPTS`(5회)까지 재시도됩니다. 여전히 실패하는 이벤트는 dead letter로 인박스에 남아 `/agentmemory/status`와 뷰어의 Health 페이지에 나열되며, `POST /agentmemory/capture/retry`(`{"eventId": "..."}` 또는 `{"all": true}`)로 재시도할 수 있습니다. 수락된 이벤트 id는 `AGENTMEMORY_CAPTURE_DEDUP_HOURS`(168시간, 최대 `AGENTMEMORY_CAPTURE_EVENTS_MAX`개) 동안 기억되므로, 타임아웃이나 재시작 후 재생된 hook은 한 번만 저장되지만, 각자 호스트 id를 가진 두 개의 별도 도구 호출은 내용이 동일해도 두 번 저장됩니다. 관측이 삭제되면(forget, 세션 삭제, eviction, 자동 망각, 또는 스토어를 교체하는 import) 그 이벤트는 관측이 제거되기 전에 삭제됨으로 표시되므로, 같은 시간 범위 안에서 그 이벤트를 재생하면 duplicate로 응답되고 아무것도 저장하지 않습니다. state 저장소는 2초마다 디스크에 기록하므로, 응답된 이벤트가 잠깐 동안은 메모리에만 있을 수 있습니다. 이를 보완하기 위해 모든 `2xx` 응답은 서버의 `bootId`(매 시작마다 새로 생성), `acceptedAt`, `durableAfterMs`(파일 스토어에서는 저장 간격 + 1.5초, redis에서는 1.5초이며, 영속성은 운영자의 설정에 따름)도 함께 전달합니다. hook은 그 시간 범위가 지날 때까지 이벤트를 로컬 spool에 보관하고, 추가 요청 없이 이후 호출에서 이를 삭제합니다. 그 사이에 `bootId`가 바뀌었다면 서버가 재시작된 것이므로, hook은 동일한 `eventId`로 이벤트를 다시 보냅니다. 디스크에 실제로 도달한 이벤트는 두 번 저장되지 않습니다. 서버 또한 시작 시와 매 재시도 간격마다 그런 이벤트를 스스로 전송하므로, 이후 어떤 hook도 실행되지 않더라도 재시작으로 데이터가 손실되지 않습니다. 오래된 hook은 추가 필드를 무시하고, 더 오래된 서버를 상대하는 새 hook은 예전처럼 `2xx`에서 이벤트를 버립니다.
 

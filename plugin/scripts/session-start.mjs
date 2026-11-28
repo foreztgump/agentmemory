@@ -236,7 +236,8 @@ async function main() {
 		body: JSON.stringify({
 			sessionId,
 			project,
-			cwd
+			cwd,
+			...INJECT_CONTEXT ? {} : { injectContext: false }
 		})
 	};
 	if (!INJECT_CONTEXT) {

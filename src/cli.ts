@@ -2608,7 +2608,7 @@ async function seedDemoSession(
     cwd: project,
   });
 
-  let stored = 0;
+  let accepted = 0;
   for (const obs of session.observations) {
     const url = `${base}/agentmemory/observe`;
     const payload = {
@@ -2632,7 +2632,7 @@ async function seedDemoSession(
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
-        stored++;
+        accepted++;
       } else {
         const body = await res.text().catch(() => "");
         p.log.warn(
@@ -2646,8 +2646,8 @@ async function seedDemoSession(
     }
   }
 
-  await postJsonStrict(`${base}/agentmemory/session/end`, { sessionId: session.id, final: true });
-  return stored;
+  await postJsonStrict(`${base}/agentmemory/session/end`, { sessionId: session.id, final: true }, 30_000);
+  return accepted;
 }
 
 async function runDemoSearch(base: string, query: string): Promise<SearchResult> {

@@ -74,7 +74,7 @@ export async function runCaptureCommand(options: CaptureCommandOptions): Promise
     log(
       d.skipped
         ? `Drain skipped: ${d.skipped === "locked" ? "another drain is running" : "nothing to send"}`
-        : `Drained ${d.claimed}: ${d.delivered} stored, ${d.duplicates} already stored, ${d.rejected} rejected, ${d.expired} expired, ${d.remaining} still waiting${d.error ? ` (${d.error})` : ""}`,
+        : `Drained ${d.claimed}: ${d.delivered} accepted, ${d.duplicates} already on the server, ${d.rejected} rejected, ${d.expired} expired, ${d.remaining} still waiting${d.error ? ` (${d.error})` : ""}`,
     );
   }
   log(`Local spool: ${spool.enabled ? `${spool.records} waiting, ${spool.bytes} bytes` : "off (AGENTMEMORY_CAPTURE_SPOOL=false)"}`);

@@ -1210,15 +1210,16 @@ curl -H "Authorization: Bearer <secret-from-data-dir>" http://localhost:3111/age
 
 </details>
 
-**捕捉傳遞。** Hooks 會把每筆觀測連同一個 `eventId` 傳送一次到 `POST /agentmemory/observe`。當負載本身帶有 id 時(例如 Claude Code 的 `tool_use_id`),就使用宿主自己的呼叫 id;否則就用會話、hook 類型、工具名稱、輸入、輸出和宿主時間戳記的雜湊值。伺服器會把事件寫進狀態儲存中的捕捉收件匣,儲存該觀測,然後移除收件匣條目。狀態碼說明了發生了什麼:
+**捕捉傳遞。** Hooks 會把每筆觀測連同一個 `eventId` 傳送一次到 `POST /agentmemory/observe`。當負載本身帶有 id 時(例如 Claude Code 的 `tool_use_id`),就使用宿主自己的呼叫 id;否則就用會話、hook 類型、工具名稱、輸入、輸出和宿主時間戳記的雜湊值。伺服器會把事件寫進狀態儲存中的捕捉收件匣並回應。它在背景儲存該觀測,然後移除收件匣條目。背景工作依每個會話一次處理一個事件,按接受的順序進行,同時最多處理 `AGENTMEMORY_CAPTURE_WORKERS`(2)個會話。儲存失敗的事件會等待自己的重試,不會拖住同一會話中後面的事件,因此後面的事件可以比它先儲存。重新啟動後遺留在收件匣中的條目,會在下次啟動時儲存,先於在它之後接受的任何事件;`POST /agentmemory/session/end` 和摘要會先完成該會話中已接受的事件(最多 10 秒)。狀態碼說明了發生了什麼:
 
 | 狀態 | `status` 欄位 | 意義 |
 |---|---|---|
-| `201` | `accepted` | 已儲存。`observationId` 是新的觀測。 |
-| `202` | `accepted`(`state: "retrying"`) | 已接受,但儲存失敗。伺服器會重試它,重新啟動後也會重試。 |
-| `200` | `duplicate` | 這個 `eventId` 已經被接受過。`observationId` 是既有的觀測;不會儲存任何新內容。 |
-| `400` / `422` | `rejected` | 負載無效,或儲存徹底失敗(該事件會被保留為 dead letter)。 |
+| `202` | `accepted`(`state: "pending"`) | 已接受進收件匣。`observationId` 是這個觀測將擁有的 id。 |
+| `200` | `duplicate` | 這個 `eventId` 已經被接受過。`observationId` 是既有的或待處理的觀測;不會儲存任何新內容。 |
+| `400` | `rejected` | 負載無效。 |
 | `503` | `rejected`(`retryable: true`) | 收件匣已滿(`AGENTMEMORY_CAPTURE_INBOX_MAX`)。Hooks 會暫存該事件並稍後送出。 |
+
+無法儲存的事件,例如因為它所在的會話已經有 `MAX_OBS_PER_SESSION` 筆觀測,會作為 dead letter 保留在收件匣中。不帶 `defer` 呼叫 `mem::capture` 的內部呼叫方仍然會等待儲存完成,並得到 `201`(`state: "completed"`)、`202`(`state: "retrying"`)或 `422`(儲存徹底失敗)。
 
 失敗的事件會每隔 `AGENTMEMORY_CAPTURE_RETRY_INTERVAL_MS`(10 秒)以倍增退避的方式重試,最多重試 `AGENTMEMORY_CAPTURE_MAX_ATTEMPTS`(5)次。仍然失敗的事件會留在收件匣中成為 dead letter,列在 `/agentmemory/status` 和檢視器的 Health 頁面上,並可以用 `POST /agentmemory/capture/retry`(`{"eventId": "..."}` 或 `{"all": true}`)重試。已接受的事件 id 會被記住 `AGENTMEMORY_CAPTURE_DEDUP_HOURS`(168 小時,最多 `AGENTMEMORY_CAPTURE_EVENTS_MAX` 個 id),因此在超時或重新啟動後重播的 hook 只會被儲存一次,而兩個各自帶有自己宿主 id 的獨立工具呼叫,即使內容完全相同,仍會被儲存兩次。當一筆觀測被刪除時(forget、刪除會話、驅逐、自動遺忘,或是取代整個儲存的匯入),它的事件會在觀測被移除之前先被標記為已刪除,因此在同一個時間窗內重播該事件,會被當作重複而不儲存任何內容。狀態儲存每 2 秒才寫一次磁碟,所以一個已經被回應的事件,可能暫時只存在於記憶體中。為了涵蓋這種情況,每個 `2xx` 回應都會附帶伺服器的 `bootId`(每次啟動都是新的)、`acceptedAt` 和 `durableAfterMs`(檔案儲存為儲存間隔加 1.5 秒,redis 上為 1.5 秒,其中持久性是操作者自己的設定)。Hooks 會把事件留在本機暫存中,直到那個時間窗過去,才在之後的呼叫中順手刪除它,不會另外發送請求。若那時 `bootId` 已經改變,就表示伺服器重啟過,hook 會用同一個 `eventId` 再送一次該事件;已經落到磁碟上的事件不會被儲存兩次。伺服器自己也會在啟動時和每個重試間隔送出這類事件,因此即使之後沒有任何 hook 執行,重啟也不會造成任何損失。較舊的 hooks 會忽略這些額外欄位,而針對較舊伺服器的新 hooks,仍會在收到 `2xx` 時照舊捨棄該事件。
 
