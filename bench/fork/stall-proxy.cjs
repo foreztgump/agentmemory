@@ -1,12 +1,13 @@
 // Kvrocks proxy that holds every reply for STALL_MS about once every STALL_EVERY_MS, as a host stall does, so the
 // iii redis adapter's 500 ms reply timeout fires on reads and writes alike (TEE-1202). Requests pass at once; replies
-// queue during a stall and flush in order. Run it on the replica network with the alias `kvrocks` after re-attaching
-// Kvrocks under another alias; docs/fork/kvrocks.md has the steps.
+// queue during a stall and flush in order. To use it on a replica: `docker network disconnect <p>_replica <p>-kvrocks-1`,
+// `docker network connect --alias kvrocks-real <p>_replica <p>-kvrocks-1`, then run this file with node in a container on
+// <p>_replica with `--network-alias kvrocks` and UP_HOST=<p>-kvrocks-1, and (re)start agentmemory.
 const net = require("net");
 const UP_HOST = process.env.UP_HOST || "kvrocks";
 const UP_PORT = Number(process.env.UP_PORT || 6666);
 const STALL_MS = Number(process.env.STALL_MS || 700);
-const STALL_EVERY_MS = Number(process.env.STALL_EVERY_MS || 5000);
+const STALL_EVERY_MS = Number(process.env.STALL_EVERY_MS || 20000);
 let stalled = false;
 let stalls = 0;
 const waiting = new Set();
