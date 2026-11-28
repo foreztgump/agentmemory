@@ -91,11 +91,13 @@ describe("export read cost (TEE-1451)", () => {
   });
 
   // Before TEE-1451 an export of a few collections still read every row of the sessions, memories, summaries
-  // and each other collection, then dropped the rows it was not asked for.
+  // and each other collection, then dropped the rows it was not asked for: 721 reads, 75 round trips deep for
+  // each shape here. Counting the keys of a collection it was not asked for, which is all its totals need,
+  // brought them to 321 and 41, 91 and 26, and 21 and 21; the ceilings sit just above that.
   it.each([
-    ["memories only", { collections: "memories" }, { reads: 330, depth: 40 }],
-    ["two collections, paged", { collections: "facets,lessons", collectionLimit: 5, collectionOffset: 2 }, { reads: 100, depth: 30 }],
-    ["access logs only", { collections: "accessLogs" }, { reads: 80, depth: 30 }],
+    ["memories only", { collections: "memories" }, { reads: 325, depth: 42 }],
+    ["two collections, paged", { collections: "facets,lessons", collectionLimit: 5, collectionOffset: 2 }, { reads: 95, depth: 27 }],
+    ["access logs only", { collections: "accessLogs" }, { reads: 23, depth: 22 }],
   ])("keeps the reads of a %s export under its ceiling", async (_name, data, ceiling) => {
     const r = await fixture().exportData(data);
     expect({ reads: r.reads, depth: r.depth }).toEqual({
