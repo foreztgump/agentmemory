@@ -78,7 +78,7 @@ export function generatedIdTime(id: unknown): number | null {
   return ms >= MIN_ID_TIME && ms < MAX_ID_TIME ? ms : null
 }
 
-function orderKey(value: unknown): number {
+export function orderKey(value: unknown): number {
   if (!isPlainObject(value)) return Number.POSITIVE_INFINITY
   const fromId = generatedIdTime(value.id)
   if (fromId !== null) return fromId
@@ -93,7 +93,7 @@ function orderKey(value: unknown): number {
   return Number.POSITIVE_INFINITY
 }
 
-function idKey(value: unknown): string {
+export function idKey(value: unknown): string {
   if (!isPlainObject(value)) return ''
   const id = value.id ?? value.key
   return typeof id === 'string' ? id : typeof id === 'number' ? String(id) : ''
