@@ -84,7 +84,7 @@ const perProject = Number(args["per-project"]);
 const passes = Number(args.passes);
 if (!Number.isInteger(perProject) || perProject < 1) throw new Error(`invalid --per-project: ${args["per-project"]}`);
 if (!Number.isInteger(passes) || passes < 1) throw new Error(`invalid --passes: ${args.passes}`);
-const startedMs = (s: Session) => new Date(s.startedAt ?? 0).getTime();
+const startedMs = (s: Session) => new Date(s.startedAt ?? 0).getTime() || 0;
 const calls: { project: string; sessionId: string }[] = [];
 for (const [project, list] of [...byProject].sort(([a], [b]) => a.localeCompare(b))) {
   calls.push({ project, sessionId: "golden-probe-none" });
