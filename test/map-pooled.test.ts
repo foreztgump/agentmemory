@@ -40,4 +40,8 @@ describe("mapPooled", () => {
     await expect(failure).rejects.toThrow("item 3");
     expect(Math.max(...started)).toBeLessThan(16);
   });
+
+  it("still runs every item when asked for no concurrency", async () => {
+    expect(await mapPooled([1, 2, 3], async (i) => i * 2, 0)).toEqual([2, 4, 6]);
+  });
 });

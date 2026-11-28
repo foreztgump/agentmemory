@@ -130,7 +130,7 @@ export async function mapPooled<T, R>(
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker))
   if (failures.size > 0) throw failures.get(Math.min(...failures.keys()))
   return results
 }
@@ -143,7 +143,7 @@ export async function collectAll<T = unknown>(kv: StateKV, scope: string): Promi
   return out
 }
 
-export type ScopeReader = <T>(scope: string) => Promise<T[]>
+export type ScopeReader = <T>(scope: string) => Promise<readonly T[]>
 
 /** collectAll that reads each scope at most once. Callers share the rows, so none may mutate them. */
 export function scopeReader(kv: StateKV): ScopeReader {
@@ -151,7 +151,7 @@ export function scopeReader(kv: StateKV): ScopeReader {
   return <T>(scope: string) => {
     let rows = reads.get(scope)
     if (!rows) reads.set(scope, (rows = collectAll(kv, scope)))
-    return rows as Promise<T[]>
+    return rows as Promise<readonly T[]>
   }
 }
 
