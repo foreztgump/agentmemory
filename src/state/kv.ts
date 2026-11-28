@@ -4,7 +4,7 @@ import { decodeCursor, encodeCursor } from './list-query.js'
 import { resolveGraphScope, notifyGraphGenerationChange } from './graph-generation.js'
 import { ensureGraphConsistency, noteGraphSnapshotWrite } from './graph-consistency.js'
 import { withGraphIndexMutation, withGraphSnapshotIndexBarrier, withGraphSnapshotUnknownMutation } from './graph-retrieval-index.js'
-import { WHOLE_LIST_MAX_KEYS, isRedisListTimeout, noteRedisKeys } from '../fork/kv/redis-replies.js'
+import { WHOLE_LIST_MAX_KEYS, isRedisListTimeout, isRedisWriteTimeout, noteRedisKeys } from '../fork/kv/redis-replies.js'
 import { logger } from '../logger.js'
 
 export type StateBackend = 'file' | 'redis'
@@ -19,6 +19,8 @@ type UpdateResult = { old_value: unknown; new_value: unknown; errors: unknown[] 
 
 /** What iii's state::set replies (iii-sdk StateSetResult, dist/state.d.mts): the write, not the stored value. */
 export type StateSetReply<T> = { old_value?: T; new_value: T } | null
+
+export const STATE_WRITE_RETRY_DELAYS_MS = [100, 200, 400] as const
 
 const LOCAL_UPDATE_OPS = new Set(['set', 'remove', 'merge'])
 const UNSAFE_PATHS = new Set(['__proto__', 'constructor', 'prototype'])
@@ -78,7 +80,7 @@ export function generatedIdTime(id: unknown): number | null {
   return ms >= MIN_ID_TIME && ms < MAX_ID_TIME ? ms : null
 }
 
-function orderKey(value: unknown): number {
+export function orderKey(value: unknown): number {
   if (!isPlainObject(value)) return Number.POSITIVE_INFINITY
   const fromId = generatedIdTime(value.id)
   if (fromId !== null) return fromId
@@ -93,7 +95,7 @@ function orderKey(value: unknown): number {
   return Number.POSITIVE_INFINITY
 }
 
-function idKey(value: unknown): string {
+export function idKey(value: unknown): string {
   if (!isPlainObject(value)) return ''
   const id = value.id ?? value.key
   return typeof id === 'string' ? id : typeof id === 'number' ? String(id) : ''
@@ -110,12 +112,55 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
     .map((entry) => entry.value)
 }
 
+/** Results keep input order. A failure stops new work, waits for work already started, and rethrows the error a sequential loop would have hit first; no partial results are returned. */
+export async function mapPooled<T, R>(
+  items: readonly T[],
+  run: (item: T) => Promise<R>,
+  concurrency = 16,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  const failures = new Map<number, unknown>()
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++
+      try {
+        results[index] = await run(items[index]!)
+      } catch (error) {
+        failures.set(index, error)
+        next = items.length
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker))
+  if (failures.size > 0) throw failures.get(Math.min(...failures.keys()))
+  return results
+}
+
 export async function collectAll<T = unknown>(kv: StateKV, scope: string): Promise<T[]> {
   if (typeof kv.iterate !== 'function') return kv.list<T>(scope)
   const out: T[] = []
   for await (const page of kv.iterate<T>(scope)) out.push(...page)
   if (kv.backend === 'redis') return orderLikeInsertion(out)
   return out
+}
+
+export type ScopeReader = <T>(scope: string) => Promise<readonly T[]>
+
+/** collectAll that reads each scope at most once; a failed read is dropped so the next one retries. Callers share the rows, so none may mutate them. */
+export function scopeReader(kv: StateKV): ScopeReader {
+  const reads = new Map<string, Promise<unknown[]>>()
+  return <T>(scope: string) => {
+    let rows = reads.get(scope)
+    if (!rows) {
+      const read = collectAll(kv, scope)
+      reads.set(scope, (rows = read))
+      read.catch(() => {
+        if (reads.get(scope) === read) reads.delete(scope)
+      })
+    }
+    return rows as Promise<readonly T[]>
+  }
 }
 
 export class StateKV {
@@ -165,12 +210,39 @@ export class StateKV {
     return result
   }
 
+  private async absoluteWrite<TOutput>(
+    function_id: 'state::set' | 'state::delete',
+    payload: { scope: string; key: string; value?: unknown },
+  ): Promise<TOutput> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.sdk.trigger<typeof payload, TOutput>({ function_id, payload })
+      } catch (error) {
+        if (this.backend !== 'redis' || !isRedisWriteTimeout(error)) throw error
+        const delay = STATE_WRITE_RETRY_DELAYS_MS[attempt - 1]
+        if (delay === undefined) {
+          logger.warn('state: a redis write kept timing out; giving up', {
+            scope: payload.scope,
+            key: payload.key,
+            attempts: attempt,
+            message: error instanceof Error ? error.message : String(error),
+          })
+          throw error
+        }
+        logger.warn('state: a redis write timed out; retrying', {
+          scope: payload.scope,
+          key: payload.key,
+          function_id,
+          attempt,
+        })
+        await new Promise<void>((resolve) => setTimeout(resolve, delay))
+      }
+    }
+  }
+
   async set<T = unknown>(scope: string, key: string, value: T): Promise<StateSetReply<T>> {
     return this.mutate(scope, key, (resolvedScope) =>
-      this.sdk.trigger<{ scope: string; key: string; value: T }, StateSetReply<T>>({
-        function_id: 'state::set',
-        payload: { scope: resolvedScope, key, value },
-      }),
+      this.absoluteWrite<StateSetReply<T>>('state::set', { scope: resolvedScope, key, value }),
       { value },
     )
   }
@@ -182,7 +254,7 @@ export class StateKV {
           function_id: 'state::get', payload: { scope: resolvedScope, key },
         })
         const newValue = applyUpdateOps(oldValue, ops)
-        await this.sdk.trigger({ function_id: 'state::set', payload: { scope: resolvedScope, key, value: newValue } })
+        await this.absoluteWrite('state::set', { scope: resolvedScope, key, value: newValue })
         const result: UpdateResult = { old_value: oldValue, new_value: newValue, errors: [] }
         return result as T
       }
@@ -195,10 +267,7 @@ export class StateKV {
 
   async delete(scope: string, key: string): Promise<void> {
     await this.mutate(scope, key, async (resolvedScope) => {
-      await this.sdk.trigger<{ scope: string; key: string }, void>({
-        function_id: 'state::delete',
-        payload: { scope: resolvedScope, key },
-      })
+      await this.absoluteWrite<void>('state::delete', { scope: resolvedScope, key })
     })
   }
 

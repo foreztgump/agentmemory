@@ -13,6 +13,7 @@ import { checkAuth, slotsDisabledResponse } from "../triggers/api.js";
 import { isSlotsEnabled } from "../functions/slots.js";
 import { LESSON_SOURCE_IDS_MAX, normalizeLessonSourceIds } from "../functions/lessons.js";
 import { getAgentId, isAgentScopeIsolated } from "../config.js";
+import { logger } from "../logger.js";
 type McpResponse = {
   status_code: number;
   headers?: Record<string, string>;
@@ -40,6 +41,8 @@ function parseCsvList(value: unknown): string[] {
   }
   return [];
 }
+
+const TOOL_NAMES = new Set(getAllTools().map((t) => t.name));
 
 const SLOT_TOOL_NAMES = new Set(
   getAllTools().filter((t) => t.name.startsWith("memory_slot_")).map((t) => t.name),
@@ -69,8 +72,7 @@ export function registerMcpEndpoints(
     config: { api_path: "/agentmemory/mcp/tools", http_method: "GET" },
   });
 
-  sdk.registerFunction("mcp::tools::call", 
-    async (
+  const callTool = async (
       req: HttpRequest<{ name: string; arguments: Record<string, unknown> }>,
     ): Promise<McpResponse> => {
       const authErr = checkAuth(req, secret);
@@ -1341,6 +1343,18 @@ export function registerMcpEndpoints(
           },
         };
       }
+    };
+  sdk.registerFunction("mcp::tools::call",
+    async (req: HttpRequest<{ name: string; arguments: Record<string, unknown> }>): Promise<McpResponse> => {
+      const started = performance.now();
+      const response = await callTool(req);
+      const name = req.body?.name;
+      logger.info("MCP tool call", {
+        tool: typeof name === "string" && TOOL_NAMES.has(name) ? name : "unknown",
+        status: response.status_code,
+        ms: Math.round(performance.now() - started),
+      });
+      return response;
     },
   );
   sdk.registerTrigger({

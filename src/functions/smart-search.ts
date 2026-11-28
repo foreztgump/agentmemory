@@ -28,6 +28,7 @@ import { getCounters } from "../telemetry/setup.js";
 import { memoryToObservation } from "../state/memory-utils.js";
 import { getSearchIndex } from "./search.js";
 import { getSearchRuntime } from "../state/search-ports.js";
+import { readOnce, type HybridSearchRequest } from "../state/hybrid-search.js";
 import type { DegradedNotice } from "../fork/search/backend-status.js";
 
 export interface RecentSearch {
@@ -83,7 +84,7 @@ const SCOPED_RETRY_CANDIDATES = 1000;
 export function registerSmartSearchFunction(
   sdk: IIIClient,
   kv: StateKV,
-  searchFn: (query: string, limit: number, targetLayer?: SearchLayer, authorizeGraph?: GraphObservationAuthorization) => Promise<HybridSearchResult[]>,
+  searchFn: (query: string, limit: number, targetLayer?: SearchLayer, authorizeGraph?: GraphObservationAuthorization, request?: HybridSearchRequest) => Promise<HybridSearchResult[]>,
 ): void {
   sdk.registerFunction("mem::smart-search",
     async (data: {
@@ -133,7 +134,8 @@ export function registerSmartSearchFunction(
         );
       }
 
-      const matchesProject = project ? makeProjectMatcher(kv, project) : undefined;
+      const request: HybridSearchRequest = {};
+      const matchesProject = project ? makeProjectMatcher(kv, project, request) : undefined;
 
       if (data.expandIds && data.expandIds.length > 0) {
         const raw = data.expandIds.slice(0, 100);
@@ -209,7 +211,7 @@ export function registerSmartSearchFunction(
         return (await read<{ project?: string }>(KV.sessions, sessionId))?.project === project;
       };
       const [hybridResults, lessons] = await Promise.all([
-        searchFn(data.query, overFetchLimit, targetLayer, authorizeGraph),
+        searchFn(data.query, overFetchLimit, targetLayer, authorizeGraph, request),
         includeLessons
           ? recallLessons(sdk, data.query, lessonLimit, project)
           : Promise.resolve([]),
@@ -237,7 +239,7 @@ export function registerSmartSearchFunction(
       if ((filterAgentId || project) && filteredHybrid.length < limit && getSearchIndex().size > overFetchLimit) {
         try {
           const deeper = await scopeResults(
-            await searchFn(data.query, SCOPED_RETRY_CANDIDATES, targetLayer, authorizeGraph),
+            await searchFn(data.query, SCOPED_RETRY_CANDIDATES, targetLayer, authorizeGraph, request),
           );
           const seen = new Set(deeper.map((result) => result.observation.id));
           filteredHybrid = [
@@ -254,7 +256,7 @@ export function registerSmartSearchFunction(
       const compact: CompactSearchResult[] = await Promise.all(filteredHybrid.map(async (r) => {
         const layer = r.layer ?? getSearchIndex().layerOf(r.observation.id) ?? getSearchResultLayer(r.observation.id, r.sessionId);
         const memoryType = layer === "memory"
-          ? (await kv.get<Memory>(KV.memories, r.observation.id).catch(() => null))?.type ?? r.observation.memoryType
+          ? (await readOnce<Memory>(kv, request, KV.memories, r.observation.id).catch(() => null))?.type ?? r.observation.memoryType
           : undefined;
         return {
           obsId: r.observation.id,
@@ -448,23 +450,11 @@ async function findObservation(
   return null;
 }
 
-function makeProjectMatcher(kv: StateKV, project: string): (obsId: string, sessionId: string) => Promise<boolean> {
-  const memories = new Map<string, Promise<Memory | null>>();
-  const sessions = new Map<string, Promise<{ project?: string } | null>>();
+function makeProjectMatcher(kv: StateKV, project: string, request: HybridSearchRequest): (obsId: string, sessionId: string) => Promise<boolean> {
   return async (obsId, sessionId) => {
-    let memoryRead = memories.get(obsId);
-    if (!memoryRead) {
-      memoryRead = kv.get<Memory>(KV.memories, obsId);
-      memories.set(obsId, memoryRead);
-    }
-    const memory = await memoryRead;
+    const memory = await readOnce<Memory>(kv, request, KV.memories, obsId);
     if (memory?.project !== undefined) return memory.project === project;
-    let sessionRead = sessions.get(sessionId);
-    if (!sessionRead) {
-      sessionRead = kv.get<{ project?: string }>(KV.sessions, sessionId);
-      sessions.set(sessionId, sessionRead);
-    }
-    return (await sessionRead)?.project === project;
+    return (await readOnce<{ project?: string }>(kv, request, KV.sessions, sessionId))?.project === project;
   };
 }
 

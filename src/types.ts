@@ -1110,6 +1110,23 @@ export interface SessionObservationStats extends SessionSourceTotals {
   lowImportanceOldestMs?: number | null;
 }
 
+/** One injectable observation in KV.obsImportant. `at` and `id` are the row's insertion-order keys (null `at` sorts last). */
+export interface ImportantObservationEntry {
+  key: string;
+  id: string;
+  importance: number;
+  at: number | null;
+}
+
+/** KV.obsImportant row: the leading observations of one session that context injection can use, kept in step with mem:obs:<session> by the fork KV wrapper. */
+export interface SessionImportantObservations {
+  /** At most IMPORTANT_KEEP entries, in injection order. */
+  entries: ImportantObservationEntry[];
+  /** Important rows of the session that rank after the last entry. */
+  omitted: number;
+  updatedAt: string;
+}
+
 /**
  * KV.state scope — long-lived system counters + flags keyed by string.
  * Keep keys/types in sync with the state-scope callers (e.g.,

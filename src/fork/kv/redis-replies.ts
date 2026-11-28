@@ -9,6 +9,10 @@ import { logger } from "../../logger.js";
  *   WHOLE_LIST_MAX_KEYS rows; a larger scope is read row by row.
  * - HKEYS still grows with the scope. `noteRedisKeys` warns once per scope when a listed scope passes
  *   KEYS_WARN_COUNT, a growth doubling before HKEYS reaches the limit.
+ * - A `state::set` or `state::delete` whose reply times out is retried up to
+ *   STATE_WRITE_RETRY_DELAYS_MS.length times inside the key's lock, then rethrown. Both are absolute
+ *   and the one connection applies a late first command before the retry, so the end state is one
+ *   application. `state::update` is never retried: its ops may increment or append.
  * ponytail: HKEYS has no smaller form through iii; past ~85k keys in one listed scope, shard the scope
  * or get a paged `state::list_keys` (HSCAN) into the state worker.
  */
@@ -24,6 +28,13 @@ const ADAPTER_LIST_TIMEOUT = /Failed to get group from Redis: .*timed out/;
 export function isRedisListTimeout(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return ADAPTER_LIST_TIMEOUT.test(message);
+}
+
+const ADAPTER_WRITE_TIMEOUT = /Failed to (?:atomically )?(?:set|delete) value (?:in|from) Redis: .*timed out/;
+
+export function isRedisWriteTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return ADAPTER_WRITE_TIMEOUT.test(message);
 }
 
 const warnedScopes = new Set<string>();

@@ -29,6 +29,7 @@ import { normalizeAccessLog } from "./access-tracker.js";
 import { KV } from "../state/schema.js";
 import { checkPayloadFrameSize, oversizedPayloadError, payloadByteLength, SAFE_PAYLOAD_BYTES } from "../state/frame-guard.js";
 import { StateKV, collectAll } from "../state/kv.js";
+import { countRows } from "../fork/kv/paged-scan.js";
 import {
   addSessionToProjectIndex,
   removeSessionFromProjectIndex,
@@ -154,9 +155,13 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
         selection === undefined || selection.has(name);
 
       const collectionTotals: Record<string, number> = {};
-      const sliceCollection = <T>(name: string, rows: T[]): T[] => {
+      const sliceCollection = async <T>(name: string, scope: string): Promise<T[]> => {
+        if (!isSelected(name)) {
+          collectionTotals[name] = await countRows(kv, scope);
+          return [];
+        }
+        const rows = await collectAll<T>(kv, scope);
         collectionTotals[name] = rows.length;
-        if (!isSelected(name)) return [];
         if (collectionLimit === undefined) return rows;
         return rows.slice(collectionOffset, collectionOffset + collectionLimit);
       };
@@ -172,20 +177,21 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
           stoppedAt: collection,
         };
       };
-      const allSessions = await collectAll<Session>(kv, KV.sessions);
-      const sessionWindow = maxSessions !== undefined
+      const allSessions = isSelected("sessions")
+        ? await collectAll<Session>(kv, KV.sessions)
+        : [];
+      const sessionTotal = isSelected("sessions")
+        ? allSessions.length
+        : await countRows(kv, KV.sessions);
+      const paginatedSessions = maxSessions !== undefined
         ? allSessions.slice(offset, offset + maxSessions)
         : allSessions;
-      const paginatedSessions = isSelected("sessions") ? sessionWindow : [];
       if (!budget.fits(paginatedSessions)) return refuse("sessions");
 
-      const memories = sliceCollection("memories", await collectAll<Memory>(kv, KV.memories));
+      const memories = await sliceCollection<Memory>("memories", KV.memories);
       if (!budget.fits(memories)) return refuse("memories");
 
-      const summaries = sliceCollection(
-        "summaries",
-        await collectAll<SessionSummary>(kv, KV.summaries),
-      );
+      const summaries = await sliceCollection<SessionSummary>("summaries", KV.summaries);
       if (!budget.fits(summaries)) return refuse("summaries");
 
       const observations: Record<string, CompressedObservation[]> = {};
@@ -210,18 +216,21 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
 
       const partial = collectionLimit !== undefined || selection !== undefined;
       const exportedMemoryIds = new Set(memories.map((m) => m.id));
-      const accessLogsFor = (rows: AccessLogExport[]): AccessLogExport[] => {
+      const accessLogsFor = async (scope: string): Promise<AccessLogExport[]> => {
+        if (!isSelected("accessLogs") || exportedMemoryIds.size === 0) {
+          collectionTotals["accessLogs"] = await countRows(kv, scope);
+          return [];
+        }
+        const rows = await collectAll<AccessLogExport>(kv, scope);
         collectionTotals["accessLogs"] = rows.length;
-        if (!isSelected("accessLogs")) return [];
         return rows.filter((row) => exportedMemoryIds.has(row.memoryId));
       };
       const collections: Partial<ExportData> = {};
       for (const [field, scope] of EXPORT_COLLECTIONS) {
-        const rows = await collectAll<unknown>(kv, scope);
-        const items =
+        const items: unknown[] =
           field === "accessLogs" && partial
-            ? accessLogsFor(rows as AccessLogExport[])
-            : sliceCollection(field, rows);
+            ? await accessLogsFor(scope)
+            : await sliceCollection(field, scope);
         if (items.length === 0) continue;
         if (!budget.fits(items, field)) return refuse(field);
         (collections as Record<string, unknown>)[field] = items;
@@ -242,8 +251,8 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
         exportData.pagination = {
           offset,
           limit: maxSessions,
-          total: allSessions.length,
-          hasMore: offset + maxSessions < allSessions.length,
+          total: sessionTotal,
+          hasMore: offset + maxSessions < sessionTotal,
         };
       }
 
@@ -278,7 +287,7 @@ export function registerExportImportFunction(sdk: IIIClient, state: StateKV): vo
       );
       logger.info("Export complete", {
         sessions: paginatedSessions.length,
-        totalSessions: allSessions.length,
+        totalSessions: sessionTotal,
         observations: totalObs,
         memories: memories.length,
         summaries: summaries.length,
