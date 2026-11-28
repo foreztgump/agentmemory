@@ -221,26 +221,32 @@ Each slice is one PR against `disk`, at most about 800 changed lines, with its t
 | 10 | REST endpoints, pins, timers, docs | R13 (end to end), the pin endpoint (D3) | Endpoint auth and field whitelist; a pinned item survives; `docs:sync` counts | `api.ts` 9 (see the slice 10 note), README and plugin counts per AGENTS.md | 6, 7 |
 | 11 | Upstream-able fixes, one commit each: L2 evict orphans, L5 auto-forget index removal, lesson recall records access | supports G2 and the near-duplicate rule in design 5.4 | One failing-then-passing test per fix | `evict.ts`, `auto-forget.ts`, `lessons.ts` | none; can run in parallel with anything |
 | 12 | Staging proof on a replica (takes the replica lock) | R1, R4, R9 and R12 at full size | Dry run on a staging copy with collection counts and index sizes before and after; memory peak sampled during a full sweep; a kill mid-sweep, then resume; a one-day grace observed at 23 h and 25 h; a forced recall loss | none (bench scripts) | 1 to 10 merged; TEE-1169 and TEE-1196 merged |
-| 13 | First production run (owner) | R15 | Owner sets main's env; see the rollout below | none | 12, and the owner's answers below |
+| 13 | First production run (owner) | R15 | Owner sets each stack's env; see the rollout below | none | 12, and the owner's answers below |
 
 Slice notes:
 - Slices 1 to 11 are done. Slice 3: `setSummarizeVeto` now throws on a second registration, and `resetSummarizeVeto` clears it for tests. See the reconciliation below.
 
-Rollout for slice 13, on main only. Set:
-- `AM_RETENTION=enforce`, with the D1 windows, grace 30 and the recall-cases path;
+Rollout for slice 13, on main and on buddy (owner, 2026-11-27). On each stack, set:
+- `AM_RETENTION=enforce`, with the D1 windows, grace 30 and that stack's own recall-cases path;
 - `AGENTMEMORY_AUDIT_RETENTION_MONTHS=13` (D8);
 - `MAX_OBS_PER_SESSION=5000` on both stacks (D9);
-- auto-forget per open question 1.
-
-Buddy keeps retention unset.
+- auto-forget stays on (open question 1).
 
 ## Open questions and risks
 
-1. **Owner.** Once retention is on, should auto-forget be turned off on main (`AUTO_FORGET_ENABLED=false`), as design 8 recommends? Its TTL and observation clauses hard-delete with no grace. Should buddy, where retention stays off, keep it?
-2. **Owner.** Which golden recall cases does main's recall check use, and may that private file be mounted on the NR1 stack? Without cases, every run is report-only. That would conflict with D4's "enforce from the first sweep".
-3. **Owner.** Trash is not part of `/export`. Is it acceptable that a stack rebuilt from an export loses the 30-day restore window? Kvrocks-level backups keep it.
+1. **Decided (owner, 2026-11-19).** Auto-forget stays on, on both stacks, alongside retention. Design 8's recommendation to turn it off is not taken.
+2. **Decided (owner, 2026-11-19).** Main gets its own private golden recall set, built from main's data the way buddy's was for TEE-1155, mounted on main's NR1 stack only.
+3. **Decided (owner, 2026-11-19).** Leaving the trash out of `/export` is acceptable. Restores that need the trash come from the nightly Kvrocks backup.
 4. **Risk.** A writer that rebuilds a `Memory` object from scratch could drop `retention.demotedAt` and so un-demote a memory. Slice 8 pins this against `mem::remember`, consolidate and import.
 5. **Risk.** The 10% cap counts stage O only, because R15 names observations. Memory stages are uncapped.
+
+**Owner decisions, 2026-11-27.**
+- Buddy uses main's windows and grace: trim raw `source` at 45 project-active days, observations 180, superseded memories 180, cold memories demoted at 365, grace 30 days. Retention turns on for buddy as well as main.
+- Deliberate save keeps the narrow reading: a latest memory with `origin.channel` user or agent is never demoted; a consolidated or imported memory can be.
+- AC6 means graph items from deleted observations. Forgetting a memory marks no graph items.
+- Sessions without a project never age. Accepted; the first run reports how many there are.
+- Observations keep their bare-id access log and facets at purge. Accepted.
+- Pinning a vaulted item does not restore it at once; purge restores it at the end of grace. Accepted.
 
 ## Implementation reconciliation
 

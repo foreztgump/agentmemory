@@ -256,4 +256,26 @@ describe("KV.sessions concurrent mutation races (finding 3)", () => {
     expect(finalSession.firstPrompt).toBe("fix the parser");
     expect(finalSession.status).toBe("active");
   });
+
+  it("api::session::start registers the session without building context when the caller asks for none", async () => {
+    const kv = mockKV();
+    const sdk = mockSdk();
+    registerApiTriggers(sdk as never, kv as never);
+    const context = vi.fn(async () => ({ context: "recalled" }));
+    sdk.fns.set("mem::context", context);
+
+    const quiet = (await sdk.trigger("api::session::start", {
+      body: { sessionId: "ses_quiet", project: "/repo", cwd: "/repo", injectContext: false },
+    })) as { status_code: number; body: { session: Session; context?: string } };
+    const loud = (await sdk.trigger("api::session::start", {
+      body: { sessionId: "ses_loud", project: "/repo", cwd: "/repo" },
+    })) as { status_code: number; body: { session: Session; context?: string } };
+
+    expect(quiet.status_code).toBe(200);
+    expect(quiet.body.session.id).toBe("ses_quiet");
+    expect(quiet.body.context).toBeUndefined();
+    expect((kv.store.get(KV.sessions)?.get("ses_quiet") as Session).status).toBe("active");
+    expect(loud.body.context).toBe("recalled");
+    expect(context).toHaveBeenCalledTimes(1);
+  });
 });

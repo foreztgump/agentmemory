@@ -79,13 +79,17 @@ function rig(model = provider(), kv = store()) {
     ]);
   });
   const call = (id: string, input: any) => handlers.get(id)!(input);
-  const observe = (eventId: string, text: string, sessionId = "summary-session") => call("api::observe", { headers: {}, body: {
-    sessionId, eventId, project: "summary-project", cwd: "/fixture", hookType: "post_tool_use",
-    timestamp: new Date().toISOString(), data: { tool_name: "Read", tool_output: text },
-  } });
+  const observe = async (eventId: string, text: string, sessionId = "summary-session", processed = true) => {
+    const answer = await call("api::observe", { headers: {}, body: {
+      sessionId, eventId, project: "summary-project", cwd: "/fixture", hookType: "post_tool_use",
+      timestamp: new Date().toISOString(), data: { tool_name: "Read", tool_output: text },
+    } });
+    if (processed) await capture.idle();
+    return answer;
+  };
   const sessions = () => call("api::sessions", { headers: {}, query_params: { agentId: "*" } });
   const flush = async () => { while (pending.size) await Promise.allSettled([...pending]); };
-  return { kv, sdk, call, model, observe, sessions, flush, close: capture.stop };
+  return { kv, sdk, call, model, observe, sessions, flush, close: capture.stop, capture };
 }
 
 beforeEach(() => {
@@ -444,7 +448,7 @@ describe("session summary recovery", () => {
     await r.observe("seed-event-0001", "Original investigation");
     vi.stubEnv("AGENTMEMORY_AUTO_COMPRESS", "true");
     const captured = await r.observe("reply-event-0001", "The final analysis is available");
-    expect(captured).toMatchObject({ status_code: 201, body: { state: "completed" } });
+    expect(captured).toMatchObject({ status_code: 202, body: { state: "pending" } });
     await vi.waitFor(() => expect(model.compress).toHaveBeenCalledOnce());
     await r.call("test::close-session", { sessionId: "summary-session" });
     expect(await r.kv.get(KV.summaryRepairs, "summary-session")).not.toBeNull();
@@ -455,6 +459,80 @@ describe("session summary recovery", () => {
     expect((await r.sessions()).body.sessions[0]).toMatchObject({
       status: "completed", summary: { title: "Verified conclusion", observationCount: 2 },
     });
+    r.close();
+  });
+});
+
+describe("session end after captures that are still queued", () => {
+  function holdWorkers(r: ReturnType<typeof rig>) {
+    const busy = deferred<void>();
+    const get = r.kv.get;
+    r.kv.get = async (scope: string, id: string) => {
+      if (scope === KV.observations("busy-session-a") || scope === KV.observations("busy-session-b")) await busy.promise;
+      return get(scope, id);
+    };
+    const held = Promise.all([
+      r.observe("busy-event-000a", "Another session's tool call", "busy-session-a", false),
+      r.observe("busy-event-000b", "Another session's tool call", "busy-session-b", false),
+    ]);
+    return { release: async () => { busy.resolve(); await held; await r.capture.idle(); } };
+  }
+
+  it("summarizes the session once, from every capture acknowledged before session/end", async () => {
+    const r = rig();
+    await r.observe("end-event-0001", "Original investigation");
+    const workers = holdWorkers(r);
+    await new Promise((done) => setTimeout(done, 5));
+    expect(await r.observe("end-event-0002", "Verified conclusion", "summary-session", false)).toMatchObject({ status_code: 202 });
+
+    expect(await r.call("api::session::end", { headers: {}, body: { sessionId: "summary-session" } }))
+      .toMatchObject({ body: { ended: true } });
+    await r.flush();
+    await workers.release();
+    await r.flush();
+    const afterEnd = (await r.sessions()).body.sessions.find((s: { id: string }) => s.id === "summary-session");
+    await r.call("mem::session-finalize", { now: Date.now() + 600_000 });
+    await r.flush();
+
+    expect(afterEnd.summary?.title).toBe("Verified conclusion");
+    expect(r.model.summarize).toHaveBeenCalledTimes(1);
+    r.close();
+  });
+
+  it("has stored every capture acknowledged before session/end by the time it answers", async () => {
+    const r = rig();
+    await r.call("api::session::start", { headers: {}, body: { sessionId: "summary-session", project: "summary-project", cwd: "/fixture", injectContext: false } });
+    const workers = holdWorkers(r);
+    await new Promise((done) => setTimeout(done, 5));
+    for (let i = 0; i < 4; i++) await r.observe(`seed-event-000${i}`, `Seeded tool call ${i}`, "summary-session", false);
+
+    await r.call("api::session::end", { headers: {}, body: { sessionId: "summary-session", final: true } });
+
+    expect(await r.kv.list(KV.observations("summary-session"))).toHaveLength(4);
+    await workers.release();
+    await r.flush();
+    r.close();
+  });
+
+  it("keeps the session completed after session/end, and its stop lifecycle sees every capture acknowledged before it", async () => {
+    vi.stubEnv("AGENTMEMORY_FINALIZE_IDLE_MS", "900000");
+    const r = rig();
+    const extracted: number[] = [];
+    r.sdk.registerFunction("mem::graph-extract", async ({ observations }: { observations: unknown[] }) => { extracted.push(observations.length); return {}; });
+    await r.call("api::session::start", { headers: {}, body: { sessionId: "summary-session", project: "summary-project", cwd: "/fixture", injectContext: false } });
+    const workers = holdWorkers(r);
+    await new Promise((done) => setTimeout(done, 5));
+    for (let i = 0; i < 5; i++) await r.observe(`late-event-000${i}`, `Tool call ${i}`, "summary-session", false);
+
+    await r.call("api::session::end", { headers: {}, body: { sessionId: "summary-session", final: true } });
+    await r.flush();
+    await workers.release();
+    await r.flush();
+
+    const session = await r.kv.get(KV.sessions, "summary-session");
+    expect(session).toMatchObject({ status: "completed", endedAt: expect.any(String) });
+    expect(extracted).toEqual([5]);
+    expect(await r.kv.get(KV.summaries, "summary-session")).toMatchObject({ observationCount: 5 });
     r.close();
   });
 });
