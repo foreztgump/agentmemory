@@ -10,7 +10,7 @@ import { withObservationStats } from "../src/fork/kv/observation-stats.js";
 import { GuardedStateKV, ScopeReadInventory } from "../src/fork/scope-guard.js";
 
 const SET_TIMEOUT = "invocation_failed: handler error: SET_ERROR: Failed to set value: Failed to atomically set value in Redis: timed out";
-const DELETE_TIMEOUT = "invocation_failed: handler error: DELETE_ERROR: Failed to delete value: Failed to atomically delete value from Redis: timed out";
+const DELETE_TIMEOUT = "invocation_failed: handler error: DELETE_ERROR: Failed to delete value: Failed to delete value from Redis: timed out";
 
 type Req = { function_id: string; payload: { scope: string; key: string; value?: unknown; ops?: never[] } };
 
@@ -115,7 +115,7 @@ describe("a state write that times out on the redis adapter", () => {
     const engine = flakyEngine();
     engine.seed(KV.memories, "mem_1", { id: "mem_1" });
     engine.timeOut("state::delete", 100);
-    await expect(redisKV(engine).delete(KV.memories, "mem_1")).rejects.toThrow(/atomically delete value from Redis: timed out/);
+    await expect(redisKV(engine).delete(KV.memories, "mem_1")).rejects.toThrow(/delete value from Redis: timed out/);
     expect(engine.stored(KV.memories, "mem_1")).toEqual({ id: "mem_1" });
   });
 
