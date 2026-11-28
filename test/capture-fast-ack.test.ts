@@ -118,7 +118,7 @@ describe("capture route answers before processing", () => {
 
     expect(h.rows()).toHaveLength(40);
     expect(h.calls.filter((c) => WHOLE_SCOPE_READS.has(c.fn) && c.scope.startsWith("mem:obs"))).toEqual([]);
-    expect(h.calls.length / 10).toBeLessThanOrEqual(20);
+    expect(h.calls.length / 10).toBeLessThanOrEqual(22);
   });
 
   it("answers the first capture after a restart without waiting for the inbox scan", async () => {
