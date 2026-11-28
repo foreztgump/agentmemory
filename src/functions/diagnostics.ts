@@ -4,7 +4,7 @@ import { KV } from "../state/schema.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { recordAudit } from "./audit.js";
 import { findOrphanFacets, isFacetStillOrphan } from "./facets.js";
-import { collectAll } from "../state/kv.js";
+import { collectAll, readOnce } from "../state/kv.js";
 import type {
   Action,
   ActionEdge,
@@ -53,13 +53,19 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
         ? data.categories.filter((c) => ALL_CATEGORIES.includes(c))
         : ALL_CATEGORIES;
 
-      const checks: DiagnosticCheck[] = [];
       const now = Date.now();
+      const read = readOnce(kv);
+      const pending: Array<Promise<DiagnosticCheck[]>> = [];
+      const category = (name: string, check: (checks: DiagnosticCheck[]) => Promise<void>) => {
+        if (!categories.includes(name)) return;
+        const checks: DiagnosticCheck[] = [];
+        pending.push(check(checks).then(() => checks));
+      };
 
-      if (categories.includes("actions")) {
-        const actions = await collectAll<Action>(kv, KV.actions);
-        const allEdges = await collectAll<ActionEdge>(kv, KV.actionEdges);
-        const leases = await collectAll<Lease>(kv, KV.leases);
+      category("actions", async (checks) => {
+        const actions = await read<Action>(KV.actions);
+        const allEdges = await read<ActionEdge>(KV.actionEdges);
+        const leases = await read<Lease>(KV.leases);
         const actionMap = new Map(actions.map((a) => [a.id, a]));
 
         for (const action of actions) {
@@ -135,11 +141,11 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("leases")) {
-        const leases = await collectAll<Lease>(kv, KV.leases);
-        const actions = await collectAll<Action>(kv, KV.actions);
+      category("leases", async (checks) => {
+        const leases = await read<Lease>(KV.leases);
+        const actions = await read<Action>(KV.actions);
         const actionIds = new Set(actions.map((a) => a.id));
         let leaseIssues = 0;
 
@@ -179,11 +185,11 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("sentinels")) {
-        const sentinels = await collectAll<Sentinel>(kv, KV.sentinels);
-        const actions = await collectAll<Action>(kv, KV.actions);
+      category("sentinels", async (checks) => {
+        const sentinels = await read<Sentinel>(KV.sentinels);
+        const actions = await read<Action>(KV.actions);
         const actionIds = new Set(actions.map((a) => a.id));
         let sentinelIssues = 0;
 
@@ -226,10 +232,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("sketches")) {
-        const sketches = await collectAll<Sketch>(kv, KV.sketches);
+      category("sketches", async (checks) => {
+        const sketches = await read<Sketch>(KV.sketches);
         let sketchIssues = 0;
 
         for (const sketch of sketches) {
@@ -257,10 +263,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("signals")) {
-        const signals = await collectAll<Signal>(kv, KV.signals);
+      category("signals", async (checks) => {
+        const signals = await read<Signal>(KV.signals);
         let signalIssues = 0;
 
         for (const signal of signals) {
@@ -288,10 +294,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("sessions")) {
-        const sessions = await collectAll<Session>(kv, KV.sessions);
+      category("sessions", async (checks) => {
+        const sessions = await read<Session>(KV.sessions);
         let sessionIssues = 0;
 
         for (const session of sessions) {
@@ -319,10 +325,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("memories")) {
-        const memories = await collectAll<Memory>(kv, KV.memories);
+      category("memories", async (checks) => {
+        const memories = await read<Memory>(KV.memories);
         const memoryIds = new Set(memories.map((m) => m.id));
         const supersededBy = new Map<string, string>();
         let memoryIssues = 0;
@@ -399,13 +405,13 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("lessons")) {
+      category("lessons", async (checks) => {
         // Counts only live lessons (deleted=true rows are tombstoned).
         // Catches bad confidence values that would silently break recall
         // scoring (memory_lesson_recall multiplies by confidence).
-        const lessons = await collectAll<Lesson>(kv, KV.lessons);
+        const lessons = await read<Lesson>(KV.lessons);
         const live = lessons.filter((l) => !l.deleted);
         let lessonIssues = 0;
         for (const l of live) {
@@ -438,10 +444,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("summaries")) {
-        const summaries = await collectAll<SessionSummary>(kv, KV.summaries);
+      category("summaries", async (checks) => {
+        const summaries = await read<SessionSummary>(KV.summaries);
         let summaryIssues = 0;
         for (const s of summaries) {
           // typeof guard before .trim() — a corrupted row with title=null
@@ -467,10 +473,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("semantic")) {
-        const semantic = await collectAll<SemanticMemory>(kv, KV.semantic);
+      category("semantic", async (checks) => {
+        const semantic = await read<SemanticMemory>(KV.semantic);
         let semanticIssues = 0;
         for (const s of semantic) {
           if (
@@ -497,10 +503,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("procedural")) {
-        const procedural = await collectAll<ProceduralMemory>(kv, KV.procedural);
+      category("procedural", async (checks) => {
+        const procedural = await read<ProceduralMemory>(KV.procedural);
         let proceduralIssues = 0;
         for (const p of procedural) {
           if (!Array.isArray(p.steps) || p.steps.length === 0) {
@@ -523,10 +529,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("crystals")) {
-        const crystals = await collectAll<Crystal>(kv, KV.crystals);
+      category("crystals", async (checks) => {
+        const crystals = await read<Crystal>(KV.crystals);
         let crystalIssues = 0;
         for (const c of crystals) {
           if (typeof c.narrative !== "string" || c.narrative.trim().length === 0) {
@@ -549,10 +555,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("insights")) {
-        const insights = await collectAll<Insight>(kv, KV.insights);
+      category("insights", async (checks) => {
+        const insights = await read<Insight>(KV.insights);
         let insightIssues = 0;
         for (const i of insights) {
           if (
@@ -579,9 +585,9 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("mesh")) {
+      category("mesh", async (checks) => {
         const peers = await kv.list<MeshPeer>(KV.mesh);
         let meshIssues = 0;
 
@@ -621,10 +627,10 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
             fixable: false,
           });
         }
-      }
+      });
 
-      if (categories.includes("facets")) {
-        const orphans = await findOrphanFacets(kv);
+      category("facets", async (checks) => {
+        const orphans = await findOrphanFacets(kv, read);
         checks.push(
           orphans.length > 0
             ? {
@@ -642,7 +648,12 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
                 fixable: false,
               },
         );
-      }
+      });
+
+      const settled = await Promise.allSettled(pending);
+      const failure = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) throw failure.reason;
+      const checks = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 
       const summary = {
         pass: checks.filter((c) => c.status === "pass").length,

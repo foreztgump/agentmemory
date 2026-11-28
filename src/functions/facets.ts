@@ -1,10 +1,10 @@
 import type { IIIClient } from "iii-sdk";
-import type { StateKV } from "../state/kv.js";
+import type { ScopeReader, StateKV } from "../state/kv.js";
 import { lookupObservationSession } from "../state/obs-index.js";
 import { KV, generateId } from "../state/schema.js";
 import type { Facet, Lesson } from "../types.js";
 import { logger } from "../logger.js";
-import { collectAll } from "../state/kv.js";
+import { collectAll, mapPooled, readOnce } from "../state/kv.js";
 
 interface TargetLiveness {
   observation: boolean;
@@ -82,12 +82,23 @@ export async function deleteFacetsForTargets(
   }
 }
 
-export async function findOrphanFacets(kv: StateKV): Promise<Facet[]> {
-  const facets = await collectAll<Facet>(kv, KV.facets);
-  const actionIds = facets.some((f) => f.targetType === "action")
-    ? new Set((await collectAll<{ id: string }>(kv, KV.actions)).map((a) => a.id))
-    : new Set<string>();
-  const live = new Map<string, TargetLiveness | null>();
+export async function findOrphanFacets(kv: StateKV, read: ScopeReader = readOnce(kv)): Promise<Facet[]> {
+  const facets = await read<Facet>(KV.facets);
+  const targets = new Map<string, { id: string; observationTarget: boolean }>();
+  for (const facet of facets) {
+    if (facet.targetType === "action") continue;
+    const observationTarget = checksObservation(facet.targetId, facet.targetType);
+    targets.set(`${observationTarget ? "o" : "r"}:${facet.targetId}`, { id: facet.targetId, observationTarget });
+  }
+  const [actionIds, checked] = await Promise.all([
+    facets.some((f) => f.targetType === "action")
+      ? read<{ id: string }>(KV.actions).then((actions) => new Set(actions.map((a) => a.id)))
+      : new Set<string>(),
+    mapPooled([...targets.values()], ({ id, observationTarget }) =>
+      targetLiveness(kv, id, observationTarget).catch(() => null),
+    ),
+  ]);
+  const live = new Map([...targets.keys()].map((key, i) => [key, checked[i]]));
   let observationIds: Set<string> | null | undefined;
   const orphans: Facet[] = [];
   for (const facet of facets) {
@@ -96,14 +107,10 @@ export async function findOrphanFacets(kv: StateKV): Promise<Facet[]> {
       continue;
     }
     const observationTarget = checksObservation(facet.targetId, facet.targetType);
-    const cacheKey = `${observationTarget ? "o" : "r"}:${facet.targetId}`;
-    if (!live.has(cacheKey)) {
-      live.set(cacheKey, await targetLiveness(kv, facet.targetId, observationTarget).catch(() => null));
-    }
-    const liveness = live.get(cacheKey);
+    const liveness = live.get(`${observationTarget ? "o" : "r"}:${facet.targetId}`);
     if (!liveness || facetTargetLive(facet, liveness)) continue;
     if (observationTarget) {
-      if (observationIds === undefined) observationIds = await listObservationIds(kv);
+      if (observationIds === undefined) observationIds = await listObservationIds(kv, read);
       if (!observationIds || observationIds.has(facet.targetId)) continue;
     }
     orphans.push(facet);
@@ -114,9 +121,9 @@ export async function findOrphanFacets(kv: StateKV): Promise<Facet[]> {
 const OBSERVATION_SCAN_BATCH = 16;
 const UNSESSIONED_OBSERVATION_SCOPE = "migrated";
 
-async function listObservationIds(kv: StateKV): Promise<Set<string> | null> {
+async function listObservationIds(kv: StateKV, read: ScopeReader): Promise<Set<string> | null> {
   try {
-    const sessions = await collectAll<{ id: string }>(kv, KV.sessions);
+    const sessions = await read<{ id: string }>(KV.sessions);
     const scopes = [...new Set([...sessions.map((session) => session.id), UNSESSIONED_OBSERVATION_SCOPE])];
     const ids = new Set<string>();
     for (let start = 0; start < scopes.length; start += OBSERVATION_SCAN_BATCH) {

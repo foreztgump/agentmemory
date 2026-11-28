@@ -103,11 +103,14 @@ describe("diagnose read cost (TEE-1451)", () => {
 
   // Before TEE-1451 the categories ran one after another, each reading its scopes again, and the facets check
   // looked its targets up one at a time: 1,372 reads, 129 round trips deep for every category here (1,006 and
-  // 102 with no observation scan), and 490 reads, 51 deep for the facets check alone.
+  // 102 with no observation scan), and 490 reads, 51 deep for the facets check alone. Reading each scope once and
+  // running the categories and the target lookups together brought them to 1,037 and 25, 792 and 14, and 490 and
+  // 34; the ceilings sit just above that. The facets check keeps its reads: the scan is what proves an observation
+  // target gone when the session index has no row for it.
   it.each([
-    ["every category", {}, { observationScan: true }, { reads: 1150, depth: 45 }],
-    ["every category, no observation scan", {}, { observationScan: false }, { reads: 800, depth: 30 }],
-    ["facets", { categories: ["facets"] }, { observationScan: true }, { reads: 490, depth: 35 }],
+    ["every category", {}, { observationScan: true }, { reads: 1045, depth: 27 }],
+    ["every category, no observation scan", {}, { observationScan: false }, { reads: 800, depth: 16 }],
+    ["facets", { categories: ["facets"] }, { observationScan: true }, { reads: 495, depth: 36 }],
   ])("keeps the reads of a %s diagnose under its ceiling", async (_name, data, opts, ceiling) => {
     const r = await (await fixture(opts)).diagnose(data);
     expect({ reads: r.reads, depth: r.depth }).toEqual({
