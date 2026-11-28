@@ -40,6 +40,8 @@ type StoredDocument = { terms: readonly string[]; dl: number };
 interface FillWrite {
   skipped: boolean;
   observed: boolean;
+  /** Its write failed after the scroll skipped it, so it is read back and counted unless another write takes it first. */
+  abandoned?: boolean;
   first?: StoredDocument;
   latest?: StoredDocument;
 }
@@ -186,8 +188,12 @@ export class PrefixVocabulary {
 
   /** Registers points a write is about to change; call before the write is sent. Outside a running fill it does nothing. */
   touch(pointIds: readonly string[]): void {
-    if (!this.filling || this.filled) return;
-    for (const id of pointIds) if (!this.fillWrites.has(id)) this.fillWrites.set(id, { skipped: false, observed: false });
+    const filling = this.filling !== null && !this.filled;
+    for (const id of pointIds) {
+      const write = this.fillWrites.get(id);
+      if (write) write.abandoned = false;
+      else if (filling) this.fillWrites.set(id, { skipped: false, observed: false });
+    }
   }
 
   /**
@@ -200,6 +206,7 @@ export class PrefixVocabulary {
       if (applied) this.replace(previous, current);
       return;
     }
+    write.abandoned = false;
     if (!write.observed) {
       write.observed = true;
       write.first = previous;
@@ -216,7 +223,8 @@ export class PrefixVocabulary {
     const skipped = pointIds.filter((id) => {
       const write = this.fillWrites.get(id);
       if (!write || write.observed) return false;
-      this.fillWrites.delete(id);
+      if (!write.skipped) this.fillWrites.delete(id);
+      else write.abandoned = true;
       return write.skipped;
     });
     if (skipped.length === 0) return;
@@ -227,11 +235,17 @@ export class PrefixVocabulary {
   private async recount(pointIds: string[]): Promise<void> {
     const epoch = this.epoch;
     try {
-      const points = await this.qdrant.call<Array<{ payload?: { terms?: unknown; dl?: number; deleted?: boolean } }>>("POST", `${this.qdrant.path}/points`, {
+      const points = await this.qdrant.call<Array<{ id: string; payload?: { terms?: unknown; dl?: number; deleted?: boolean } }>>("POST", `${this.qdrant.path}/points`, {
         ids: pointIds, with_payload: ["terms", "dl", "deleted"], with_vector: false,
       });
       if (epoch !== this.epoch) return;
-      for (const { payload } of points) if (!payload?.deleted) this.replace(undefined, storedDocument(payload));
+      const stored = new Map(points.map(({ id, payload }) => [id, payload]));
+      for (const id of pointIds) {
+        if (!this.fillWrites.get(id)?.abandoned) continue;
+        this.fillWrites.delete(id);
+        const payload = stored.get(id);
+        if (!payload?.deleted) this.replace(undefined, storedDocument(payload));
+      }
     } catch (error) {
       logger.warn("am-search could not recount points after a failed write; they count again on their next write", { points: pointIds.length, error: error instanceof Error ? error.message : String(error) });
     }

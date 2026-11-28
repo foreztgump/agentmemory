@@ -67,7 +67,9 @@ for (const [label, qs] of [["capture", queries(9001, false)], ["capture-prefix",
     if (calls.length > 1) deep.push(ms);
     for (const c of calls) {
       const key = c.kind.replace(/\d+$/, "");
-      kinds.set(key, [...(kinds.get(key) ?? []), c.ms]);
+      const bucket = kinds.get(key) ?? [];
+      bucket.push(c.ms);
+      kinds.set(key, bucket);
     }
     const sizes = queryTerms(q).map(({ term }) => vocabulary.completePrefixes(term)?.length ?? null);
     for (const size of sizes) if (size === null) uncapped++; else expansion.push(size);

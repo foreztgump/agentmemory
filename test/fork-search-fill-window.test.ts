@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { contentRev, type Op } from "../src/fork/search/protocol.js";
 import { DEFAULT_AVGDL } from "../src/fork/search/settings.js";
 import { SearchEngine } from "../src/fork/worker/engine.js";
+import { PrefixVocabulary } from "../src/fork/worker/prefix-vocabulary.js";
 import type { Qdrant } from "../src/fork/worker/qdrant.js";
 import { QDRANT_URL, qdrantFor } from "./helpers/search-engine.js";
 
@@ -97,4 +98,36 @@ describe.skipIf(!QDRANT_URL)("writes during the vocabulary fill", () => {
         .toEqual({ documents: 1, averageLength: 1, frequencies: { alphaold: 1 } });
     }
   }, 60_000);
+});
+
+describe("a failed write retried while its point is read back", () => {
+  it("is counted once, by the retry", async () => {
+    let openScroll!: () => void;
+    const scrollGate = new Promise<void>((resolve) => { openScroll = resolve; });
+    let openRead!: () => void;
+    const readGate = new Promise<void>((resolve) => { openRead = resolve; });
+    const qdrant = {
+      path: "/collections/retry",
+      call: async (_method: string, path: string) => {
+        if (path.endsWith("/points/scroll")) {
+          await scrollGate;
+          return { points: [{ id: "p1", payload: { terms: ["oldterm"], dl: 1 } }], next_page_offset: null };
+        }
+        await readGate;
+        return [{ id: "p1", payload: { terms: ["newterm"], dl: 1 } }];
+      },
+    } as unknown as Qdrant;
+    const vocab = new PrefixVocabulary(qdrant, async () => {});
+    vocab.fillInBackground();
+    vocab.touch(["p1"]);
+    openScroll();
+    await vocab.settled();
+    vocab.abandon(["p1"]);
+    vocab.touch(["p1"]);
+    vocab.changed("p1", { terms: ["oldterm"], dl: 1 }, { terms: ["newterm"], dl: 1 }, true);
+    openRead();
+    await vocab.settled();
+    expect({ documents: vocab.documentCount, frequencies: Object.fromEntries([...vocab.frequencies].filter(([, df]) => df > 0)) })
+      .toEqual({ documents: 1, frequencies: { newterm: 1 } });
+  });
 });
