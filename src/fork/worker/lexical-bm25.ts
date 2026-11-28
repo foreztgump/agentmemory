@@ -3,6 +3,8 @@ import type { Hit } from "../search/protocol.js";
 
 const K1 = 1.2;
 const B = 0.75;
+/** No document's exact BM25 weight for a term reaches this: tf(K1 + 1) / (tf + K1(1 - B + B dl/avgdl)) with 1 - B > 0. */
+export const TERM_WEIGHT_CAP = K1 + 1;
 
 export interface LexicalDocument {
   id: string;

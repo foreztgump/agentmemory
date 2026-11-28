@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "../bench/fork/lib/stats.js";
-import { documentBm25, expandLexicalTerms, lexicalBm25, type LexicalDocument } from "../src/fork/worker/lexical-bm25.js";
+import { documentBm25, expandLexicalTerms, lexicalBm25, TERM_WEIGHT_CAP, type LexicalDocument } from "../src/fork/worker/lexical-bm25.js";
 import { SearchIndex } from "../src/state/search-index.js";
 import { extractTerms, queryTerms } from "../src/state/term-extraction.js";
 import type { CompressedObservation } from "../src/types.js";
@@ -123,5 +123,16 @@ describe("one document's lexical BM25 score", () => {
     expect(alphaOnly).toBeLessThan(ranked.get("known")!);
     expect(documentBm25(docs[1]!, query, frequencies, 10, 1.5)).toBe(0);
     expect(ranked.get("late")).toBeGreaterThan(0);
+  });
+
+  it("stays below idf x TERM_WEIGHT_CAP however often the term repeats and however short the document", () => {
+    const frequencies = new Map([["redis", 1]]);
+    const idf = Math.log((1000 - 1 + 0.5) / (1 + 0.5) + 1);
+    for (const tf of [1, 7, 1e5]) {
+      for (const [dl, averageLength] of [[tf, 1e6], [tf, 1], [10 * tf, 3]] as const) {
+        const document = { id: "d", sessionId: "s", terms: Array<string>(tf).fill("redis"), dl };
+        expect(documentBm25(document, [{ term: "redis", weight: 1 }], frequencies, 1000, averageLength), `tf ${tf} dl ${dl}`).toBeLessThan(idf * TERM_WEIGHT_CAP);
+      }
+    }
   });
 });

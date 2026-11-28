@@ -150,10 +150,17 @@ describe("keyword search past the deep read's depth", () => {
     expect(expected[0]!.id).toBe("rare");
     expect(await engine.keyword("redis", 1, "all")).toEqual(expected);
     expect(lists()).toEqual([
-      [[redi, 68], [redi, 1], [cache, 68], [cache, 1]],
-      [[redi, 272], [redi, 1]],
+      [[redi, 272], [redi, 1], [cache, 68], [cache, 1]],
       [[redi, 1088], [redi, 1]],
     ]);
+  });
+
+  it("starts a list the vocabulary says outlasts the first depth one step deeper", async () => {
+    const { engine, lists } = await pastDepthRig([...crowd, rare]);
+    await engine.keyword("redis", 1, "all");
+    expect(engine.prefixes!.frequencies.get("redi")).toBeGreaterThan(68);
+    expect(engine.prefixes!.frequencies.get("redicache")).toBeLessThanOrEqual(68);
+    expect(lists()[0]).toEqual([[redi, 272], [redi, 1], [cache, 68], [cache, 1]]);
   });
 
   it("stops without deepening once no unread document can reach the k-th score", async () => {
@@ -162,16 +169,24 @@ describe("keyword search past the deep read's depth", () => {
     expect(lists()).toHaveLength(1);
   });
 
-  it("deepens only the lists whose floor could still reach the k-th score", async () => {
+  it("never reads a list whose weight cap cannot lift a document to the k-th score", async () => {
     const both = crowd.map(({ id }, i) => point(id, i, ["redi", "redicache"]));
     const common = Array.from({ length: 300 }, (_, i) => point(`common_${String(i).padStart(3, "0")}`, CROWD + i, ["redicache"]));
     const { engine, expected, lists } = await pastDepthRig([...both, ...common]);
     expect(expected[0]!.id).toBe("crowd_000");
     expect(await engine.keyword("redis", 1, "all")).toEqual(expected);
     expect(lists()).toEqual([
-      [[redi, 68], [redi, 1], [cache, 68], [cache, 1]],
       [[redi, 272], [redi, 1]],
       [[redi, 1088], [redi, 1]],
     ]);
+  });
+
+  it("reads every list while each one's cap could still lift a document to the k-th score", async () => {
+    const both = crowd.map(({ id }, i) => point(id, i, ["redi", "redicache"]));
+    const rares = Array.from({ length: 3 }, (_, i) => point(`rare_${i}`, CROWD + i, [`redirare${i}`]));
+    const { engine, expected, lists } = await pastDepthRig([...both, ...rares]);
+    expect(await engine.keyword("redis", 1, "all")).toEqual(expected);
+    const read = new Set(lists().flat().map(([id]) => id));
+    for (const term of ["redi", "redicache", "redirare0", "redirare1", "redirare2"]) expect(read, term).toContain(termId(term));
   });
 });

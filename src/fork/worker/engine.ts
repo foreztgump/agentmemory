@@ -18,7 +18,7 @@ import {
   type StatsResult,
 } from "../search/protocol.js";
 import { querySparse, termId, termsSparse, type Sparse } from "./bm25-sparse.js";
-import { documentBm25, expandLexicalTerms, lexicalBm25, storedDocument, type LexicalDocument } from "./lexical-bm25.js";
+import { documentBm25, expandLexicalTerms, lexicalBm25, storedDocument, TERM_WEIGHT_CAP, type LexicalDocument } from "./lexical-bm25.js";
 import { DEFAULT_VOCABULARY_LIMITS, PrefixVocabulary, type VocabularyLimits } from "./prefix-vocabulary.js";
 import { pointId, type Qdrant } from "./qdrant.js";
 import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
@@ -101,7 +101,10 @@ function weightAt(vector: Sparse | undefined, id: number): number {
   return i >= 0 ? vector!.values[i]! : NaN;
 }
 
-/** One term's single-term list past the deep read: each point's stored weight, and the weight no unlisted point exceeds (0 once exhausted). */
+/**
+ * One term's single-term list past the deep read: the stored weights it listed, capped at TERM_WEIGHT_CAP, and the weight
+ * no unlisted point exceeds. That floor is the cap until a request reads the list, then its last listed weight, 0 once exhausted.
+ */
 interface TermList {
   id: number;
   limit: number;
@@ -633,52 +636,41 @@ export class SearchEngine {
    * idf, read from a point's vector in the same batch, turns each score back into that weight. A list that returns fewer
    * points than asked is exhausted. A list is live while its floor, with every other query term at its best listed
    * weight, could still reach the k-th score: a document that reaches it does so through a listed weight or a live
-   * floor for every query term. Live lists deepen until no unread document can reach the k-th score.
+   * floor for every query term. A list not read yet has its cap, TERM_WEIGHT_CAP, as floor and best weight, so a list
+   * whose cap cannot reach the k-th score is never read. Live lists deepen until no unread document can reach it.
    */
-  // ponytail: a three-letter prefix expands to about 1,700 terms, so at 200k docs this path costs 150-200 ms (5 of 300 prefix
-  // queries); the one-point probes are half of each round, and a cheaper same-response idf would cut them.
+  // ponytail: a two-letter prefix expands to about 1,700 terms, and at 200k docs the one round over their lists and probes costs
+  // about 60 ms (5 of 300 prefix queries take this path). Caps prune none of those lists, since one rare completion's cap passes the
+  // k-th score; going under that needs an index that lists a prefix's documents by their best completion, not one list per term.
   private async readPastDepth(candidates: KeywordCandidates, terms: readonly WeightedTerm[], filter: unknown, deepRead: ReadonlySet<string>): Promise<void> {
-    const bounds = this.prefixes?.expansionBounds(terms);
+    const prefixes = this.prefixes;
+    const bounds = prefixes?.expansionBounds(terms);
     if (!bounds) return;
     const { drift } = bounds;
+    const threshold = candidates.threshold;
+    const first = KEYWORD_LIST_GROWTH * (candidates.limit + KEYWORD_SHALLOW_SLACK);
     const lists = new Map<string, TermList>();
     bounds.terms.forEach((expansion, query) => {
       for (const { term, coefficient } of expansion) {
         if (!(coefficient > 0)) continue;
-        const list = lists.get(term)
-          ?? lists.set(term, { id: termId(term), limit: KEYWORD_LIST_GROWTH * (candidates.limit + KEYWORD_SHALLOW_SLACK), uses: [], weights: [], floor: Infinity }).get(term)!;
+        // A list the vocabulary says outlasts the first depth starts one step deeper, which saves a round.
+        const limit = (prefixes!.frequencies.get(term) ?? 0) > first ? first * KEYWORD_LIST_GROWTH : first;
+        const list = lists.get(term) ?? lists.set(term, { id: termId(term), limit, uses: [], weights: [], floor: TERM_WEIGHT_CAP }).get(term)!;
         list.uses.push({ query, coefficient });
       }
     });
     const single = (id: number, limit: number, vector: boolean) => ({
       query: { indices: [id], values: [1] }, using: "bm25", limit, filter, with_payload: false, with_vector: vector ? ["bm25"] : false,
     });
-    for (let open = [...lists.values()]; ;) {
-      // A list and the probe its idf comes from share one request; the requests run concurrently, which Qdrant serves about twice as fast.
-      const size = Math.max(KEYWORD_LISTS_PER_REQUEST, Math.ceil(open.length / KEYWORD_LIST_REQUESTS));
-      await Promise.all(Array.from({ length: Math.ceil(open.length / size) }, async (_, part) => {
-        const batch = open.slice(part * size, (part + 1) * size);
-        const results = await this.qdrant.call<Array<{ points: ScoredPoint[] }>>("POST", this.qdrant.path + "/points/query/batch", {
-          searches: batch.flatMap((list) => [single(list.id, list.limit, false), single(list.id, 1, true)]),
-        });
-        batch.forEach((list, i) => {
-          const points = results[2 * i]!.points;
-          const top = results[2 * i + 1]!.points[0];
-          const idf = top ? top.score / weightAt(top.vector?.bm25, list.id) : NaN;
-          // A missing or unusable idf leaves the list unbounded, so it deepens until exhausted and its points are all read.
-          const weight = (score: number) => (idf > 0 && Number.isFinite(idf) ? score / idf : Infinity);
-          list.weights = points.map((point) => [point.id, weight(point.score)]);
-          list.floor = points.length < list.limit ? 0 : weight(points.at(-1)!.score);
-        });
-      }));
+    for (;;) {
       const best = bounds.terms.map(() => 0);
       for (const list of lists.values()) {
-        for (const { query, coefficient } of list.uses) best[query] = Math.max(best[query]!, coefficient * (list.weights[0]?.[1] ?? 0));
+        const top = Math.max(list.weights[0]?.[1] ?? 0, list.floor);
+        for (const { query, coefficient } of list.uses) best[query] = Math.max(best[query]!, coefficient * top);
       }
-      const threshold = candidates.threshold;
       const need = best.map((_, query) => threshold / drift - best.reduce((sum, value, other) => (other === query ? sum : sum + value), 0));
       const floors = bounds.terms.map(() => 0);
-      open = [];
+      const open: TermList[] = [];
       for (const list of lists.values()) {
         for (const { query, coefficient } of list.uses) {
           if (!(list.floor > 0 && coefficient * list.floor >= need[query]!)) continue;
@@ -687,14 +679,32 @@ export class SearchEngine {
         }
       }
       if (open.length > 0 && floors.reduce((sum, floor) => sum + floor, 0) * drift >= threshold) {
-        for (const list of open) list.limit *= KEYWORD_LIST_GROWTH;
+        // A list and the probe its idf comes from share one request; the requests run concurrently, which Qdrant serves about twice as fast.
+        const size = Math.max(KEYWORD_LISTS_PER_REQUEST, Math.ceil(open.length / KEYWORD_LIST_REQUESTS));
+        await Promise.all(Array.from({ length: Math.ceil(open.length / size) }, async (_, part) => {
+          const batch = open.slice(part * size, (part + 1) * size);
+          const results = await this.qdrant.call<Array<{ points: ScoredPoint[] }>>("POST", this.qdrant.path + "/points/query/batch", {
+            searches: batch.flatMap((list) => [single(list.id, list.limit, false), single(list.id, 1, true)]),
+          });
+          batch.forEach((list, i) => {
+            const points = results[2 * i]!.points;
+            const top = results[2 * i + 1]!.points[0];
+            const idf = top ? top.score / weightAt(top.vector?.bm25, list.id) : NaN;
+            // A missing or unusable idf leaves the list at its cap, so it deepens until exhausted and its points are all read.
+            const weight = (score: number) => Math.min(TERM_WEIGHT_CAP, idf > 0 && Number.isFinite(idf) ? score / idf : Infinity);
+            list.weights = points.map((point) => [point.id, weight(point.score)]);
+            list.floor = points.length < list.limit ? 0 : weight(points.at(-1)!.score);
+            list.limit *= KEYWORD_LIST_GROWTH;
+          });
+        }));
         continue;
       }
       const contributions = new Map<string, number[]>();
       for (const list of lists.values()) {
         for (const { query, coefficient } of list.uses) {
           for (const [id, weight] of list.weights) {
-            if (coefficient * weight < need[query]!) break;
+            // A contribution at or below the term's floor leaves a document's bound where the floor puts it.
+            if (coefficient * weight < need[query]! || coefficient * weight <= floors[query]!) break;
             if (deepRead.has(id) || candidates.read.has(id)) continue;
             const document = contributions.get(id) ?? contributions.set(id, bounds.terms.map(() => 0)).get(id)!;
             document[query] = Math.max(document[query]!, coefficient * weight);
@@ -702,7 +712,8 @@ export class SearchEngine {
         }
       }
       const bound = (document: readonly number[]) => document.reduce((sum, value, query) => sum + Math.max(value, floors[query]!), 0) * drift;
-      await this.readPayloads(candidates, [...contributions].map(([id, document]) => ({ id, bound: bound(document) })).sort((a, b) => b.bound - a.bound));
+      const queue = [...contributions].map(([id, document]) => ({ id, bound: bound(document) })).filter((candidate) => candidate.bound >= threshold);
+      await this.readPayloads(candidates, queue.sort((a, b) => b.bound - a.bound));
       return;
     }
   }
