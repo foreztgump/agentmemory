@@ -31,9 +31,10 @@ qdrant.call = (async (method: string, path: string, body?: unknown) => {
     return await call(method, path, body);
   } finally {
     const b = body as { limit?: number; with_payload?: unknown; ids?: unknown[]; searches?: unknown[] } | undefined;
-    const kind = path.endsWith("/points/query/batch") ? `batch${b?.searches?.length ?? 0}`
-      : path.endsWith("/points/query") ? (b?.with_payload === false ? `ids@${b?.limit}` : `shallow@${b?.limit}`)
-      : path.endsWith("/points") ? `payload${b?.ids?.length ?? 0}` : path;
+    let kind = path;
+    if (path.endsWith("/points/query/batch")) kind = `batch${b?.searches?.length ?? 0}`;
+    else if (path.endsWith("/points/query")) kind = `${b?.with_payload === false ? "ids" : "shallow"}@${b?.limit}`;
+    else if (path.endsWith("/points")) kind = `payload${b?.ids?.length ?? 0}`;
     calls.push({ kind, ms: performance.now() - t0 });
   }
 }) as typeof qdrant.call;
@@ -47,7 +48,7 @@ function queries(seed: number, truncate: boolean): string[] {
 await engine.keyword("warmup", K, "all");
 await engine.settled();
 if (!engine.prefixes?.isReady) throw new Error("the prefix vocabulary did not fill");
-const vocabulary = engine.prefixes as unknown as { completePrefixes(term: string): string[] | null; df: Map<string, number> };
+const vocabulary = engine.prefixes as unknown as { completePrefixes(term: string): string[] | null };
 const pct = (xs: number[], p: number) => +([...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(p * xs.length))] ?? NaN).toFixed(1);
 
 for (const [label, qs] of [["capture", queries(9001, false)], ["capture-prefix", queries(9101, true)]] as const) {
@@ -55,6 +56,7 @@ for (const [label, qs] of [["capture", queries(9001, false)], ["capture-prefix",
   const deep: number[] = [];
   const kinds = new Map<string, number[]>();
   const expansion: number[] = [];
+  let uncapped = 0;
   const slow: unknown[] = [];
   for (const q of qs) {
     calls.length = 0;
@@ -63,16 +65,19 @@ for (const [label, qs] of [["capture", queries(9001, false)], ["capture-prefix",
     const ms = performance.now() - t0;
     total.push(ms);
     if (calls.length > 1) deep.push(ms);
-    for (const c of calls) (kinds.get(c.kind.replace(/\d+$/, "")) ?? kinds.set(c.kind.replace(/\d+$/, ""), []).get(c.kind.replace(/\d+$/, ""))!).push(c.ms);
-    const sizes = queryTerms(q).map(({ term }) => vocabulary.completePrefixes(term)?.length ?? -1);
-    expansion.push(...sizes);
+    for (const c of calls) {
+      const key = c.kind.replace(/\d+$/, "");
+      kinds.set(key, [...(kinds.get(key) ?? []), c.ms]);
+    }
+    const sizes = queryTerms(q).map(({ term }) => vocabulary.completePrefixes(term)?.length ?? null);
+    for (const size of sizes) if (size === null) uncapped++; else expansion.push(size);
     if (ms > 20) slow.push({ ms: +ms.toFixed(1), sizes, calls: calls.map((c) => `${c.kind}:${c.ms.toFixed(1)}`) });
   }
   console.log(JSON.stringify({
     label, n: total.length, p50: pct(total, 0.5), p95: pct(total, 0.95), p99: pct(total, 0.99), deepShare: +(deep.length / total.length).toFixed(3),
     deepP50: pct(deep, 0.5),
     calls: Object.fromEntries([...kinds].map(([k, v]) => [k, { n: v.length, p50: pct(v, 0.5), p99: pct(v, 0.99) }])),
-    expansion: { p50: pct(expansion, 0.5), p90: pct(expansion, 0.9), p99: pct(expansion, 0.99), max: Math.max(...expansion) },
+    expansion: { p50: pct(expansion, 0.5), p90: pct(expansion, 0.9), p99: pct(expansion, 0.99), max: Math.max(...expansion), pastCompleteMax: uncapped },
     slow: slow.slice(0, 12),
   }));
 }

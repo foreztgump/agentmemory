@@ -39,7 +39,8 @@ function holdScroll(qdrant: Qdrant, when: "before" | "after") {
   return { held, release };
 }
 
-async function run(when: "before" | "after", seed: Op[], during: Op[]) {
+/** `fail` makes the write's batch throw before the scroll reads its point, or once the scroll has skipped it. */
+async function run(when: "before" | "after", seed: Op[], during: Op[], fail?: "before-scroll" | "after-scroll") {
   const qdrant = qdrantFor(`fill_window_${process.pid}_${Math.floor(Math.random() * 1e9)}`);
   const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
   await qdrant.drop();
@@ -49,7 +50,24 @@ async function run(when: "before" | "after", seed: Op[], during: Op[]) {
   const { held, release } = holdScroll(qdrant, when);
   engine.prefixes!.fillInBackground();
   await held;
-  expect((await engine.apply(during)).failed).toEqual([]);
+  if (fail) {
+    let scrolled!: () => void;
+    const pageRead = new Promise<void>((resolve) => { scrolled = resolve; });
+    const call = qdrant.call.bind(qdrant);
+    qdrant.call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+      if (path.includes("/points/batch")) {
+        if (fail === "after-scroll") await pageRead.then(() => new Promise((resolve) => setTimeout(resolve, 100)));
+        throw new Error("batch refused");
+      }
+      const result = await call<T>(method, path, body);
+      if (path.endsWith("/points/scroll")) scrolled();
+      return result;
+    };
+    const applying = expect(engine.apply(during)).rejects.toThrow("batch refused");
+    if (fail === "after-scroll") release();
+    await applying;
+    qdrant.call = call;
+  } else expect((await engine.apply(during)).failed).toEqual([]);
   release();
   await engine.settled();
   const frequencies = Object.fromEntries([...engine.prefixes!.frequencies].filter(([, df]) => df > 0));
@@ -71,5 +89,12 @@ describe.skipIf(!QDRANT_URL)("writes during the vocabulary fill", () => {
   it("drops a document deleted before the scroll reads it", async () => {
     expect(await run("before", [doc("obs_a", "alphaold"), doc("obs_b", "keepzz")], [{ k: "del", id: "obs_a" }]))
       .toEqual({ documents: 1, averageLength: 1, frequencies: { keepzz: 1 } });
+  }, 60_000);
+
+  it("counts a document whose write failed after it registered, before or after the scroll skipped it", async () => {
+    for (const fail of ["before-scroll", "after-scroll"] as const) {
+      expect(await run("before", [doc("obs_a", "alphaold")], [doc("obs_a", "betanew")], fail), fail)
+        .toEqual({ documents: 1, averageLength: 1, frequencies: { alphaold: 1 } });
+    }
   }, 60_000);
 });

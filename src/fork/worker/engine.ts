@@ -222,6 +222,17 @@ export class SearchEngine {
    * deleted is dropped (reported in `fenced`).
    */
   async apply(rawOps: unknown[], rawVersion?: unknown): Promise<ApplyResult> {
+    const touched: string[] = [];
+    try {
+      return await this.applyOps(rawOps, rawVersion, touched);
+    } catch (error) {
+      this.prefixes?.abandon(touched);
+      throw error;
+    }
+  }
+
+  /** apply's work; `touched` receives the points it registered with a running vocabulary fill before it sends anything. */
+  private async applyOps(rawOps: unknown[], rawVersion: unknown, touched: string[]): Promise<ApplyResult> {
     this.vocabulary = null;
     const version = await this.clock.versionFor(rawVersion);
     const failed: ApplyResult["failed"] = [];
@@ -255,7 +266,8 @@ export class SearchEngine {
     const corpusIds = this.prefixes?.counting ? [...writtenFirst] : [];
     const epoch = this.collectionEpoch;
     for (const id of corpusIds) lookup.add(id);
-    this.prefixes?.touch(corpusIds.map(pointId));
+    touched.push(...corpusIds.map(pointId));
+    this.prefixes?.touch(touched);
     await this.ready();
     const stored = await this.storedPayloads([...lookup]);
     const rev = new Map<string, ContentRev | null>();

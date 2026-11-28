@@ -62,6 +62,7 @@ export class PrefixVocabulary {
   private totalLength = 0;
   /** Points written since the running scroll started, by point id; empty outside a fill once each is resolved. */
   private fillWrites = new Map<string, FillWrite>();
+  private recounts = new Set<Promise<void>>();
 
   constructor(
     private readonly qdrant: Qdrant,
@@ -207,6 +208,35 @@ export class PrefixVocabulary {
     if (this.filled) this.resolve(pointId, write);
   }
 
+  /**
+   * The write that registered these points failed before it reported them. A point the scroll has not reached yet is
+   * left for the scroll to count; one it already skipped is read back and counted as it is stored now.
+   */
+  abandon(pointIds: readonly string[]): void {
+    const skipped = pointIds.filter((id) => {
+      const write = this.fillWrites.get(id);
+      if (!write || write.observed) return false;
+      this.fillWrites.delete(id);
+      return write.skipped;
+    });
+    if (skipped.length === 0) return;
+    const recount = this.recount(skipped).finally(() => this.recounts.delete(recount));
+    this.recounts.add(recount);
+  }
+
+  private async recount(pointIds: string[]): Promise<void> {
+    const epoch = this.epoch;
+    try {
+      const points = await this.qdrant.call<Array<{ payload?: { terms?: unknown; dl?: number; deleted?: boolean } }>>("POST", `${this.qdrant.path}/points`, {
+        ids: pointIds, with_payload: ["terms", "dl", "deleted"], with_vector: false,
+      });
+      if (epoch !== this.epoch) return;
+      for (const { payload } of points) if (!payload?.deleted) this.replace(undefined, storedDocument(payload));
+    } catch (error) {
+      logger.warn("am-search could not recount points after a failed write; they count again on their next write", { points: pointIds.length, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   private resolve(pointId: string, write: FillWrite): void {
     this.fillWrites.delete(pointId);
     this.replace(write.skipped ? undefined : write.first, write.latest);
@@ -256,7 +286,7 @@ export class PrefixVocabulary {
   }
 
   async settled(): Promise<void> {
-    while (this.filling) await this.filling;
+    while (this.filling || this.recounts.size > 0) await (this.filling ?? Promise.all(this.recounts));
   }
 
   /** The collection was dropped; a running fill is discarded. */
