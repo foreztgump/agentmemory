@@ -5,7 +5,7 @@ import type {
   TimelineEntry,
 } from "../types.js";
 import { KV } from "../state/schema.js";
-import { StateKV, collectAll } from "../state/kv.js";
+import { StateKV, collectAll, mapPooled } from "../state/kv.js";
 import { recordAccessBatch } from "./access-tracker.js";
 import { logger } from "../logger.js";
 import { withoutObservationSource } from "./observation-source.js";
@@ -25,38 +25,29 @@ export function registerTimelineFunction(sdk: IIIClient, kv: StateKV): void {
         return { entries: [], anchor: data.anchor, reason: "invalid_anchor" };
       }
 
-      let anchorTime: number;
-      const isoPattern = /^\d{4}-\d{2}-\d{2}/;
-      if (isoPattern.test(data.anchor)) {
+      let anchorTime = NaN;
+      const isoAnchor = /^\d{4}-\d{2}-\d{2}/.test(data.anchor);
+      if (isoAnchor) {
         anchorTime = new Date(data.anchor).getTime();
         if (isNaN(anchorTime)) {
           return { entries: [], anchor: data.anchor, reason: "invalid_date" };
         }
-      } else {
-        const searchResults = await findByKeyword(
-          kv,
-          data.anchor,
-          data.project,
-        );
+      }
+
+      const scanned = await listSessionObservations(kv, data.project);
+      if (!isoAnchor) {
+        const searchResults = findByKeyword(scanned, data.anchor);
         if (searchResults.length === 0) {
           return { entries: [], anchor: data.anchor, reason: "no_match" };
         }
         anchorTime = new Date(searchResults[0].timestamp).getTime();
       }
 
-      const sessions = await collectAll<Session>(kv, KV.sessions);
-      const filtered = data.project
-        ? sessions.filter((s) => s.project === data.project)
-        : sessions;
-
       const allObs: Array<CompressedObservation & { sid: string }> = [];
-      for (const session of filtered) {
-        const observations = await kv.list<CompressedObservation>(
-          KV.observations(session.id),
-        );
+      for (const { sessionId, observations } of scanned) {
         for (const obs of observations) {
           if (obs.title && obs.timestamp) {
-            allObs.push({ ...obs, sid: session.id });
+            allObs.push({ ...obs, sid: sessionId });
           }
         }
       }
@@ -106,23 +97,28 @@ export function registerTimelineFunction(sdk: IIIClient, kv: StateKV): void {
   );
 }
 
-async function findByKeyword(
+async function listSessionObservations(
   kv: StateKV,
-  keyword: string,
   project?: string,
-): Promise<CompressedObservation[]> {
+): Promise<Array<{ sessionId: string; observations: CompressedObservation[] }>> {
   const sessions = await collectAll<Session>(kv, KV.sessions);
   const filtered = project
     ? sessions.filter((s) => s.project === project)
     : sessions;
+  const lists = await mapPooled(filtered, (session) =>
+    kv.list<CompressedObservation>(KV.observations(session.id)),
+  );
+  return filtered.map((session, i) => ({ sessionId: session.id, observations: lists[i] }));
+}
 
+function findByKeyword(
+  scanned: Array<{ observations: CompressedObservation[] }>,
+  keyword: string,
+): CompressedObservation[] {
   const lower = keyword.toLowerCase();
   const matches: CompressedObservation[] = [];
 
-  for (const session of filtered) {
-    const observations = await kv.list<CompressedObservation>(
-      KV.observations(session.id),
-    );
+  for (const { observations } of scanned) {
     for (const obs of observations) {
       if (
         obs.title?.toLowerCase().includes(lower) ||

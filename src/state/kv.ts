@@ -110,6 +110,31 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
     .map((entry) => entry.value)
 }
 
+/** Results keep input order. A failure stops new work and rethrows the error a sequential loop would have hit first. */
+export async function mapPooled<T, R>(
+  items: readonly T[],
+  run: (item: T) => Promise<R>,
+  concurrency = 16,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  const failures = new Map<number, unknown>()
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++
+      try {
+        results[index] = await run(items[index]!)
+      } catch (error) {
+        failures.set(index, error)
+        next = items.length
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
+  if (failures.size > 0) throw failures.get(Math.min(...failures.keys()))
+  return results
+}
+
 export async function collectAll<T = unknown>(kv: StateKV, scope: string): Promise<T[]> {
   if (typeof kv.iterate !== 'function') return kv.list<T>(scope)
   const out: T[] = []

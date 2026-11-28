@@ -72,11 +72,12 @@ describe("timeline read cost (TEE-1451)", () => {
   });
 
   // Before TEE-1451 a keyword anchor listed every session's observations twice, one session at a time
-  // (once to find the keyword, once for the window): 722 reads, 498 round trips deep here.
+  // (once to find the keyword, once for the window): 722 reads, 498 round trips deep here. One scan, 16 sessions
+  // at a time, brought it to 361 reads, 25 deep (201 and 15 in one project); the ceilings sit just above that.
   it.each([
-    ["keyword everywhere", { anchor: "rollback" }, { reads: 400, depth: 30 }],
-    ["keyword in one project", { anchor: "rollback", project: "alpha" }, { reads: 220, depth: 20 }],
-    ["iso anchor everywhere", { anchor: "2026-03-08" }, { reads: 400, depth: 30 }],
+    ["keyword everywhere", { anchor: "rollback" }, { reads: 370, depth: 27 }],
+    ["keyword in one project", { anchor: "rollback", project: "alpha" }, { reads: 210, depth: 17 }],
+    ["iso anchor everywhere", { anchor: "2026-03-08" }, { reads: 370, depth: 27 }],
   ])("keeps the reads of a %s timeline under its ceiling", async (_name, data, ceiling) => {
     const r = await fixture().timeline(data);
     expect({ reads: r.reads, depth: r.depth }).toEqual({
