@@ -662,7 +662,7 @@ async function main() {
       const duplicates = drained.reduce((n, r) => n + r.duplicates, 0);
       const remaining = drained.reduce((n, r) => n + r.remaining, 0);
       if (delivered + duplicates + remaining > 0) {
-        bootLog(`Capture spool: ${delivered} recovered, ${duplicates} already stored, ${remaining} still waiting`);
+        bootLog(`Capture spool: ${delivered} accepted, ${duplicates} already on the server, ${remaining} still waiting`);
       }
       const swept = await capture.sweep();
       if (swept.processed > 0) {

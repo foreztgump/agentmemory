@@ -9,6 +9,7 @@ export class SessionLanes<T> {
   private readonly ready: string[] = [];
   private readonly running = new Set<string>();
   private readonly results = new Map<string, { promise: Promise<T>; settle: (run: Promise<T>) => void }>();
+  private readonly drainWaiters = new Map<string, Array<() => void>>();
   private idleWaiters: Array<() => void> = [];
 
   constructor(
@@ -40,24 +41,47 @@ export class SessionLanes<T> {
     return new Promise((resolve) => this.idleWaiters.push(resolve));
   }
 
+  /**
+   * Runs the session's waiting captures now, past the worker limit, still one at a time and in
+   * order, and resolves once none of them is waiting or running.
+   */
+  drain(sessionId: string): Promise<void> {
+    if (!this.lanes.has(sessionId)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const waiters = this.drainWaiters.get(sessionId);
+      if (waiters) waiters.push(resolve);
+      else this.drainWaiters.set(sessionId, [resolve]);
+      if (this.running.has(sessionId)) return;
+      this.ready.splice(this.ready.indexOf(sessionId), 1);
+      this.start(sessionId);
+    });
+  }
+
   private pump(): void {
-    while (this.running.size < this.workers && this.ready.length > 0) {
-      const sessionId = this.ready.shift()!;
-      const key = this.lanes.get(sessionId)!.shift()!;
-      this.running.add(sessionId);
-      const entry = this.results.get(key)!;
-      const run = Promise.resolve().then(() => this.run(key));
-      entry.settle(run);
-      void run.catch(() => undefined).finally(() => this.finish(sessionId, key));
-    }
+    while (this.running.size < this.workers && this.ready.length > 0) this.start(this.ready.shift()!);
+  }
+
+  private start(sessionId: string): void {
+    const key = this.lanes.get(sessionId)!.shift()!;
+    this.running.add(sessionId);
+    const entry = this.results.get(key)!;
+    const run = Promise.resolve().then(() => this.run(key));
+    entry.settle(run);
+    void run.catch(() => undefined).finally(() => this.finish(sessionId, key));
   }
 
   private finish(sessionId: string, key: string): void {
     this.results.delete(key);
     this.running.delete(sessionId);
     const lane = this.lanes.get(sessionId)!;
-    if (lane.length > 0) this.ready.push(sessionId);
-    else this.lanes.delete(sessionId);
+    if (lane.length > 0 && this.drainWaiters.has(sessionId)) this.start(sessionId);
+    else if (lane.length > 0) this.ready.push(sessionId);
+    else {
+      this.lanes.delete(sessionId);
+      const drained = this.drainWaiters.get(sessionId) ?? [];
+      this.drainWaiters.delete(sessionId);
+      for (const resolve of drained) resolve();
+    }
     this.pump();
     if (this.results.size === 0) {
       const waiters = this.idleWaiters;

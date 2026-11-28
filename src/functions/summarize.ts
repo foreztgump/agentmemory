@@ -25,6 +25,7 @@ import { logger } from "../logger.js";
 import { scrubRecord } from "./privacy.js";
 import { registerSummaryRecoveryFunction } from "./summary-recovery.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
+import { awaitSessionCaptures } from "./capture.js";
 import { summaryRebuildVetoed } from "../fork/retention/veto.js";
 import { getSummaryTimeoutMs, summaryFingerprint, summaryObservations } from "./summary-state.js";
 
@@ -474,7 +475,10 @@ export function registerSummarizeFunction(
     };
   sdk.registerFunction("mem::summarize", (data: { sessionId: string; force?: boolean } | undefined) =>
     typeof data?.sessionId === "string" && data.sessionId.trim()
-      ? withKeyedLock(`${lockPrefix}:${data.sessionId.trim()}`, () => summarize(data))
+      ? withKeyedLock(`${lockPrefix}:${data.sessionId.trim()}`, async () => {
+          await awaitSessionCaptures(data.sessionId.trim());
+          return summarize(data);
+        })
       : summarize(data),
   );
 }

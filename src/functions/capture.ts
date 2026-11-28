@@ -19,7 +19,7 @@ import {
 import { restoreIndexEntries } from "./observe.js";
 import { prunePromptLedgers } from "../capture/prompt-ledger.js";
 import { scrubRecord } from "./privacy.js";
-import { scanRows } from "../fork/kv/paged-scan.js";
+import { countRows, scanRows } from "../fork/kv/paged-scan.js";
 import { RowIndex } from "../fork/kv/row-index.js";
 import { SessionLanes } from "../capture/lanes.js";
 import { runtimeConfigPath } from "../cli/engine-launch.js";
@@ -51,6 +51,8 @@ export interface InboxRecord {
   status: InboxState;
   attempts: number;
   acceptedAt: string;
+  /** Breaks ties between rows accepted in the same millisecond; rows from older versions lack it. */
+  seq?: number;
   updatedAt: string;
   nextAttemptAt?: string;
   deadAt?: string;
@@ -108,6 +110,13 @@ export interface CaptureStatus {
 
 const MAX_BACKOFF_MS = 15 * 60_000;
 const ERROR_MAX_CHARS = 500;
+const RUN_TIMEOUT_MS = 60_000;
+
+type RunOutcome = "recovered" | "dead" | "waiting" | "gone";
+
+function byAcceptance(a: InboxEntry, b: InboxEntry): number {
+  return a.acceptedAt.localeCompare(b.acceptedAt) || (a.seq ?? 0) - (b.seq ?? 0) || a.key.localeCompare(b.key);
+}
 
 function positiveInt(key: string, fallback: number): number {
   const raw = getEnvVar(key);
@@ -188,6 +197,20 @@ export function getCaptureController(): CaptureController | null {
   return activeController;
 }
 
+const SESSION_DRAIN_TIMEOUT_MS = 10_000;
+
+/**
+ * Waits until every capture accepted for the session has been processed, so a reader of the
+ * session sees them. Past the bound it logs and returns, and the reader goes on without them.
+ */
+export async function awaitSessionCaptures(sessionId: string): Promise<void> {
+  if (!activeController || (await activeController.drainSession(sessionId, SESSION_DRAIN_TIMEOUT_MS))) return;
+  logger.warn("captures of the session are still processing, reading it without them", {
+    sessionId,
+    timeoutMs: SESSION_DRAIN_TIMEOUT_MS,
+  });
+}
+
 export interface CaptureController {
   sweep(): Promise<{ processed: number; recovered: number; deadLettered: number }>;
   prune(): Promise<number>;
@@ -195,6 +218,11 @@ export interface CaptureController {
   status(): Promise<CaptureStatus>;
   /** Resolves once no accepted capture is waiting or running in the background. */
   idle(): Promise<void>;
+  /**
+   * Processes the session's accepted captures now, ahead of other sessions, and resolves true once
+   * none is waiting or running, or false when that takes longer than `timeoutMs`.
+   */
+  drainSession(sessionId: string, timeoutMs: number): Promise<boolean>;
   durability(): SentMark;
   start(): void;
   stop(): void;
@@ -203,7 +231,7 @@ export interface CaptureController {
 export function registerCaptureFunctions(
   sdk: IIIClient,
   kv: StateKV,
-  options: { restPort?: number; durableAfterMs?: number } = {},
+  options: { restPort?: number; durableAfterMs?: number; runTimeoutMs?: number } = {},
 ): CaptureController {
   const policy = capturePolicy();
   const mark: SentMark = {
@@ -226,7 +254,13 @@ export function registerCaptureFunctions(
   let sweeping: Promise<{ processed: number; recovered: number; deadLettered: number }> | null = null;
   const inboxIndex = new RowIndex<InboxRecord, InboxEntry>(kv, KV.captureInbox, ({ payload: _payload, ...entry }) => entry);
   const timers: Array<ReturnType<typeof setInterval>> = [];
-  const lanes = new SessionLanes((key: string) => retryOne(key, false), policy.workers);
+  const runTimeoutMs = options.runTimeoutMs ?? RUN_TIMEOUT_MS;
+  const lanes = new SessionLanes((key: string) => runWithDeadline(key), policy.workers);
+  let backlog: Promise<void> | null = null;
+  let acceptSeq = 0;
+  let inboxKeyCount: Promise<number> | null = null;
+  let addedSinceKeyCount = 0;
+  let reservedSlots = 0;
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
 
   async function complete(rec: InboxRecord, observationId: string): Promise<void> {
@@ -342,38 +376,118 @@ export function registerCaptureFunctions(
         counters.duplicates++;
         return { status: "duplicate", state: queued.status, eventId, observationId: queued.observationId, deduplicated: true };
       }
-      if ((inboxIndex.loadedSize() ?? 0) >= policy.inboxMax) {
+      let reserved: boolean;
+      try {
+        reserved = await reserveInboxSlot();
+      } catch (err) {
+        counters.rejected++;
+        return { status: "rejected", eventId, error: `capture inbox could not be counted: ${errorText(err)}`, retryable: true };
+      }
+      if (!reserved) {
         counters.rejected++;
         return { status: "rejected", eventId, error: `capture inbox is full (${policy.inboxMax} unprocessed events)`, retryable: true };
       }
-      const acceptedAt = Date.now();
-      const { eventId: _ignoredEventId, observationId: _ignoredObservationId, captureKey: _ignoredCaptureKey, ...cleanPayload } = payload;
-      const rec: InboxRecord = {
-        key,
-        eventId,
-        eventSource: clientEventId ? "client" : "server",
-        sessionId: payload.sessionId,
-        project: payload.project,
-        hookType: payload.hookType,
-        observationId: storedObservationId ?? observationIdFor(key, payload.timestamp, acceptedAt),
-        status: "pending",
-        attempts: 0,
-        acceptedAt: new Date(acceptedAt).toISOString(),
-        updatedAt: new Date(acceptedAt).toISOString(),
-        payload: { ...cleanPayload, data: scrubRecord(cleanPayload.data) },
-      };
-      await kv.set(KV.captureInbox, key, rec);
-      inboxIndex.put(rec);
+      let rec: InboxRecord;
+      try {
+        const acceptedAt = Date.now();
+        const { eventId: _ignoredEventId, observationId: _ignoredObservationId, captureKey: _ignoredCaptureKey, ...cleanPayload } = payload;
+        rec = {
+          key,
+          eventId,
+          eventSource: clientEventId ? "client" : "server",
+          sessionId: payload.sessionId,
+          project: payload.project,
+          hookType: payload.hookType,
+          observationId: storedObservationId ?? observationIdFor(key, payload.timestamp, acceptedAt),
+          status: "pending",
+          attempts: 0,
+          acceptedAt: new Date(acceptedAt).toISOString(),
+          seq: ++acceptSeq,
+          updatedAt: new Date(acceptedAt).toISOString(),
+          payload: { ...cleanPayload, data: scrubRecord(cleanPayload.data) },
+        };
+        await kv.set(KV.captureInbox, key, rec);
+        inboxIndex.put(rec);
+        addedSinceKeyCount++;
+      } finally {
+        reservedSlots--;
+      }
       counters.accepted++;
       if (!input.defer) return attempt(rec);
-      void lanes.submit(rec.sessionId, key).catch((err) => {
-        logger.warn("background capture run failed, the sweep will retry it", { eventId, error: errorText(err) });
-      });
+      void backlogSubmitted()
+        .then(() => lanes.submit(rec.sessionId, key))
+        .catch((err) => {
+          logger.warn("background capture run failed, the sweep will retry it", { eventId, error: errorText(err) });
+        });
       return { status: "accepted", state: "pending", eventId, observationId: rec.observationId, attempts: 0 };
     });
   }
 
-  async function retryOne(key: string, force: boolean): Promise<"recovered" | "dead" | "waiting" | "gone"> {
+  /**
+   * Holds a slot for one new inbox row, or answers false when the inbox could already be full.
+   * Before the in-process copy of the inbox has loaded, the bound is the inbox's key count from
+   * one key listing plus the rows accepted since, so the first capture after a restart waits for
+   * that listing but not for the rows to be read.
+   */
+  async function reserveInboxSlot(): Promise<boolean> {
+    if (inboxIndex.loadedSize() === undefined) {
+      if (!inboxKeyCount) {
+        addedSinceKeyCount = 0;
+        inboxKeyCount = countRows(kv, KV.captureInbox).catch((err) => {
+          inboxKeyCount = null;
+          throw err;
+        });
+      }
+      await inboxKeyCount;
+    }
+    const rows = inboxIndex.loadedSize() ?? (await inboxKeyCount!) + addedSinceKeyCount;
+    if (rows + reservedSlots >= policy.inboxMax) return false;
+    reservedSlots++;
+    return true;
+  }
+
+  async function runWithDeadline(key: string): Promise<RunOutcome> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        logger.warn("capture run passed its deadline, freeing its worker; the sweep retries it", { key, runTimeoutMs });
+        reject(new Error(`capture run took longer than ${runTimeoutMs} ms`));
+      }, runTimeoutMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([retryOne(key, false), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Submits every due inbox row in acceptance order. */
+  async function submitDue(): Promise<Array<Promise<RunOutcome>>> {
+    const now = Date.now();
+    return (await inboxIndex.entries())
+      .filter((r) => r && r.status !== "dead")
+      .filter((r) => r.status === "pending" || !r.nextAttemptAt || Date.parse(r.nextAttemptAt) <= now)
+      .sort(byAcceptance)
+      .map((rec) => lanes.submit(rec.sessionId, rec.key).catch(() => "waiting" as const));
+  }
+
+  /**
+   * Resolves once the rows left in the inbox by an earlier process are submitted. New captures
+   * wait for it before they are submitted, so they cannot run ahead of older captures of the
+   * same session.
+   */
+  function backlogSubmitted(): Promise<void> {
+    backlog ??= submitDue().then(
+      () => undefined,
+      () => {
+        backlog = null;
+      },
+    );
+    return backlog;
+  }
+
+  async function retryOne(key: string, force: boolean): Promise<RunOutcome> {
     return withKeyedLock(`capture:${key}`, async () => {
       const rec = await kv.get<InboxRecord>(KV.captureInbox, key);
       if (!rec) {
@@ -397,18 +511,11 @@ export function registerCaptureFunctions(
   }
 
   async function runSweep(): Promise<{ processed: number; recovered: number; deadLettered: number }> {
-    const records = await inboxIndex.entries();
     let processed = 0;
     let recovered = 0;
     let deadLettered = 0;
-    const now = Date.now();
-    const due = records
-      .filter((r) => r && r.status !== "dead")
-      .filter((r) => r.status === "pending" || !r.nextAttemptAt || Date.parse(r.nextAttemptAt) <= now)
-      .sort((a, b) => a.acceptedAt.localeCompare(b.acceptedAt));
-    const outcomes = await Promise.all(
-      due.map((rec) => lanes.submit(rec.sessionId, rec.key).catch(() => "waiting" as const)),
-    );
+    await backlogSubmitted();
+    const outcomes = await Promise.all(await submitDue());
     for (const outcome of outcomes) {
       if (outcome === "gone") continue;
       processed++;
@@ -465,7 +572,7 @@ export function registerCaptureFunctions(
       const body = record.body as Record<string, unknown>;
       const payload = spoolPayload(body);
       if (!payload) return "rejected";
-      const outcome = await capture({ payload, eventId: record.eventId });
+      const outcome = await capture({ payload, eventId: record.eventId, defer: true });
       if (outcome.status === "rejected") return outcome.retryable ? "retry" : "rejected";
       retainSent(url, record.eventId, body, mark, { dir });
       return outcome.status === "duplicate" ? "duplicate" : "delivered";
@@ -582,7 +689,23 @@ export function registerCaptureFunctions(
     prune,
     drainLocalSpool,
     status,
-    idle: () => lanes.idle(),
+    async idle() {
+      if (backlog) await backlog;
+      await lanes.idle();
+    },
+    async drainSession(sessionId, timeoutMs) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const drained = backlogSubmitted().then(() => lanes.drain(sessionId)).then(() => true);
+      const late = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+        timer.unref?.();
+      });
+      try {
+        return await Promise.race([drained, late]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
     durability: () => ({ ...mark }),
     start() {
       if (timers.length) return;

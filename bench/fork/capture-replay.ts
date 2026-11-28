@@ -102,8 +102,7 @@ async function deliver(sessionId: string, n: number): Promise<void> {
       acked.set(body.eventId, sessionId);
       return;
     }
-    if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) return;
-    if (attempt >= maxAttempts) {
+    if ((r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) || attempt >= maxAttempts) {
       abandoned.push(body.eventId);
       return;
     }

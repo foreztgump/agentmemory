@@ -144,7 +144,7 @@ describe("agentmemory integration", () => {
           },
         }),
       });
-      expect(res.status).toBe(201);
+      expect(res.status).toBe(202);
     });
 
     it("captures a second observation", async () => {
@@ -164,7 +164,7 @@ describe("agentmemory integration", () => {
           },
         }),
       });
-      expect(res.status).toBe(201);
+      expect(res.status).toBe(202);
     });
 
     it("lists observations for the session", async () => {

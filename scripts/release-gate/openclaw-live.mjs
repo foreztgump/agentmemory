@@ -132,7 +132,7 @@ async function turn(name, prompt, runEnv = env) {
   const answer = outputs.flatMap((item) => item.assistantTexts || []).join("\n");
   assert(answer, "Native model produced no recorded answer");
   for (const value of [phrase, window, decoyProject, decoyAgent]) assert(!JSON.stringify(inputs.map((item) => item.historyMessages)).includes(value), "Fresh session leaked a withheld value through history");
-  const captured = wire.slice(start).find((item) => item.path.endsWith("/observe") && item.status === 201);
+  const captured = wire.slice(start).find((item) => item.path.endsWith("/observe") && (item.status === 201 || item.status === 202));
   assert(captured, "Completed real model turn was not automatically captured");
   assert(captured.body.sessionId && captured.body.agentId, "Native capture must carry a scoped session and agent identity"); assert.equal(captured.body.project, project); assert.equal(captured.body.cwd, workspace);
   let observations;
@@ -259,7 +259,7 @@ globalThis.fetch=async(input,init)=>{
       assert(!JSON.stringify(answer.inputs).includes(value), "Foreign profile received another profile's evidence");
       assert(!answer.answer.includes(value), "Foreign profile answered with another profile's evidence");
     }
-    const ownCapture = wire.find((item) => item.scenario === "capture" && item.path.endsWith("/observe") && item.status === 201);
+    const ownCapture = wire.find((item) => item.scenario === "capture" && item.path.endsWith("/observe") && (item.status === 201 || item.status === 202));
     assert.notEqual(answer.captured.body.agentId, ownCapture.body.agentId);
     return { profileAgentIdsDistinct: true, sharedWorkspace: true };
   });

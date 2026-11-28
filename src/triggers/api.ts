@@ -60,7 +60,7 @@ import { LESSON_SOURCE_IDS_MAX, normalizeLessonSourceIds } from "../functions/le
 import { logger } from "../logger.js";
 import { getLiveEventsStats } from "../viewer/live-events.js";
 import { isValidEventId } from "../capture/event-id.js";
-import { getCaptureController, type CaptureResult } from "../functions/capture.js";
+import { awaitSessionCaptures, getCaptureController, type CaptureResult } from "../functions/capture.js";
 import { withoutObservationSource } from "../functions/observation-source.js";
 import { clearSessionFinalize, scheduleSessionFinalize } from "../functions/session-finalize.js";
 import { getSummaryTriggerTimeoutMs, requestSummaryRefresh } from "../functions/summary-state.js";
@@ -1129,7 +1129,7 @@ export function registerApiTriggers(
 
   sdk.registerFunction("api::session::start",
     async (
-      req: HttpRequest<{ sessionId: string; project: string; cwd: string }>,
+      req: HttpRequest<{ sessionId: string; project: string; cwd: string; injectContext?: boolean }>,
     ): Promise<Response> => {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const sessionId = asNonEmptyString(body.sessionId);
@@ -1251,6 +1251,7 @@ export function registerApiTriggers(
           },
         };
       }
+      await awaitSessionCaptures(sessionId);
       const endResult = await withKeyedLock(`obs:${sessionId}`, async () => {
         const session = await kv.get<Session>(KV.sessions, sessionId);
         if (!session || session.id !== sessionId) return "not_found" as const;

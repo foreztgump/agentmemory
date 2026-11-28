@@ -13,9 +13,20 @@ const WHOLE_SCOPE_READS = new Set(["state::list", "state::list_keys"]);
 /**
  * The real StateKV over an in-memory engine, with every state call logged. Each boot imports
  * fresh modules, so a second boot on the same store behaves like a restarted process: the first
- * boot's locks and queued work are gone, only the store survives.
+ * boot's locks and queued work are gone, only the store survives. `inboxScan` holds the reads of
+ * the inbox rows that were in the store at boot; `gate` holds mem::observe, for every event or
+ * for the events it returns a promise for.
  */
-async function boot(store: Store, opts: { cap?: number; gate?: Promise<void>; inboxScan?: Promise<void> } = {}) {
+async function boot(
+  store: Store,
+  opts: {
+    cap?: number;
+    gate?: Promise<void> | ((eventId: string) => Promise<void> | undefined);
+    inboxScan?: Promise<void>;
+    failInboxKeys?: boolean;
+    runTimeoutMs?: number;
+  } = {},
+) {
   vi.resetModules();
   const { StateKV } = await import("../src/state/kv.js");
   const { withObservationStats } = await import("../src/fork/kv/observation-stats.js");
@@ -30,6 +41,7 @@ async function boot(store: Store, opts: { cap?: number; gate?: Promise<void>; in
     if (!store.has(name)) store.set(name, new Map());
     return store.get(name)!;
   };
+  const rowsAtBoot = new Set(store.get("mem:capture:inbox")?.keys() ?? []);
   const sdk = {
     registerFunction: (id: string | { id: string }, fn: (payload: unknown) => Promise<unknown>) =>
       functions.set(typeof id === "string" ? id : id.id, fn),
@@ -37,7 +49,8 @@ async function boot(store: Store, opts: { cap?: number; gate?: Promise<void>; in
     trigger: async (req: Req) => {
       const p = req.payload as { scope: string; key: string; value?: unknown };
       if (req.function_id.startsWith("state::")) calls.push({ fn: req.function_id, scope: p.scope });
-      if (req.function_id === "state::list_keys" && p.scope === "mem:capture:inbox" && opts.inboxScan) await opts.inboxScan;
+      if (req.function_id === "state::get" && p.scope === "mem:capture:inbox" && rowsAtBoot.has(p.key) && opts.inboxScan) await opts.inboxScan;
+      if (req.function_id === "state::list_keys" && p.scope === "mem:capture:inbox" && opts.failInboxKeys) throw new Error("state::list_keys timed out");
       switch (req.function_id) {
         case "state::get": return structuredClone(store.get(p.scope)?.get(p.key) ?? null);
         case "state::set": scope(p.scope).set(p.key, structuredClone(p.value)); return { new_value: p.value };
@@ -54,11 +67,13 @@ async function boot(store: Store, opts: { cap?: number; gate?: Promise<void>; in
   registerObserveFunction(sdk as never, kv, new DedupMap(), opts.cap ?? 5000);
   const observe = functions.get("mem::observe")!;
   functions.set("mem::observe", async (payload) => {
-    if (opts.gate) await opts.gate;
-    observed.push((payload as { eventId: string }).eventId);
+    const eventId = (payload as { eventId: string }).eventId;
+    await (typeof opts.gate === "function" ? opts.gate(eventId) : opts.gate);
+    observed.push(eventId);
     return observe(payload);
   });
-  const controller = registerCaptureFunctions(sdk as never, kv, {});
+  const controller = registerCaptureFunctions(sdk as never, kv, opts.runTimeoutMs ? { runTimeoutMs: opts.runTimeoutMs } : {});
+  const { logger } = await import("../src/logger.js");
   const accept = async (n: number, sessionId = SESSION) => {
     const result = (await sdk.trigger({
       function_id: "mem::capture",
@@ -77,8 +92,15 @@ async function boot(store: Store, opts: { cap?: number; gate?: Promise<void>; in
   const rows = (sessionId = SESSION) =>
     [...(store.get(`mem:obs:${sessionId}`)?.values() ?? [])] as Array<{ id: string; eventId?: string; captureKey?: string }>;
   const inbox = () => [...(store.get("mem:capture:inbox")?.values() ?? [])] as Array<{ status: string; lastError?: string }>;
-  return { calls, observed, controller, accept, rows, inbox };
+  return { calls, observed, controller, accept, rows, inbox, logger };
 }
+
+const order = (eventIds: string[]) => eventIds.map((id) => Number(id.slice(-6)));
+const deadRow = (key: string) => ({
+  key, eventId: `evt_${key}`, eventSource: "client", sessionId: "ses_old", project: "p",
+  hookType: "post_tool_use", observationId: `obs_${key}`, status: "dead", attempts: 5,
+  acceptedAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", payload: {},
+});
 
 describe("capture route answers before processing", () => {
   beforeEach(() => vi.stubEnv("AGENTMEMORY_CAPTURE_RETRY_INTERVAL_MS", "60000"));
@@ -202,5 +224,98 @@ describe("capture route answers before processing", () => {
     expect(h.rows()).toHaveLength(3);
     expect(h.inbox()).toHaveLength(2);
     expect(h.inbox().every((r) => r.status === "dead" && /Session observation limit reached/.test(r.lastError ?? ""))).toBe(true);
+  });
+
+  it("stores captures left by a restart before a capture accepted after it, in acceptance order", async () => {
+    const store: Store = new Map();
+    const crashed = await boot(store, { gate: new Promise<void>(() => {}) });
+    for (let i = 0; i < 5; i++) {
+      expect((await crashed.accept(i)).status).toBe(202);
+      await new Promise((r) => setTimeout(r, 2));
+    }
+
+    const restarted = await boot(store);
+    expect((await restarted.accept(5)).status).toBe(202);
+    await restarted.controller.sweep();
+    await restarted.controller.idle();
+
+    expect(order(restarted.observed)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it("replays one session's captures in acceptance order when they were accepted in the same millisecond", async () => {
+    const store: Store = new Map();
+    const crashed = await boot(store, { gate: new Promise<void>(() => {}) });
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 10, 27, 12, 0, 0));
+    try {
+      for (let i = 0; i < 12; i++) expect((await crashed.accept(i)).status).toBe(202);
+    } finally {
+      now.mockRestore();
+    }
+
+    const restarted = await boot(store);
+    await restarted.controller.sweep();
+    await restarted.controller.idle();
+
+    expect(order(restarted.observed)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  it("holds the inbox at its cap while the inbox rows are still being read after a restart", async () => {
+    vi.stubEnv("AGENTMEMORY_CAPTURE_INBOX_MAX", "4");
+    const store: Store = new Map([["mem:capture:inbox", new Map<string, unknown>([
+      ["cap_dead0", deadRow("cap_dead0")], ["cap_dead1", deadRow("cap_dead1")],
+    ])]]);
+    let finishScan!: () => void;
+    const h = await boot(store, { gate: new Promise<void>(() => {}), inboxScan: new Promise<void>((resolve) => (finishScan = resolve)) });
+
+    const answers = await Promise.all(Array.from({ length: 6 }, (_, i) => h.accept(i)));
+    const later = await h.accept(6);
+    finishScan();
+
+    expect(answers.filter((a) => a.status === 202)).toHaveLength(2);
+    expect(answers.filter((a) => a.status === 503).every((a) => a.result.retryable === true)).toBe(true);
+    expect(later.status).toBe(503);
+    expect(h.inbox()).toHaveLength(4);
+  });
+
+  it("keeps the inbox cap when the inbox cannot be listed", async () => {
+    vi.stubEnv("AGENTMEMORY_CAPTURE_INBOX_MAX", "2");
+    const store: Store = new Map([["mem:capture:inbox", new Map<string, unknown>([
+      ["cap_dead0", deadRow("cap_dead0")], ["cap_dead1", deadRow("cap_dead1")],
+    ])]]);
+    const h = await boot(store, { gate: new Promise<void>(() => {}), failInboxKeys: true });
+
+    const answers = [];
+    for (let i = 0; i < 4; i++) answers.push(await h.accept(i));
+
+    expect(answers.map((a) => a.status)).toEqual([503, 503, 503, 503]);
+    expect(answers.every((a) => a.result.retryable === true)).toBe(true);
+    expect(h.inbox()).toHaveLength(2);
+  });
+
+  it("frees the worker of a capture run that hangs, and stores that capture once when it finishes late", async () => {
+    vi.stubEnv("AGENTMEMORY_CAPTURE_WORKERS", "1");
+    const store: Store = new Map();
+    let release!: () => void;
+    const hung = new Promise<void>((resolve) => (release = resolve));
+    const h = await boot(store, { runTimeoutMs: 50, gate: (eventId) => (eventId.endsWith("000001") ? hung : undefined) });
+
+    expect((await h.accept(1, "ses_hung")).status).toBe(202);
+    expect((await h.accept(2, "ses_other")).status).toBe(202);
+    await h.controller.idle();
+
+    expect(h.rows("ses_other")).toHaveLength(1);
+    expect(h.rows("ses_hung")).toHaveLength(0);
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/deadline/), expect.anything());
+
+    const retry = h.controller.sweep();
+    release();
+    await retry;
+    await h.controller.idle();
+    await h.controller.sweep();
+    await h.controller.idle();
+
+    expect(h.rows("ses_hung")).toHaveLength(1);
+    expect(h.observed.filter((id) => id.endsWith("000001"))).toHaveLength(1);
+    expect(h.inbox()).toEqual([]);
   });
 });
