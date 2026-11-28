@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "../bench/fork/lib/stats.js";
-import { expandLexicalTerms, lexicalBm25, type LexicalDocument } from "../src/fork/worker/lexical-bm25.js";
+import { documentBm25, expandLexicalTerms, lexicalBm25, type LexicalDocument } from "../src/fork/worker/lexical-bm25.js";
 import { SearchIndex } from "../src/state/search-index.js";
 import { extractTerms, queryTerms } from "../src/state/term-extraction.js";
 import type { CompressedObservation } from "../src/types.js";
@@ -87,5 +87,41 @@ describe("lexical BM25 document frequency", () => {
     const stale = lexicalBm25(docs, query, new Map([["alpha", 0]]), 10, 1, 2);
     const unknown = lexicalBm25(docs, query, new Map(), 10, 1, 2);
     expect(stale).toEqual(unknown);
+  });
+});
+
+describe("one document's lexical BM25 score", () => {
+  it.each([3, 11, 1213])("equals lexicalBm25's score for every candidate, prefix-only matches and ties included (seed %i)", (seed) => {
+    const random = mulberry32(seed);
+    const vocabulary = ["redis", "rediscache", "redisproxy", "red", "deploy", "deploy.", "deployment", "config", "configs", "configure", "cache", "cached"];
+    const pick = () => vocabulary[Math.floor(random() * vocabulary.length)]!;
+    const titles = Array.from({ length: 60 }, () => Array.from({ length: 1 + Math.floor(random() * 12) }, pick).join(" "));
+    const documents: LexicalDocument[] = [...titles, ...titles.slice(0, 10)].map((title, i) => {
+      const terms = extractTerms(observation(`d${i}`, title));
+      return { id: `d${i}`, sessionId: "s", terms, dl: terms.length };
+    });
+    const frequencies = new Map<string, number>();
+    for (const { terms } of documents) for (const term of new Set(terms)) frequencies.set(term, (frequencies.get(term) ?? 0) + 1);
+    const averageLength = documents.reduce((total, doc) => total + doc.dl, 0) / documents.length;
+    for (const query of ["redis", "red", "deploy", "conf", "redis config", "cach deploy", "missing", "red deploy conf"]) {
+      const weighted = queryTerms(query);
+      const ranked = new Map(lexicalBm25(documents, expandLexicalTerms(weighted, frequencies), frequencies, documents.length, averageLength, 1000).map((hit) => [hit.id, hit.score]));
+      for (const doc of documents) expect(documentBm25(doc, weighted, frequencies, documents.length, averageLength), `${query} ${doc.id}`).toBe(ranked.get(doc.id));
+    }
+  });
+
+  it("scores a term the vocabulary lacks as 0, never above lexicalBm25's candidate-df score", () => {
+    const docs: LexicalDocument[] = [
+      { id: "known", sessionId: "s", terms: ["alpha", "fresh"], dl: 2 },
+      { id: "late", sessionId: "s", terms: ["freshly"], dl: 1 },
+    ];
+    const frequencies = new Map([["alpha", 1]]);
+    const query = [{ term: "alpha", weight: 1 }, { term: "fresh", weight: 1 }];
+    const ranked = new Map(lexicalBm25(docs, expandLexicalTerms(query, new Map([["alpha", 1], ["fresh", 1], ["freshly", 1]])), frequencies, 10, 1.5, 10).map((hit) => [hit.id, hit.score]));
+    const alphaOnly = documentBm25({ id: "known", sessionId: "s", terms: ["alpha"], dl: 2 }, query, frequencies, 10, 1.5)!;
+    expect(documentBm25(docs[0]!, query, frequencies, 10, 1.5)).toBe(alphaOnly);
+    expect(alphaOnly).toBeLessThan(ranked.get("known")!);
+    expect(documentBm25(docs[1]!, query, frequencies, 10, 1.5)).toBe(0);
+    expect(ranked.get("late")).toBeGreaterThan(0);
   });
 });

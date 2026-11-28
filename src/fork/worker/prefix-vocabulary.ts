@@ -129,21 +129,37 @@ export class PrefixVocabulary {
     return ratio * Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK;
   }
 
-  documentScoreUpperBound(query: readonly WeightedTerm[]): (document: Sparse) => number {
+  /**
+   * Per query term, every known term the exact scorer matches it by (itself, then its prefix terms) with the coefficient
+   * that, times `drift` and a document's stored weight at that term's id, bounds the term's exact score; null when an
+   * expansion is past COMPLETE_EXPANSION_MAX.
+   */
+  expansionBounds(query: readonly WeightedTerm[]): { drift: number; terms: Array<Array<{ term: string; coefficient: number }>> } | null {
     const expansions = query.map(({ term }) => this.completePrefixes(term));
-    if (expansions.some((prefixes) => !prefixes)) return () => Infinity;
-    const coefficients = query.map((exact, q) => {
-      const weights = new Map<number, number>();
+    if (expansions.some((prefixes) => !prefixes)) return null;
+    const terms = query.map((exact, q) => {
+      const expansion: Array<{ term: string; coefficient: number }> = [];
       for (const { term, weight } of [exact, ...expansions[q]!.map((prefix) => ({ term: prefix, weight: exact.weight * PREFIX_WEIGHT }))]) {
         const df = this.df.get(term) ?? 0;
-        if (df <= 0) continue;
+        if (df > 0) expansion.push({ term, coefficient: weight * Math.log((this.documents - df + 0.5) / (df + 0.5) + 1) });
+      }
+      return expansion;
+    });
+    return { drift: Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK, terms };
+  }
+
+  documentScoreUpperBound(query: readonly WeightedTerm[]): (document: Sparse) => number {
+    const bounds = this.expansionBounds(query);
+    if (!bounds) return () => Infinity;
+    const coefficients = bounds.terms.map((expansion) => {
+      const weights = new Map<number, number>();
+      for (const { term, coefficient } of expansion) {
         const id = termId(term);
-        const coefficient = weight * Math.log((this.documents - df + 0.5) / (df + 0.5) + 1);
         weights.set(id, Math.max(weights.get(id) ?? 0, coefficient));
       }
       return weights;
     });
-    const drift = Math.max(1, this.averageLength / this.minimumAverageLength) * BOUND_SLACK;
+    const { drift } = bounds;
     return (document) => coefficients.reduce((sum, weights) => {
       let best = 0;
       for (let i = 0; i < document.indices.length; i++) {

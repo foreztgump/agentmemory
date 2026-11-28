@@ -1,6 +1,6 @@
 import { base64ToFloat32, float32ToBase64 } from "../../state/vector-index.js";
 import { isSearchLayer, isSearchResultLayer, type SearchLayer, type SearchResultLayer } from "../../state/search-layer.js";
-import { extractTerms, queryTerms } from "../../state/term-extraction.js";
+import { extractTerms, queryTerms, type WeightedTerm } from "../../state/term-extraction.js";
 import { logger } from "../../logger.js";
 import {
   type ApplyResult,
@@ -17,8 +17,8 @@ import {
   type ScanMissingResult,
   type StatsResult,
 } from "../search/protocol.js";
-import { querySparse, termsSparse, type Sparse } from "./bm25-sparse.js";
-import { expandLexicalTerms, lexicalBm25, storedDocument, type LexicalDocument } from "./lexical-bm25.js";
+import { querySparse, termId, termsSparse, type Sparse } from "./bm25-sparse.js";
+import { documentBm25, expandLexicalTerms, lexicalBm25, storedDocument, type LexicalDocument } from "./lexical-bm25.js";
 import { DEFAULT_VOCABULARY_LIMITS, PrefixVocabulary, type VocabularyLimits } from "./prefix-vocabulary.js";
 import { pointId, type Qdrant } from "./qdrant.js";
 import { notNewerThan, TOMBSTONE, VersionClock } from "./versioned.js";
@@ -46,15 +46,20 @@ const AVGDL_DRIFT = 0.1;
 const REWEIGHT_PAGE = 256;
 const DL_FACET_LIMIT = 100_000;
 const LESSON_TERMS_FILTER_LIMIT = 1024;
-// ponytail: the deep read stops at max(4 x limit, limit + 500) ids. Qdrant sums a term's prefix matches where SearchIndex takes the best one,
-// so on a short prefix query ("bes" at 200k synthetic docs) the exact top docs can sit near Qdrant position 2,000 and 7 of 540 lists differ.
-// Paging ids until the bound stops closes it but costs p99 430-700 ms; one Qdrant query per prefix term (a batch) would keep it exact and bounded.
+// The deep read stops at max(4 x limit, limit + 500) ids. Qdrant sums a term's prefix matches where SearchIndex takes the best one,
+// so on a short prefix query ("bes" at 200k synthetic docs) the exact top docs can sit near Qdrant position 2,000; a deep read that
+// comes back full hands the rest to single-term lists (readPastDepth).
 const KEYWORD_CANDIDATE_MULTIPLIER = 4;
 const KEYWORD_CANDIDATE_MARGIN = 500;
 /** Candidates read past the limit before the score bound decides whether a deeper read is needed. */
 const KEYWORD_SHALLOW_SLACK = 16;
-/** Deep candidates whose payload one request fetches; small, so a rising k-th score stops the read early. */
+/** Deep candidates whose payload the first request fetches; small, so a rising k-th score stops the read early. Each next request doubles it. */
 const KEYWORD_PAYLOAD_CHUNK = 16;
+/** Single-term lists past the deep read's depth start at this many times the shallow read and deepen by it each round. */
+const KEYWORD_LIST_GROWTH = 4;
+/** Single-term lists one request carries, at least; a round spreads its lists over up to KEYWORD_LIST_REQUESTS concurrent requests. */
+const KEYWORD_LISTS_PER_REQUEST = 32;
+const KEYWORD_LIST_REQUESTS = 8;
 /** Sparse query size past which the deep read also takes each candidate's vector: a per-document bound costs less than the payloads a loose global bound would fetch. */
 const KEYWORD_VECTOR_BOUND_TERMS = 1024;
 
@@ -89,6 +94,58 @@ const MISSING_VECTOR_FILTER = {
 
 function toHits(points: ScoredPoint[]): Hit[] {
   return points.flatMap((p) => (p.payload?.doc_id ? [{ id: p.payload.doc_id, sessionId: p.payload.session_id ?? "", score: p.score }] : []));
+}
+
+function weightAt(vector: Sparse | undefined, id: number): number {
+  const i = vector ? vector.indices.indexOf(id) : -1;
+  return i >= 0 ? vector!.values[i]! : NaN;
+}
+
+/** One term's single-term list past the deep read: each point's stored weight, and the weight no unlisted point exceeds (0 once exhausted). */
+interface TermList {
+  id: number;
+  limit: number;
+  uses: Array<{ query: number; coefficient: number }>;
+  weights: Array<[string, number]>;
+  floor: number;
+}
+
+/** The documents one disk keyword search has read: each scored once as it arrives, ranked exactly at the end. */
+class KeywordCandidates {
+  /** Point ids whose payload was read, whether or not it held a document. */
+  readonly read = new Set<string>();
+  private readonly documents: Array<LexicalDocument & { order: [number, number] }> = [];
+  private readonly terms = new Set<string>();
+  private best: number[] = [];
+
+  constructor(private readonly query: readonly WeightedTerm[], private readonly vocabulary: PrefixVocabulary, readonly limit: number) {}
+
+  add(points: readonly RecordPoint[]): void {
+    const { frequencies, documentCount, averageLength } = this.vocabulary;
+    for (const { id, payload } of points) {
+      this.read.add(id);
+      const stored = storedDocument(payload);
+      if (!payload?.doc_id || !stored) continue;
+      const document = { id: payload.doc_id, sessionId: payload.session_id ?? "", ...stored, order: payload.lexical_order ?? [0, 0] };
+      this.documents.push(document);
+      for (const term of stored.terms) this.terms.add(term);
+      const score = documentBm25(document, this.query, frequencies, documentCount, averageLength);
+      if (score !== undefined) this.best.push(score);
+    }
+    this.best = this.best.sort((a, b) => b - a).slice(0, this.limit);
+  }
+
+  /** The k-th score read so far, 0 while fewer than k documents match; never above the k-th score of ranked(). */
+  get threshold(): number {
+    return this.best.length >= this.limit ? this.best[this.limit - 1]! : 0;
+  }
+
+  ranked(): Hit[] {
+    this.documents.sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || (a.id < b.id ? -1 : Number(a.id > b.id)));
+    const matching = new Map([...this.terms].filter((term) => this.query.some((q) => term.startsWith(q.term))).map((term) => [term, 1]));
+    const { frequencies, documentCount, averageLength } = this.vocabulary;
+    return lexicalBm25(this.documents, expandLexicalTerms(this.query, matching), frequencies, documentCount, averageLength, this.limit);
+  }
 }
 
 export function clampLimit(limit: unknown): number {
@@ -535,49 +592,118 @@ export class SearchEngine {
       with_payload: rescore ? [...HIT_PAYLOAD, "terms", "dl", "lexical_order"] : HIT_PAYLOAD,
     });
     if (!rescore || !prefixes?.isReady) return toHits(res.points);
-    const documents: Array<LexicalDocument & { order: [number, number] }> = [];
-    const candidateTerms = new Map<string, number>();
-    const add = (points: RecordPoint[]) => {
-      for (const { payload } of points) {
-        const stored = storedDocument(payload);
-        if (!payload?.doc_id || !stored) continue;
-        documents.push({ id: payload.doc_id, sessionId: payload.session_id ?? "", ...stored, order: payload.lexical_order ?? [0, 0] });
-        for (const term of stored.terms) candidateTerms.set(term, 1);
-      }
-    };
-    const score = () => {
-      documents.sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || (a.id < b.id ? -1 : Number(a.id > b.id)));
-      return lexicalBm25(documents, expandLexicalTerms(terms, new Map(candidateTerms)), prefixes.frequencies, prefixes.documentCount, prefixes.averageLength, count);
-    };
-    add(res.points);
-    let hits = score();
-    if (shallow < depth && res.points.length === shallow && (hits.length < count || res.points.at(-1)!.score * factor >= hits[count - 1]!.score)) {
+    const candidates = new KeywordCandidates(terms, prefixes, count);
+    candidates.add(res.points);
+    if (shallow < depth && res.points.length === shallow && res.points.at(-1)!.score * factor >= candidates.threshold) {
       const useVectorBound = sparse.indices.length > KEYWORD_VECTOR_BOUND_TERMS;
       const deep = await this.qdrant.call<{ points: ScoredPoint[] }>("POST", this.qdrant.path + "/points/query", {
         query: sparse, using: "bm25", limit: depth, filter,
-        ...(hits.length >= count ? { score_threshold: hits[count - 1]!.score / factor } : {}),
+        ...(candidates.threshold > 0 ? { score_threshold: candidates.threshold / factor } : {}),
         with_payload: false,
         with_vector: useVectorBound ? ["bm25"] : false,
       });
-      const seen = new Set(res.points.map(({ id }) => id));
       const bound = useVectorBound ? prefixes.documentScoreUpperBound(terms) : undefined;
-      const remaining = deep.points.filter(({ id }) => !seen.has(id))
+      await this.readPayloads(candidates, deep.points.filter(({ id }) => !candidates.read.has(id))
         .map((point) => ({ id: point.id, bound: Math.min(point.score * factor, point.vector?.bm25 && bound ? bound(point.vector.bm25) : Infinity) }))
-        .sort((a, b) => b.bound - a.bound);
-      for (let offset = 0; offset < remaining.length;) {
-        const threshold = hits.length >= count ? hits[count - 1]!.score : 0;
-        const chunk: string[] = [];
-        while (offset < remaining.length && chunk.length < KEYWORD_PAYLOAD_CHUNK && remaining[offset]!.bound >= threshold) {
-          chunk.push(remaining[offset++]!.id);
-        }
-        if (chunk.length === 0) break;
-        add(await this.qdrant.call<RecordPoint[]>("POST", this.qdrant.path + "/points", {
-          ids: chunk, with_payload: [...HIT_PAYLOAD, "terms", "dl", "lexical_order"], with_vector: false,
-        }));
-        hits = score();
+        .sort((a, b) => b.bound - a.bound));
+      if (deep.points.length === depth && deep.points.at(-1)!.score * factor >= candidates.threshold) {
+        await this.readPastDepth(candidates, terms, filter, new Set(deep.points.map(({ id }) => id)));
       }
     }
-    return hits;
+    return candidates.ranked();
+  }
+
+  /** Reads payloads in bound order while a bound reaches the k-th score, in chunks that double so a long read takes few round trips. */
+  private async readPayloads(candidates: KeywordCandidates, queue: ReadonlyArray<{ id: string; bound: number }>): Promise<void> {
+    for (let offset = 0, size = KEYWORD_PAYLOAD_CHUNK; offset < queue.length; size *= 2) {
+      const threshold = candidates.threshold;
+      const chunk: string[] = [];
+      while (offset < queue.length && chunk.length < size && queue[offset]!.bound >= threshold) chunk.push(queue[offset++]!.id);
+      if (chunk.length === 0) return;
+      candidates.add(await this.qdrant.call<RecordPoint[]>("POST", this.qdrant.path + "/points", {
+        ids: chunk, with_payload: [...HIT_PAYLOAD, "terms", "dl", "lexical_order"], with_vector: false,
+      }));
+    }
+  }
+
+  /**
+   * A deep read that came back full bounds no document past its depth, so one single-term list per term of the complete
+   * expansion bounds them instead (the threshold algorithm). Within a list Qdrant orders by the stored weight, and its
+   * idf, read from a point's vector in the same batch, turns each score back into that weight. A list that returns fewer
+   * points than asked is exhausted. A list is live while its floor, with every other query term at its best listed
+   * weight, could still reach the k-th score: a document that reaches it does so through a listed weight or a live
+   * floor for every query term. Live lists deepen until no unread document can reach the k-th score.
+   */
+  // ponytail: a three-letter prefix expands to about 1,700 terms, so at 200k docs this path costs 150-200 ms (5 of 300 prefix
+  // queries); the one-point probes are half of each round, and a cheaper same-response idf would cut them.
+  private async readPastDepth(candidates: KeywordCandidates, terms: readonly WeightedTerm[], filter: unknown, deepRead: ReadonlySet<string>): Promise<void> {
+    const bounds = this.prefixes?.expansionBounds(terms);
+    if (!bounds) return;
+    const { drift } = bounds;
+    const lists = new Map<string, TermList>();
+    bounds.terms.forEach((expansion, query) => {
+      for (const { term, coefficient } of expansion) {
+        if (!(coefficient > 0)) continue;
+        const list = lists.get(term)
+          ?? lists.set(term, { id: termId(term), limit: KEYWORD_LIST_GROWTH * (candidates.limit + KEYWORD_SHALLOW_SLACK), uses: [], weights: [], floor: Infinity }).get(term)!;
+        list.uses.push({ query, coefficient });
+      }
+    });
+    const single = (id: number, limit: number, vector: boolean) => ({
+      query: { indices: [id], values: [1] }, using: "bm25", limit, filter, with_payload: false, with_vector: vector ? ["bm25"] : false,
+    });
+    for (let open = [...lists.values()]; ;) {
+      // A list and the probe its idf comes from share one request; the requests run concurrently, which Qdrant serves about twice as fast.
+      const size = Math.max(KEYWORD_LISTS_PER_REQUEST, Math.ceil(open.length / KEYWORD_LIST_REQUESTS));
+      await Promise.all(Array.from({ length: Math.ceil(open.length / size) }, async (_, part) => {
+        const batch = open.slice(part * size, (part + 1) * size);
+        const results = await this.qdrant.call<Array<{ points: ScoredPoint[] }>>("POST", this.qdrant.path + "/points/query/batch", {
+          searches: batch.flatMap((list) => [single(list.id, list.limit, false), single(list.id, 1, true)]),
+        });
+        batch.forEach((list, i) => {
+          const points = results[2 * i]!.points;
+          const top = results[2 * i + 1]!.points[0];
+          const idf = top ? top.score / weightAt(top.vector?.bm25, list.id) : NaN;
+          // A missing or unusable idf leaves the list unbounded, so it deepens until exhausted and its points are all read.
+          const weight = (score: number) => (idf > 0 && Number.isFinite(idf) ? score / idf : Infinity);
+          list.weights = points.map((point) => [point.id, weight(point.score)]);
+          list.floor = points.length < list.limit ? 0 : weight(points.at(-1)!.score);
+        });
+      }));
+      const best = bounds.terms.map(() => 0);
+      for (const list of lists.values()) {
+        for (const { query, coefficient } of list.uses) best[query] = Math.max(best[query]!, coefficient * (list.weights[0]?.[1] ?? 0));
+      }
+      const threshold = candidates.threshold;
+      const need = best.map((_, query) => threshold / drift - best.reduce((sum, value, other) => (other === query ? sum : sum + value), 0));
+      const floors = bounds.terms.map(() => 0);
+      open = [];
+      for (const list of lists.values()) {
+        for (const { query, coefficient } of list.uses) {
+          if (!(list.floor > 0 && coefficient * list.floor >= need[query]!)) continue;
+          floors[query] = Math.max(floors[query]!, coefficient * list.floor);
+          if (open.at(-1) !== list) open.push(list);
+        }
+      }
+      if (open.length > 0 && floors.reduce((sum, floor) => sum + floor, 0) * drift >= threshold) {
+        for (const list of open) list.limit *= KEYWORD_LIST_GROWTH;
+        continue;
+      }
+      const contributions = new Map<string, number[]>();
+      for (const list of lists.values()) {
+        for (const { query, coefficient } of list.uses) {
+          for (const [id, weight] of list.weights) {
+            if (coefficient * weight < need[query]!) break;
+            if (deepRead.has(id) || candidates.read.has(id)) continue;
+            const document = contributions.get(id) ?? contributions.set(id, bounds.terms.map(() => 0)).get(id)!;
+            document[query] = Math.max(document[query]!, coefficient * weight);
+          }
+        }
+      }
+      const bound = (document: readonly number[]) => document.reduce((sum, value, query) => sum + Math.max(value, floors[query]!), 0) * drift;
+      await this.readPayloads(candidates, [...contributions].map(([id, document]) => ({ id, bound: bound(document) })).sort((a, b) => b.bound - a.bound));
+      return;
+    }
   }
 
   private lessonVocabulary(): Promise<Map<string, number>> {
