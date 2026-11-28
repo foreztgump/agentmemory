@@ -57,6 +57,7 @@ if (args.compare) {
 
 const base = args.url!.replace(/\/$/, "");
 const secret = process.env.AGENTMEMORY_SECRET;
+if (!secret) throw new Error("AGENTMEMORY_SECRET is not set; every call would be rejected and the capture would look like empty context");
 const headers: Record<string, string> = {
   "content-type": "application/json",
   ...(secret ? { authorization: `Bearer ${secret}` } : {}),
@@ -67,7 +68,7 @@ const sessions: Session[] = [];
 let cursor: string | null = null;
 do {
   const url = `${base}/agentmemory/sessions?agentId=*&limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(120_000) });
   if (!response.ok) throw new Error(`sessions: ${response.status} ${await response.text()}`);
   const page = (await response.json()) as { sessions: Session[]; nextCursor: string | null };
   sessions.push(...page.sessions);
@@ -90,6 +91,10 @@ for (const [project, list] of [...byProject].sort(([a], [b]) => a.localeCompare(
   calls.push({ project, sessionId: "golden-probe-none" });
   const recent = [...list].sort((a, b) => startedMs(b) - startedMs(a)).slice(0, perProject);
   for (const s of recent) calls.push({ project, sessionId: s.id });
+}
+if (calls.length === 0) {
+  console.error(`context-golden: ${sessions.length} sessions but none with a project; nothing to probe`);
+  process.exit(1);
 }
 console.log(`context-golden: ${sessions.length} sessions, ${byProject.size} projects, ${calls.length} calls per pass`);
 

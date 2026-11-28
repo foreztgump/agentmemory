@@ -231,7 +231,13 @@ export function registerContextFunction(
 
       const obsResults = await Promise.all(
         sessionsNeedingObs.map((i) =>
-          topImportantObservations(kv, sessions[i].id, 5).catch(() => [] as CompressedObservation[]),
+          topImportantObservations(kv, sessions[i].id, 5).catch((error) => {
+            logger.warn("context: reading important observations failed; skipping the session", {
+              sessionId: sessions[i].id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return [] as CompressedObservation[];
+          }),
         ),
       );
 
