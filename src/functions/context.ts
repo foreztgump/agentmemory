@@ -10,7 +10,7 @@ import type {
 } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV, collectAll } from "../state/kv.js";
-import { collectWhere } from "../fork/kv/paged-scan.js";
+import { topImportantObservations } from "../fork/kv/observation-stats.js";
 import {
   ensureProjectSessionIndex,
   getProjectSessionIndex,
@@ -24,8 +24,6 @@ import {
 } from "./slots.js";
 import { getAgentId, isAgentScopeIsolated } from "../config.js";
 import { escapeXml, escapeXmlText } from "../prompts/xml.js";
-
-const isImportantObservation = (o: CompressedObservation) => o.title && o.importance >= 5;
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3);
@@ -233,20 +231,21 @@ export function registerContextFunction(
 
       const obsResults = await Promise.all(
         sessionsNeedingObs.map((i) =>
-          collectWhere<CompressedObservation>(kv, KV.observations(sessions[i].id), isImportantObservation)
-            .catch(() => []),
+          topImportantObservations(kv, sessions[i].id, 5).catch((error) => {
+            logger.warn("context: reading important observations failed; skipping the session", {
+              sessionId: sessions[i].id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return [] as CompressedObservation[];
+          }),
         ),
       );
 
       for (let j = 0; j < sessionsNeedingObs.length; j++) {
         const i = sessionsNeedingObs[j];
-        const observations = obsResults[j];
-        const important = observations.filter(isImportantObservation);
+        const top = obsResults[j];
 
-        if (important.length > 0) {
-          const top = important
-            .sort((a, b) => b.importance - a.importance)
-            .slice(0, 5);
+        if (top.length > 0) {
           const items = top
             .map((o) => `- [${escapeXmlText(o.type)}] ${escapeXmlText(o.title)}: ${escapeXmlText(o.narrative ?? "")}`)
             .join("\n");
