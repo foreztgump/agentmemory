@@ -55,9 +55,9 @@ describe("file history read cost (TEE-1451)", () => {
   });
 
   // Before TEE-1451 it listed the 15 newest sessions' observations one session at a time: 91 reads,
-  // 35 round trips deep here.
+  // 35 round trips deep here. Listing them together brought it to 7 deep, the reads unchanged.
   it("keeps the reads of a file history under its ceiling", async () => {
     const r = await fixture().history({ files: ["src/kv.ts"] });
-    expect({ reads: r.reads, depth: r.depth }).toEqual({ reads: Math.min(r.reads, 95), depth: Math.min(r.depth, 10) });
+    expect({ reads: r.reads, depth: r.depth }).toEqual({ reads: Math.min(r.reads, 92), depth: Math.min(r.depth, 8) });
   });
 });
