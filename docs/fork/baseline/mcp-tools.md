@@ -39,7 +39,7 @@ Production `/agentmemory/mcp/call` ran at p50 981 ms and p95 8.7 s on main on 20
 | `memory_team_feed` | 15 | 2.2 / 2.7 | 2.1 / 5.3 |
 | `memory_vision_search` | 15 | 1.9 / 2.3 | 1.8 / 2.8 |
 
-The replica runs on an idle 16-core workstation. Production NR1 is CPU-bound (4 cores, load about 4), and its MCP calls are 10 to 30 times slower than these, so read the deltas, not the absolute numbers. `memory_commit_lookup` is not timed, because buddy's store has no commits. `memory_save` p99 163 ms is one outlier in 10 samples; its p50 is unchanged, and the save path is untouched.
+The replica runs on an idle 16-core workstation. Production NR1 is CPU-bound (4 cores, load about 4), and its MCP calls are 10 to 30 times slower than these, so read the deltas, not the absolute numbers. `memory_commit_lookup` is not timed, because buddy's store has no commits. The `memory_vision_search` row times its refusal (`success: false`, no image provider); the bench now skips a tool that refuses its probe and counts a 200 body that reports failure as an error. `memory_save` p99 163 ms is one outlier in 10 samples; its p50 is unchanged, and the save path is untouched.
 
 ## Causes and fixes
 
@@ -66,7 +66,7 @@ Each state read is a round trip to the iii engine and then Kvrocks. Every fix be
 
 ## Verification
 
-- **Golden:** fixed inputs, 3 per read tool, 72 bodies. 66 are identical before and after. The 6 that differ (`memory_audit`, `memory_export`) differ the same way on two runs of unchanged code: the bench's own searches add audit rows and access-log rows between runs. In export only `collectionPagination.totals.accessLogs` moved (10,516 to 10,711). Frontier and next are timed, not compared, because they score actions by age.
+- **Golden:** fixed inputs, 3 per read tool, 72 bodies. 66 are identical before and after. The 6 that differ (`memory_audit`, `memory_export`) differ the same way on two runs of unchanged code: the bench's own searches add audit rows and access-log rows between runs. In export only `collectionPagination.totals.accessLogs` moved (10,516 to 10,711). Frontier and next are timed, not compared, because they score actions by age. Those runs also dropped every `timestamp` key; the bench now compares stored times and drops only keys a call sets afresh (`exportedAt`, run timings, access counters).
 - **Recall:** buddy's 100 private cases, keyword-only, give recall@10 0.86 and MRR 0.7387 on both images (floor 0.86 / 0.7347).
 - **Ceilings:** `bench/fork/ceilings.json` entry `mcp-buddy-keyword`. The after run passes. The before run fails on keyword timeline (43 s against a 24 s p50 ceiling) and export (4.2 s against 400 ms).
 

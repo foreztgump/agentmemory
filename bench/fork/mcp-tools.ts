@@ -31,39 +31,75 @@ const { values: args } = parseArgs({
 });
 if (!args.cases || !args.project!.length) throw new Error("--cases and at least one --project are required");
 
-const queries = (JSON.parse(readFileSync(args.cases, "utf8")) as { cases: { query: string }[] }).cases.map((c) => c.query);
+const queries = (JSON.parse(readFileSync(args.cases, "utf8")) as { cases?: { query: string }[] }).cases?.map((c) => c.query) ?? [];
+if (!queries.length) throw new Error(`--cases ${args.cases} holds no cases`);
 const projects = args.project!;
 
 type Args = Record<string, unknown>;
-async function call(name: string, toolArgs: Args): Promise<{ ms: number; status: number; text: string }> {
+interface Reply {
+  ms: number;
+  text: string;
+  /** Set when the call did not give a result: a failed fetch, a status other than 200, or a 200 body that reports failure. */
+  error?: string;
+}
+
+function replyError(status: number, text: string): string | undefined {
+  if (status !== 200) return `${status} ${text.slice(0, 120)}`;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  const { success, error } = parsed as { success?: unknown; error?: unknown };
+  return success === false || (error !== undefined && error !== null) ? `200 ${text.slice(0, 120)}` : undefined;
+}
+
+async function call(name: string, toolArgs: Args): Promise<Reply> {
   const started = performance.now();
-  const res = await fetch(`${args.url}/agentmemory/mcp/call`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${args.secret}`, "content-type": "application/json" },
-    body: JSON.stringify({ name, arguments: toolArgs }),
-    signal: AbortSignal.timeout(180_000),
-  });
-  const body = await res.text();
+  let status: number;
+  let body: string;
+  try {
+    const res = await fetch(`${args.url}/agentmemory/mcp/call`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${args.secret}`, "content-type": "application/json" },
+      body: JSON.stringify({ name, arguments: toolArgs }),
+      signal: AbortSignal.timeout(180_000),
+    });
+    status = res.status;
+    body = await res.text();
+  } catch (err) {
+    return { ms: performance.now() - started, text: "", error: `fetch failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
   const ms = performance.now() - started;
   let text = body;
   try {
     text = (JSON.parse(body) as { content?: { text: string }[] }).content?.[0]?.text ?? body;
   } catch {}
-  return { ms, status: res.status, text };
+  return { ms, text, error: replyError(status, text) };
 }
 
-// Ids the id-taking tools need, taken from the store itself.
+async function callOk(name: string, toolArgs: Args): Promise<unknown> {
+  const r = await call(name, toolArgs);
+  if (r.error) throw new Error(`discover: ${name} failed: ${r.error}`);
+  return JSON.parse(r.text);
+}
+
+// Ids the id-taking tools need, taken from the store itself, and the tools this replica cannot serve: vision
+// search answers `success: false` without an image provider, so timing it would time the refusal.
 async function discover() {
   const ids: string[] = [];
   for (const q of queries.slice(0, 20)) {
-    const r = await call("memory_smart_search", { query: q, limit: 10 });
-    for (const hit of (JSON.parse(r.text) as { results?: { obsId: string }[] }).results ?? []) ids.push(hit.obsId);
+    for (const hit of ((await callOk("memory_smart_search", { query: q, limit: 10 })) as { results?: { obsId: string }[] }).results ?? []) ids.push(hit.obsId);
   }
   const memoryIds = [...new Set(ids.filter((id) => id.startsWith("mem_")))];
   const obsIds = [...new Set(ids.filter((id) => !id.startsWith("mem_")))];
   if (!memoryIds.length || !obsIds.length) throw new Error(`discover found ${memoryIds.length} memory and ${obsIds.length} observation ids`);
-  const commits = (JSON.parse((await call("memory_commits", { limit: 1 })).text) as { commits?: { sha: string }[] }).commits ?? [];
-  return { memoryIds, obsIds, sha: commits[0]?.sha };
+  const commits = ((await callOk("memory_commits", { limit: 1 })) as { commits?: { sha: string }[] }).commits ?? [];
+  const vision = await call("memory_vision_search", { queryText: queries[0], topK: 1 });
+  const skipped: Record<string, string> = vision.error ? { memory_vision_search: vision.error } : {};
+  return { memoryIds, obsIds, sha: commits[0]?.sha, skipped };
 }
 
 interface Case {
@@ -72,13 +108,13 @@ interface Case {
   args: (i: number) => Args;
 }
 
-function readCases(ids: { memoryIds: string[]; obsIds: string[]; sha?: string }): Case[] {
+function readCases(ids: { memoryIds: string[]; obsIds: string[]; sha?: string; skipped: Record<string, string> }): Case[] {
   const q = (i: number) => queries[i % queries.length]!;
   const p = (i: number) => projects[i % projects.length]!;
   const mem = (i: number) => ids.memoryIds[i % ids.memoryIds.length]!;
   const obs = (i: number) => ids.obsIds[i % ids.obsIds.length]!;
   const words = (i: number) => q(i).split(/\s+/).slice(0, 2).join(" ");
-  return [
+  const cases: Case[] = [
     { key: "memory_smart_search.project-memory", tool: "memory_smart_search", args: (i) => ({ query: q(i), project: p(i), targetLayer: "memory", ...(i % 2 ? { limit: 5 } : {}) }) },
     { key: "memory_smart_search.memory", tool: "memory_smart_search", args: (i) => ({ query: q(i), targetLayer: "memory", limit: 10 }) },
     { key: "memory_smart_search.project-all", tool: "memory_smart_search", args: (i) => ({ query: q(i), project: p(i), targetLayer: "all", limit: 10 }) },
@@ -107,6 +143,7 @@ function readCases(ids: { memoryIds: string[]; obsIds: string[]; sha?: string })
     { key: "memory_vision_search", tool: "memory_vision_search", args: (i) => ({ queryText: q(i), topK: 5 }) },
     { key: "memory_export", tool: "memory_export", args: () => ({ maxSessions: 5, collectionLimit: 50, collections: "memories,lessons" }) },
   ];
+  return cases.filter((c) => !(c.tool in ids.skipped));
 }
 
 function writeCases(): Case[] {
@@ -124,8 +161,8 @@ async function run(cases: Case[], rounds: number, samples: Map<string, number[]>
   for (let i = 0; i < rounds; i++) {
     for (const c of cases) {
       const r = await call(c.tool, c.args(i));
-      (samples.get(c.key) ?? samples.set(c.key, []).get(c.key)!).push(r.ms);
-      if (r.status !== 200) (errors.get(c.key) ?? errors.set(c.key, []).get(c.key)!).push(`${r.status} ${r.text.slice(0, 120)}`);
+      if (r.error) (errors.get(c.key) ?? errors.set(c.key, []).get(c.key)!).push(r.error);
+      else (samples.get(c.key) ?? samples.set(c.key, []).get(c.key)!).push(r.ms);
     }
   }
 }
@@ -140,11 +177,13 @@ const ids = await discover();
 const reads = readCases(ids);
 
 // The golden pass: the same fixed inputs before and after a change must give the same bodies. Ranked lists keep
-// their order; volatile fields (timing, generated ids, access counters) are dropped. Frontier and next score
-// actions by their age, so they are timed but not compared. Golden mode skips the write pass, so a second run on
-// the same replica sees the store the first one did.
+// their order; only keys a call sets afresh are dropped: the clock at reply time, run timings, and the access
+// counters the bench's own reads bump. Stored times such as an observation's `timestamp` are compared. Frontier and
+// next score actions by their age, so they are timed but not compared. A call that fails is left out of the
+// golden file and fails the run, so two runs that fail alike cannot pass as unchanged. Golden mode skips the write
+// pass, so a second run on the same replica sees the store the first one did.
 const UNCOMPARED = new Set(["memory_frontier", "memory_next"]);
-const VOLATILE = /^(timestamp|generatedAt|exportedAt|elapsedMs|durationMs|ms|took|now|checkedAt|lastAccessedAt|accessCount|uptime.*)$/;
+const VOLATILE = /^(exportedAt|generatedAt|checkedAt|elapsedMs|durationMs|tookMs|accessCount|lastAccessedAt)$/;
 const normalize = (text: string) => {
   try {
     return JSON.stringify(JSON.parse(text), (k, v) => (VOLATILE.test(k) ? undefined : v));
@@ -154,14 +193,24 @@ const normalize = (text: string) => {
 };
 if (goldenMode) {
   const golden: Record<string, string> = {};
-  for (const c of reads.filter((r) => !UNCOMPARED.has(r.tool))) for (let i = 0; i < 3; i++) golden[`${c.key}#${i}`] = normalize((await call(c.tool, c.args(i))).text);
+  const failed: Record<string, string> = {};
+  for (const c of reads.filter((r) => !UNCOMPARED.has(r.tool))) {
+    for (let i = 0; i < 3; i++) {
+      const r = await call(c.tool, c.args(i));
+      if (r.error) failed[`${c.key}#${i}`] = r.error;
+      else golden[`${c.key}#${i}`] = normalize(r.text);
+    }
+  }
   if (args["golden-out"]) writeFileSync(args["golden-out"], JSON.stringify(golden, null, 1));
+  const differ: string[] = [];
+  let compared = 0;
   if (args["golden-compare"]) {
     const before = JSON.parse(readFileSync(args["golden-compare"], "utf8")) as Record<string, string>;
-    const differ = Object.keys(before).filter((k) => before[k] !== golden[k]);
-    console.log(JSON.stringify({ golden: { compared: Object.keys(before).length, differ } }, null, 2));
-    if (differ.length) process.exitCode = 1;
+    compared = Object.keys(before).length;
+    differ.push(...Object.keys(before).filter((k) => !(k in failed) && before[k] !== golden[k]));
   }
+  console.log(JSON.stringify({ golden: { recorded: Object.keys(golden).length, compared, differ, failed } }, null, 2));
+  if (differ.length || Object.keys(failed).length) process.exitCode = 1;
 }
 
 const samples = new Map<string, number[]>();
@@ -169,19 +218,28 @@ const errors = new Map<string, string[]>();
 await run(reads, readRounds, samples, errors);
 if (!goldenMode) await run(writeCases(), writeRounds, samples, errors);
 
-const tools: Record<string, Record<string, number>> = {};
+// A key whose every call failed has no samples: it shows its error count and no percentiles, so a ceiling on it
+// reports it unmeasured.
+const tools: Record<string, { n: number; p50Ms?: number; p95Ms?: number; p99Ms?: number; maxMs?: number; errors: number }> = {};
 const measured: Record<string, number> = {};
-for (const [key, ms] of samples) {
-  const sorted = [...ms].sort((a, b) => a - b);
-  const s = { n: sorted.length, p50Ms: round(pXX(sorted, 50)), p95Ms: round(pXX(sorted, 95)), p99Ms: round(pXX(sorted, 99)), maxMs: round(sorted.at(-1)!), errors: errors.get(key)?.length ?? 0 };
-  tools[key] = s;
-  for (const m of ["p50Ms", "p95Ms", "p99Ms"] as const) measured[`mcp.${key}.${m}`] = s[m];
+for (const key of new Set([...samples.keys(), ...errors.keys()])) {
+  const sorted = [...(samples.get(key) ?? [])].sort((a, b) => a - b);
+  const s = { n: sorted.length, errors: errors.get(key)?.length ?? 0 };
+  if (!sorted.length) {
+    tools[key] = s;
+    continue;
+  }
+  const p = { p50Ms: round(pXX(sorted, 50)), p95Ms: round(pXX(sorted, 95)), p99Ms: round(pXX(sorted, 99)) };
+  tools[key] = { ...s, ...p, maxMs: round(sorted.at(-1)!) };
+  for (const [m, v] of Object.entries(p)) measured[`mcp.${key}.${m}`] = v;
 }
-const result = { at: new Date().toISOString(), projects, ids: { memory: ids.memoryIds.length, observation: ids.obsIds.length }, tools, measured, errors: Object.fromEntries(errors) };
+const result = { at: new Date().toISOString(), projects, ids: { memory: ids.memoryIds.length, observation: ids.obsIds.length }, skipped: ids.skipped, tools, measured, errors: Object.fromEntries(errors) };
 if (args.out) writeFileSync(args.out, JSON.stringify(result, null, 2));
+for (const [tool, why] of Object.entries(ids.skipped)) console.log(`skipped ${tool}: ${why}`);
+const cell = (v: number | undefined) => String(v ?? "-").padStart(8);
 console.log("tool".padEnd(40), "n".padStart(4), "p50".padStart(8), "p95".padStart(8), "p99".padStart(8), "max".padStart(8), "err");
-for (const [key, s] of Object.entries(tools).sort((a, b) => b[1].p95Ms - a[1].p95Ms)) {
-  console.log(key.padEnd(40), String(s.n).padStart(4), String(s.p50Ms).padStart(8), String(s.p95Ms).padStart(8), String(s.p99Ms).padStart(8), String(s.maxMs).padStart(8), s.errors);
+for (const [key, s] of Object.entries(tools).sort((a, b) => (b[1].p95Ms ?? -1) - (a[1].p95Ms ?? -1))) {
+  console.log(key.padEnd(40), String(s.n).padStart(4), cell(s.p50Ms), cell(s.p95Ms), cell(s.p99Ms), cell(s.maxMs), s.errors);
 }
 if (args.ceilings && args.name) {
   const limits = (JSON.parse(readFileSync(args.ceilings, "utf8")) as Record<string, { limits: Limit[] }>)[args.name]?.limits;
@@ -189,7 +247,7 @@ if (args.ceilings && args.name) {
   const violations = checkLimits(measured, limits);
   for (const v of violations) console.error(`FAIL ${v.metric}: measured ${v.measured}, limit ${v.limit}`);
   // A failed call returns fast, so a tool that errors would pass its latency ceiling.
-  for (const [key, list] of errors) console.error(`FAIL ${key}: ${list.length} calls did not return 200, first: ${list[0]}`);
+  for (const [key, list] of errors) console.error(`FAIL ${key}: ${list.length} calls failed, first: ${list[0]}`);
   if (violations.length || errors.size) process.exitCode = 1;
   else console.log(`PASS ${limits.length} limits`);
 }

@@ -110,7 +110,7 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
     .map((entry) => entry.value)
 }
 
-/** Results keep input order. A failure stops new work and rethrows the error a sequential loop would have hit first. */
+/** Results keep input order. A failure stops new work, waits for work already started, and rethrows the error a sequential loop would have hit first; no partial results are returned. */
 export async function mapPooled<T, R>(
   items: readonly T[],
   run: (item: T) => Promise<R>,
@@ -145,12 +145,18 @@ export async function collectAll<T = unknown>(kv: StateKV, scope: string): Promi
 
 export type ScopeReader = <T>(scope: string) => Promise<readonly T[]>
 
-/** collectAll that reads each scope at most once. Callers share the rows, so none may mutate them. */
+/** collectAll that reads each scope at most once; a failed read is dropped so the next one retries. Callers share the rows, so none may mutate them. */
 export function scopeReader(kv: StateKV): ScopeReader {
   const reads = new Map<string, Promise<unknown[]>>()
   return <T>(scope: string) => {
     let rows = reads.get(scope)
-    if (!rows) reads.set(scope, (rows = collectAll(kv, scope)))
+    if (!rows) {
+      const read = collectAll(kv, scope)
+      reads.set(scope, (rows = read))
+      read.catch(() => {
+        if (reads.get(scope) === read) reads.delete(scope)
+      })
+    }
     return rows as Promise<readonly T[]>
   }
 }

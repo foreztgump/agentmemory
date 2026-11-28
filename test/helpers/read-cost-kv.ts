@@ -6,25 +6,28 @@ type Payload = { scope: string; key?: string; value?: unknown };
  * A real redis-backed StateKV over an in-memory engine where every state call costs one event-loop turn,
  * the stand-in for one round trip to the engine and Kvrocks (TEE-1451). `measure` reports the reads a call
  * made and `depth`, the round trips on its longest chain of reads that waited on each other: a loop that
- * awaits each read in turn adds one per read, a batch run together adds one.
+ * awaits each read in turn adds one per read, a batch run together adds one. Writes cost a turn too but count
+ * in `writes`, not in `depth`.
  */
 export function readCostKV() {
   const store = new Map<string, Map<string, unknown>>();
-  const cost = { gets: 0, lists: 0, listKeys: 0 };
+  const cost = { gets: 0, lists: 0, listKeys: 0, writes: 0 };
   let clock = 0;
-  const roundTrip = () => {
+  const roundTrip = (isRead: boolean) => {
     const startedAt = clock;
     return new Promise<void>((resolve) =>
       setImmediate(() => {
-        clock = Math.max(clock, startedAt + 1);
+        if (isRead) clock = Math.max(clock, startedAt + 1);
         resolve();
       }),
     );
   };
+  const isWrite = (functionId: string) => functionId === "state::set" || functionId === "state::delete";
   const rows = (scope: string) => store.get(scope) ?? new Map<string, unknown>();
   const sdk = {
     trigger: async ({ function_id, payload }: { function_id: string; payload: Payload }) => {
-      await roundTrip();
+      if (isWrite(function_id)) cost.writes++;
+      await roundTrip(!isWrite(function_id));
       switch (function_id) {
         case "state::get":
           cost.gets++;
@@ -54,6 +57,7 @@ export function readCostKV() {
     cost.gets = 0;
     cost.lists = 0;
     cost.listKeys = 0;
+    cost.writes = 0;
     clock = 0;
     const out = await run();
     return { out, reads: cost.gets + cost.lists + cost.listKeys, ...cost, depth: clock };
