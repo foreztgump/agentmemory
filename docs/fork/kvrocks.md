@@ -60,6 +60,18 @@ The only reads the adapter offers are `state::list` (`HGETALL`), `state::list_ke
 
 **Ceiling.** Cold, at 3x main's data with the app busy, `HKEYS` measured up to 5.9 µs per key, so a listed scope reaches the limit at about 85,000 keys. The largest listed scopes today are main's graph nodes and name index (21,282 keys) and its current audit month (18,236). Past the warning, shard that scope or get a paged `state::list_keys` into iii. On main scaled 3x (every hash tripled, `bench/fork/scale-store.ts`), a cold boot became ready in 486 s with no timeout, and `HKEYS` of every listed scope took at most 164 ms (the 56,381-key audit month). The 65,000-key graph scopes took 45-94 ms.
 
+**Writes (TEE-1202).** The adapter fails a slow write the same way. A set fails with `Failed to atomically set value in Redis: timed out`. A delete fails with `Failed to delete value from Redis: timed out`, with no "atomically". `StateKV` retries `state::set`, the set leg of the redis `update`, and `state::delete` on those errors only. It makes 4 attempts with waits of 100, 200 and 400 ms, inside the key's lock, then logs `a redis write kept timing out` and rethrows. A retry is safe because SET and DELETE are absolute, and the one connection applies a late first command before the retry. An engine-side `state::update` op (increment, append) and the SDK's own `TIMEOUT` are not retried, because they could apply twice or land after a later write.
+
+Memory and CPU limits on Kvrocks did not make a write time out on main's replica. A 600 MB cap OOM-killed Kvrocks, and 700-800 MB or 0.05-0.2 CPUs only produced read and SDK timeouts. `bench/fork/stall-proxy.cjs` gives the trigger. It sits between the state worker and Kvrocks and holds every reply for 700 ms about every 20 s. Each run below is one replay day (`scripts/fork/replay-day.ts`, buddy's daily volume at `--factor 48`) on main's 2026-11-16 snapshot, with Kvrocks capped at 700 MB and agentmemory at 3,584 MB.
+
+| Image | Write timeouts | Retried | Given up | obs-stats rows lost (sessions under the cap) |
+|---|---|---|---|---|
+| `disk` 557782f | 3 sets | 0 | n/a | 3, in 2 of 4 sessions |
+| fix 7458a55 | 6 sets, 1 delete | 6 | 0 | 0 of 8, but the delete, in the real wording, was not retried |
+| fix b235f1b | 4 sets | 4, each on its second attempt | 0 | 0 of 4 |
+
+A retried write waits 100 ms more than the 500 ms timeout that started it. The worst case before the error reaches the caller is 4 timeouts plus 700 ms of waits, about 2.7 s. A session at the 5,000-observation cap stores a few rows past it during stalls (5,003 and 5,004 rows against stats of 5,000), on `disk` and on the fix alike. That is a separate defect.
+
 The agentmemory worker logs to `compose-state/*/agentmemory/logs/agentmemory.log` on the data volume, not to `docker logs`. Count timeouts there. `bench/fork/cold-boots.sh` does.
 
 **Upstream change that would remove the ceiling** (iii-hq/workers, `state/src/adapters.rs`): build the connection with `client.get_connection_manager_with_config(ConnectionManagerConfig::new().set_response_timeout(...))` from a new optional `response_timeout_ms` in `RedisAdapterConfig`, and add paged `state::list_keys` and `state::list` that take `{ cursor, count }` and run `HSCAN`, as `list_groups` already pages with `SCAN`.
