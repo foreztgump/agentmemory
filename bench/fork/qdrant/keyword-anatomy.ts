@@ -23,19 +23,22 @@ const { values: args } = parseArgs({
 const profile = JSON.parse(readFileSync(new URL("../profiles/buddy-2026-11-16.json", import.meta.url), "utf8"));
 const qdrant = new Qdrant({ url: args.qdrant!, collection: args.collection!, dimensions: 16, oversampling: 6, timeoutMs: 120_000 });
 const engine = new SearchEngine(qdrant, DEFAULT_AVGDL);
-const calls: Array<{ kind: string; ms: number }> = [];
+const calls: Array<{ kind: string; ms: number; failed: boolean }> = [];
 const call = qdrant.call.bind(qdrant);
 qdrant.call = (async (method: string, path: string, body?: unknown) => {
   const t0 = performance.now();
+  let failed = true;
   try {
-    return await call(method, path, body);
+    const result = await call(method, path, body);
+    failed = false;
+    return result;
   } finally {
     const b = body as { limit?: number; with_payload?: unknown; ids?: unknown[]; searches?: unknown[] } | undefined;
     let kind = path;
     if (path.endsWith("/points/query/batch")) kind = `batch${b?.searches?.length ?? 0}`;
     else if (path.endsWith("/points/query")) kind = `${b?.with_payload === false ? "ids" : "shallow"}@${b?.limit}`;
     else if (path.endsWith("/points")) kind = `payload${b?.ids?.length ?? 0}`;
-    calls.push({ kind, ms: performance.now() - t0 });
+    calls.push({ kind, ms: performance.now() - t0, failed });
   }
 }) as typeof qdrant.call;
 
@@ -55,30 +58,38 @@ for (const [label, qs] of [["capture", queries(9001, false)], ["capture-prefix",
   const total: number[] = [];
   const deep: number[] = [];
   const kinds = new Map<string, number[]>();
+  const failures = new Map<string, number>();
+  let failedQueries = 0;
   const expansion: number[] = [];
   let uncapped = 0;
   const slow: unknown[] = [];
   for (const q of qs) {
     calls.length = 0;
     const t0 = performance.now();
-    await engine.keyword(q, K, "all");
+    const ok = await engine.keyword(q, K, "all").then(() => true, () => false);
     const ms = performance.now() - t0;
-    total.push(ms);
-    if (calls.length > 1) deep.push(ms);
+    if (ok) total.push(ms);
+    else failedQueries++;
+    if (ok && calls.length > 1) deep.push(ms);
     for (const c of calls) {
       const key = c.kind.replace(/\d+$/, "");
+      if (c.failed) {
+        failures.set(key, (failures.get(key) ?? 0) + 1);
+        continue;
+      }
       const bucket = kinds.get(key) ?? [];
       bucket.push(c.ms);
       kinds.set(key, bucket);
     }
     const sizes = queryTerms(q).map(({ term }) => vocabulary.completePrefixes(term)?.length ?? null);
     for (const size of sizes) if (size === null) uncapped++; else expansion.push(size);
-    if (ms > 20) slow.push({ ms: +ms.toFixed(1), sizes, calls: calls.map((c) => `${c.kind}:${c.ms.toFixed(1)}`) });
+    if (ok && ms > 20) slow.push({ ms: +ms.toFixed(1), sizes, calls: calls.map((c) => `${c.kind}:${c.ms.toFixed(1)}${c.failed ? ":failed" : ""}`) });
   }
   console.log(JSON.stringify({
-    label, n: total.length, p50: pct(total, 0.5), p95: pct(total, 0.95), p99: pct(total, 0.99), deepShare: +(deep.length / total.length).toFixed(3),
+    label, n: total.length, failedQueries, p50: pct(total, 0.5), p95: pct(total, 0.95), p99: pct(total, 0.99), deepShare: +(deep.length / total.length).toFixed(3),
     deepP50: pct(deep, 0.5),
     calls: Object.fromEntries([...kinds].map(([k, v]) => [k, { n: v.length, p50: pct(v, 0.5), p99: pct(v, 0.99) }])),
+    failures: Object.fromEntries(failures),
     expansion: { p50: pct(expansion, 0.5), p90: pct(expansion, 0.9), p99: pct(expansion, 0.99), max: Math.max(...expansion), pastCompleteMax: uncapped },
     slow: slow.slice(0, 12),
   }));

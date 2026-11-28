@@ -65,6 +65,9 @@ export class PrefixVocabulary {
   /** Points written since the running scroll started, by point id; empty outside a fill once each is resolved. */
   private fillWrites = new Map<string, FillWrite>();
   private recounts = new Set<Promise<void>>();
+  /** Skipped points whose read-back failed, so the counts miss them; ranking is not ready until a search reads them back. */
+  private owed = new Set<string>();
+  private repaying = false;
 
   constructor(
     private readonly qdrant: Qdrant,
@@ -82,7 +85,7 @@ export class PrefixVocabulary {
   }
 
   get isReady(): boolean {
-    return this.filled;
+    return this.filled && this.owed.size === 0;
   }
 
   /** A fill has started, so a write that lands now must register (touch) and report its outcome (changed). */
@@ -191,7 +194,7 @@ export class PrefixVocabulary {
     const filling = this.filling !== null && !this.filled;
     for (const id of pointIds) {
       const write = this.fillWrites.get(id);
-      if (write) write.abandoned = false;
+      if (write) this.claim(id, write);
       else if (filling) this.fillWrites.set(id, { skipped: false, observed: false });
     }
   }
@@ -206,7 +209,7 @@ export class PrefixVocabulary {
       if (applied) this.replace(previous, current);
       return;
     }
-    write.abandoned = false;
+    this.claim(pointId, write);
     if (!write.observed) {
       write.observed = true;
       write.first = previous;
@@ -227,9 +230,19 @@ export class PrefixVocabulary {
       else write.abandoned = true;
       return write.skipped;
     });
-    if (skipped.length === 0) return;
-    const recount = this.recount(skipped).finally(() => this.recounts.delete(recount));
-    this.recounts.add(recount);
+    if (skipped.length > 0) this.track(this.recount(skipped));
+  }
+
+  /** A write takes over an abandoned point, so its outcome counts it rather than a read-back. */
+  private claim(pointId: string, write: FillWrite): void {
+    write.abandoned = false;
+    this.owed.delete(pointId);
+  }
+
+  private track(recount: Promise<void>): Promise<void> {
+    const tracked = recount.finally(() => this.recounts.delete(tracked));
+    this.recounts.add(tracked);
+    return tracked;
   }
 
   private async recount(pointIds: string[]): Promise<void> {
@@ -243,12 +256,15 @@ export class PrefixVocabulary {
       for (const id of pointIds) {
         if (!this.fillWrites.get(id)?.abandoned) continue;
         this.fillWrites.delete(id);
+        this.owed.delete(id);
         const payload = stored.get(id);
         this.noteIndexedAverageLength(payload?.ad ?? 0);
         if (!payload?.deleted) this.replace(undefined, storedDocument(payload));
       }
     } catch (error) {
-      logger.warn("am-search could not recount points after a failed write; they count again on their next write", { points: pointIds.length, error: error instanceof Error ? error.message : String(error) });
+      if (epoch !== this.epoch) return;
+      for (const id of pointIds) if (this.fillWrites.get(id)?.abandoned) this.owed.add(id);
+      logger.warn("am-search could not recount points after a failed write; ranking is inexact until a search reads them back", { points: pointIds.length, error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -289,8 +305,12 @@ export class PrefixVocabulary {
     return out;
   }
 
-  /** Starts the one read of the collection; a no-op once filled or while running. A search never awaits it. */
+  /** Starts the one read of the collection, and reads back points a failed recount missed; a search never awaits either. */
   fillInBackground(): void {
+    if (this.owed.size > 0 && !this.repaying) {
+      this.repaying = true;
+      void this.track(this.recount([...this.owed])).finally(() => { this.repaying = false; });
+    }
     if (this.filled || this.filling) return;
     const filling = this.fill()
       .catch((error) => logger.warn("am-search could not read the prefix vocabulary; the next search retries", { error: error instanceof Error ? error.message : String(error) }))
@@ -316,6 +336,7 @@ export class PrefixVocabulary {
     this.documents = 0;
     this.totalLength = 0;
     this.fillWrites = new Map();
+    this.owed = new Set();
     this.epoch++;
   }
 

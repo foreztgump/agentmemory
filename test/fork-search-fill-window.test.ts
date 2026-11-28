@@ -131,3 +131,30 @@ describe("a failed write retried while its point is read back", () => {
       .toEqual({ documents: 1, frequencies: { newterm: 1 } });
   });
 });
+
+describe("a failed write whose read-back fails too", () => {
+  it("is not ready until the next search reads it back and counts it", async () => {
+    let reads = 0;
+    const qdrant = {
+      path: "/collections/recount",
+      call: async (_method: string, path: string) => {
+        if (path.endsWith("/points/scroll")) {
+          return { points: [{ id: "p1", payload: { terms: ["oldterm"], dl: 1 } }, { id: "p2", payload: { terms: ["other"], dl: 1 } }], next_page_offset: null };
+        }
+        if (reads++ === 0) throw new Error("read refused");
+        return [{ id: "p1", payload: { terms: ["oldterm"], dl: 1 } }];
+      },
+    } as unknown as Qdrant;
+    const vocab = new PrefixVocabulary(qdrant, async () => {});
+    const counts = () => ({ ready: vocab.isReady, documents: vocab.documentCount, frequencies: Object.fromEntries([...vocab.frequencies].filter(([, df]) => df > 0)) });
+    vocab.fillInBackground();
+    vocab.touch(["p1"]);
+    await vocab.settled();
+    vocab.abandon(["p1"]);
+    await vocab.settled();
+    expect(counts()).toEqual({ ready: false, documents: 1, frequencies: { other: 1 } });
+    vocab.fillInBackground();
+    await vocab.settled();
+    expect(counts()).toEqual({ ready: true, documents: 2, frequencies: { oldterm: 1, other: 1 } });
+  });
+});
