@@ -36,7 +36,7 @@ qdrant.call = (async (method: string, path: string, body?: unknown) => {
     const b = body as { limit?: number; with_payload?: unknown; ids?: unknown[]; searches?: unknown[] } | undefined;
     let kind = path;
     if (path.endsWith("/points/query/batch")) kind = `batch${b?.searches?.length ?? 0}`;
-    else if (path.endsWith("/points/query")) kind = `${b?.with_payload === false ? "ids" : "shallow"}@${b?.limit}`;
+    else if (path.endsWith("/points/query")) kind = `${b?.with_payload === false ? "deep" : "shallow"}@${b?.limit}`;
     else if (path.endsWith("/points")) kind = `payload${b?.ids?.length ?? 0}`;
     calls.push({ kind, ms: performance.now() - t0, failed });
   }

@@ -711,6 +711,7 @@ export class SearchEngine {
           const results = await this.qdrant.call<Array<{ points: ScoredPoint[] }>>("POST", this.qdrant.path + "/points/query/batch", {
             searches: batch.flatMap((list) => [single(list.id, list.limit, false), single(list.id, 1, true)]),
           });
+          if (results.length !== 2 * batch.length) throw new Error(`keyword list batch returned ${results.length} of ${2 * batch.length} results`);
           batch.forEach((list, i) => {
             const points = results[2 * i]!.points;
             const top = results[2 * i + 1]!.points[0];

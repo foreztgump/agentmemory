@@ -441,7 +441,7 @@ export class PrefixVocabulary {
     this.documents += documents;
     this.totalLength += totalLength;
     this.filled = true;
-    // ponytail: a write decided before the fill started that lands during the scroll is not counted; the next write of that point corrects it.
+    // ponytail: a write decided before the fill started that lands during the scroll is not reconciled by touch/changed; its count stays off by that one point until the point is written again or the next fill.
     for (const [pointId, write] of this.fillWrites) if (write.observed) this.resolve(pointId, write);
     this.fold();
     logger.info("am-search prefix vocabulary ready", { terms: this.df.size, refused: this.refused });
