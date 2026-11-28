@@ -84,11 +84,12 @@ describe("smart search read cost (TEE-1451)", () => {
 
   // Before TEE-1451 a scoped search whose project held few matches read each memory up to four times
   // (enrich tried the observation scope first, then the project filter and the compact list re-read it) and
-  // ran the project filter ten reads at a time: 2,500 reads in 79 waves here, against 60 in 2 unscoped.
+  // ran the project filter ten reads at a time: 2,500 reads in 80 waves here, against 60 in 3 unscoped. One read
+  // cache per call brought them to 770 in 3 and 30 in 2; the ceilings sit just above that.
   it.each([
-    ["project memory", { project: "project-3", targetLayer: "memory", limit: 10 }, { gets: 200, waves: 6 }],
-    ["rare project memory", { project: "rare", targetLayer: "memory", limit: 10 }, { gets: 900, waves: 12 }],
-    ["memory", { targetLayer: "memory", limit: 10 }, { gets: 60, waves: 3 }],
+    ["project memory", { project: "project-3", targetLayer: "memory", limit: 10 }, { gets: 130, waves: 3 }],
+    ["rare project memory", { project: "rare", targetLayer: "memory", limit: 10 }, { gets: 850, waves: 4 }],
+    ["memory", { targetLayer: "memory", limit: 10 }, { gets: 40, waves: 3 }],
   ])("keeps the reads of a %s search under its ceiling", async (_name, data, ceiling) => {
     const f = fixture();
     f.seed();
