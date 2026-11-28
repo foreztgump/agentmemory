@@ -28,6 +28,21 @@ const MIN_FUSION_POOL = 40;
 export interface HybridSearchRequest {
   embedding?: { query: string; value: Promise<Float32Array> };
   candidateCount?: number;
+  reads?: Map<string, Promise<unknown>>;
+}
+
+export function readOnce<T>(kv: StateKV, request: HybridSearchRequest | undefined, scope: string, key: string): Promise<T | null> {
+  if (!request) return kv.get<T>(scope, key);
+  const reads = (request.reads ??= new Map());
+  const cacheKey = `${scope}\u0000${key}`;
+  const cached = reads.get(cacheKey) as Promise<T | null> | undefined;
+  if (cached) return cached;
+  const read = kv.get<T>(scope, key);
+  reads.set(cacheKey, read);
+  read.catch(() => {
+    if (reads.get(cacheKey) === read) reads.delete(cacheKey);
+  });
+  return read;
 }
 
 export class HybridSearch {
@@ -258,7 +273,7 @@ export class HybridSearch {
     if (request) request.candidateCount = combined.length;
     const retrievalDepth = Math.max(limit, 20);
     const diversified = this.diversifyBySession(combined, combined.length);
-    const enriched = await this.enrichResults(diversified, retrievalDepth);
+    const enriched = await this.enrichResults(diversified, retrievalDepth, request);
 
     return applyReranking ? this.rerankResults(query, enriched, limit) : enriched.slice(0, limit);
   }
@@ -365,13 +380,14 @@ export class HybridSearch {
       graphContext?: string;
     }>,
     limit: number,
+    request?: HybridSearchRequest,
   ): Promise<HybridSearchResult[]> {
     const enriched: HybridSearchResult[] = [];
     let next = 0;
     while (next < results.length && enriched.length < limit) {
       const batch = results.slice(next, next + limit);
       next += batch.length;
-      enriched.push(...(await this.enrichBatch(batch)));
+      enriched.push(...(await this.enrichBatch(batch, request)));
     }
     return enriched.slice(0, limit);
   }
@@ -386,22 +402,25 @@ export class HybridSearch {
       combinedScore: number;
       graphContext?: string;
     }>,
+    request?: HybridSearchRequest,
   ): Promise<HybridSearchResult[]> {
+    const readObservation = async (r: { obsId: string; sessionId: string }) => {
+      const obs = await readOnce<CompressedObservation>(this.kv, request, KV.observations(r.sessionId), r.obsId)
+        .catch(() => null);
+      return obs ? { observation: obs, layer: "observation" as const } : null;
+    };
+    // An indexed entry may originate from mem::remember, which writes to
+    // KV.memories with a synthetic sessionId ("memory" or the memory's first
+    // associated session). Coerce the Memory record into a
+    // CompressedObservation so search/recall surface saved memories.
+    const readMemory = async (r: { obsId: string }) => {
+      const mem = await readOnce<Memory>(this.kv, request, KV.memories, r.obsId).catch(() => null);
+      return mem ? { observation: memoryToObservation(mem), layer: "memory" as const } : null;
+    };
     const observations = await Promise.all(
-      sliced.map(async (r) => {
-        const obs = await this.kv
-          .get<CompressedObservation>(KV.observations(r.sessionId), r.obsId)
-          .catch(() => null);
-        if (obs) return { observation: obs, layer: "observation" as const };
-        // Fallback: indexed entry may originate from mem::remember, which
-        // writes to KV.memories with a synthetic sessionId ("memory" or the
-        // memory's first associated session). Coerce the Memory record into
-        // a CompressedObservation so search/recall surface saved memories.
-        const mem = await this.kv
-          .get<Memory>(KV.memories, r.obsId)
-          .catch(() => null);
-        return mem ? { observation: memoryToObservation(mem), layer: "memory" as const } : null;
-      }),
+      sliced.map(async (r) => this.bm25.layerOf(r.obsId) === "memory"
+        ? (await readMemory(r)) ?? (await readObservation(r))
+        : (await readObservation(r)) ?? (await readMemory(r))),
     );
     const enriched: HybridSearchResult[] = [];
     for (let i = 0; i < sliced.length; i++) {
