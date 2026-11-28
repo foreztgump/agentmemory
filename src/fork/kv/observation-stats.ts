@@ -3,7 +3,9 @@ import type { StateKV, StateSetReply } from "../../state/kv.js";
 import { KV } from "../../state/schema.js";
 import { withKeyedLock } from "../../state/keyed-mutex.js";
 import { logger } from "../../logger.js";
-import type { CompressedObservation, SessionObservationStats } from "../../types.js";
+import type { CompressedObservation, ImportantObservationEntry, SessionObservationStats } from "../../types.js";
+import { importantEntry, ImportantObservationIndex, isImportantObservation } from "./important-observations.js";
+import { collectWhere } from "./paged-scan.js";
 import {
   EMPTY_SESSION_TOTALS,
   observationSourceTotals,
@@ -68,8 +70,14 @@ function shift(base: Tally, removed: Contribution, added: Contribution): Tally {
  */
 export class ObservationStats {
   private readonly listeners = new Set<WriteListener>();
+  /** Null off the redis backend, whose list order the index reproduces; context scans there instead. */
+  readonly important: ImportantObservationIndex | null;
 
-  constructor(private readonly base: StateKV) {}
+  constructor(private readonly base: StateKV) {
+    this.important = base.backend === "redis" && typeof base.iterate === "function"
+      ? new ImportantObservationIndex(base, (sessionId, fn) => this.lock(sessionId, fn))
+      : null;
+  }
 
   /** Calls `listener` after every set, update and delete on any scope. `deleted` means the delete committed; a write that threw is reported as not deleted, since the row may or may not have changed. Returns the unsubscribe function. */
   onWrite(listener: WriteListener): () => void {
@@ -138,6 +146,7 @@ export class ObservationStats {
         const newRow = await read();
         const after = shift(before, contribution(oldRow), contribution(newRow));
         await this.storeLocked(sessionId, after, before.rows);
+        await this.important?.applyLocked(sessionId, key, oldRow, newRow, before.rows, after.rows);
         return result;
       }),
     );
@@ -166,10 +175,19 @@ export class ObservationStats {
 
   private async recountLocked(sessionId: string): Promise<Tally> {
     let tally = EMPTY_TALLY;
+    const important: ImportantObservationEntry[] = [];
+    let keyed = true;
     for await (const page of this.base.iterate<CompressedObservation>(KV.observations(sessionId))) {
-      for (const row of page) tally = shift(tally, EMPTY_CONTRIBUTION, contribution(row));
+      for (const row of page) {
+        tally = shift(tally, EMPTY_CONTRIBUTION, contribution(row));
+        if (!this.important || !isImportantObservation(row)) continue;
+        const entry = importantEntry(row.id, row);
+        if (entry) important.push(entry);
+        else keyed = false;
+      }
     }
     await this.storeLocked(sessionId, tally, -1);
+    await this.important?.replaceLocked(sessionId, keyed ? important : null, tally.rows);
     return tally;
   }
 
@@ -232,6 +250,18 @@ export async function sessionObservationTotals(
   const rows = await kv.list<CompressedObservation>(KV.observations(sessionId));
   const id = (excluding as { id?: unknown } | undefined)?.id;
   return observationSourceTotals(id === undefined ? rows : rows.filter((row) => row?.id !== id));
+}
+
+/**
+ * The rows context injection shows for a session without a summary: its `limit` most important
+ * observations. Reads them by key through the maintained index on the redis backend; otherwise
+ * scans the session as upstream does.
+ */
+export async function topImportantObservations(kv: StateKV, sessionId: string, limit: number): Promise<CompressedObservation[]> {
+  const index = observationStatsOf(kv)?.important;
+  if (index) return index.top(sessionId, limit);
+  const rows = await collectWhere<CompressedObservation>(kv, KV.observations(sessionId), isImportantObservation);
+  return [...rows].sort((a, b) => b.importance - a.importance).slice(0, limit);
 }
 
 export function withObservationStats<K extends StateKV>(kv: K): K {

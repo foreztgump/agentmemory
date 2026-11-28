@@ -70,6 +70,7 @@ export const KV = {
   captureEvents: (shard: string) => `mem:capture:events:${shard}`,
   capturePrompts: "mem:capture:prompts",
   obsStats: "mem:obs-stats",
+  obsImportant: "mem:obs-important",
   retentionVault: RETENTION_KV.vault,
   retentionItems: RETENTION_KV.items,
   retentionDemoted: RETENTION_KV.demoted,
