@@ -26,8 +26,9 @@ export function readCostKV() {
   const rows = (scope: string) => store.get(scope) ?? new Map<string, unknown>();
   const sdk = {
     trigger: async ({ function_id, payload }: { function_id: string; payload: Payload }) => {
-      if (isWrite(function_id)) cost.writes++;
-      await roundTrip(!isWrite(function_id));
+      const write = isWrite(function_id);
+      if (write) cost.writes++;
+      await roundTrip(!write);
       switch (function_id) {
         case "state::get":
           cost.gets++;

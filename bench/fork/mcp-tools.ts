@@ -206,8 +206,9 @@ if (goldenMode) {
   let compared = 0;
   if (args["golden-compare"]) {
     const before = JSON.parse(readFileSync(args["golden-compare"], "utf8")) as Record<string, string>;
-    compared = Object.keys(before).length;
-    differ.push(...Object.keys(before).filter((k) => !(k in failed) && before[k] !== golden[k]));
+    const keys = Object.keys(before).filter((k) => !(k.split("#")[0]! in ids.skipped));
+    compared = keys.length;
+    differ.push(...keys.filter((k) => !(k in failed) && before[k] !== golden[k]));
   }
   console.log(JSON.stringify({ golden: { recorded: Object.keys(golden).length, compared, differ, failed } }, null, 2));
   if (differ.length || Object.keys(failed).length) process.exitCode = 1;
