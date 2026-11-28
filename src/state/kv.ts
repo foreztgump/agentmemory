@@ -146,7 +146,7 @@ export async function collectAll<T = unknown>(kv: StateKV, scope: string): Promi
 export type ScopeReader = <T>(scope: string) => Promise<T[]>
 
 /** collectAll that reads each scope at most once. Callers share the rows, so none may mutate them. */
-export function readOnce(kv: StateKV): ScopeReader {
+export function scopeReader(kv: StateKV): ScopeReader {
   const reads = new Map<string, Promise<unknown[]>>()
   return <T>(scope: string) => {
     let rows = reads.get(scope)

@@ -4,7 +4,7 @@ import { lookupObservationSession } from "../state/obs-index.js";
 import { KV, generateId } from "../state/schema.js";
 import type { Facet, Lesson } from "../types.js";
 import { logger } from "../logger.js";
-import { collectAll, mapPooled, readOnce } from "../state/kv.js";
+import { collectAll, mapPooled, scopeReader } from "../state/kv.js";
 
 interface TargetLiveness {
   observation: boolean;
@@ -82,7 +82,7 @@ export async function deleteFacetsForTargets(
   }
 }
 
-export async function findOrphanFacets(kv: StateKV, read: ScopeReader = readOnce(kv)): Promise<Facet[]> {
+export async function findOrphanFacets(kv: StateKV, read: ScopeReader = scopeReader(kv)): Promise<Facet[]> {
   const facets = await read<Facet>(KV.facets);
   const targets = new Map<string, { id: string; observationTarget: boolean }>();
   for (const facet of facets) {

@@ -4,7 +4,7 @@ import { KV } from "../state/schema.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { recordAudit } from "./audit.js";
 import { findOrphanFacets, isFacetStillOrphan } from "./facets.js";
-import { collectAll, readOnce } from "../state/kv.js";
+import { collectAll, scopeReader } from "../state/kv.js";
 import type {
   Action,
   ActionEdge,
@@ -54,7 +54,7 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
         : ALL_CATEGORIES;
 
       const now = Date.now();
-      const read = readOnce(kv);
+      const read = scopeReader(kv);
       const pending: Array<Promise<DiagnosticCheck[]>> = [];
       const category = (name: string, check: (checks: DiagnosticCheck[]) => Promise<void>) => {
         if (!categories.includes(name)) return;
