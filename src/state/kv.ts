@@ -4,7 +4,7 @@ import { decodeCursor, encodeCursor } from './list-query.js'
 import { resolveGraphScope, notifyGraphGenerationChange } from './graph-generation.js'
 import { ensureGraphConsistency, noteGraphSnapshotWrite } from './graph-consistency.js'
 import { withGraphIndexMutation, withGraphSnapshotIndexBarrier, withGraphSnapshotUnknownMutation } from './graph-retrieval-index.js'
-import { WHOLE_LIST_MAX_KEYS, isRedisListTimeout, noteRedisKeys } from '../fork/kv/redis-replies.js'
+import { WHOLE_LIST_MAX_KEYS, isRedisListTimeout, isRedisWriteTimeout, noteRedisKeys } from '../fork/kv/redis-replies.js'
 import { logger } from '../logger.js'
 
 export type StateBackend = 'file' | 'redis'
@@ -19,6 +19,8 @@ type UpdateResult = { old_value: unknown; new_value: unknown; errors: unknown[] 
 
 /** What iii's state::set replies (iii-sdk StateSetResult, dist/state.d.mts): the write, not the stored value. */
 export type StateSetReply<T> = { old_value?: T; new_value: T } | null
+
+export const STATE_WRITE_RETRY_DELAYS_MS = [100, 200, 400] as const
 
 const LOCAL_UPDATE_OPS = new Set(['set', 'remove', 'merge'])
 const UNSAFE_PATHS = new Set(['__proto__', 'constructor', 'prototype'])
@@ -165,12 +167,39 @@ export class StateKV {
     return result
   }
 
+  private async absoluteWrite<TOutput>(
+    function_id: 'state::set' | 'state::delete',
+    payload: { scope: string; key: string; value?: unknown },
+  ): Promise<TOutput> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.sdk.trigger<typeof payload, TOutput>({ function_id, payload })
+      } catch (error) {
+        if (this.backend !== 'redis' || !isRedisWriteTimeout(error)) throw error
+        const delay = STATE_WRITE_RETRY_DELAYS_MS[attempt - 1]
+        if (delay === undefined) {
+          logger.warn('state: a redis write kept timing out; giving up', {
+            scope: payload.scope,
+            key: payload.key,
+            attempts: attempt,
+            message: error instanceof Error ? error.message : String(error),
+          })
+          throw error
+        }
+        logger.warn('state: a redis write timed out; retrying', {
+          scope: payload.scope,
+          key: payload.key,
+          function_id,
+          attempt,
+        })
+        await new Promise<void>((resolve) => setTimeout(resolve, delay))
+      }
+    }
+  }
+
   async set<T = unknown>(scope: string, key: string, value: T): Promise<StateSetReply<T>> {
     return this.mutate(scope, key, (resolvedScope) =>
-      this.sdk.trigger<{ scope: string; key: string; value: T }, StateSetReply<T>>({
-        function_id: 'state::set',
-        payload: { scope: resolvedScope, key, value },
-      }),
+      this.absoluteWrite<StateSetReply<T>>('state::set', { scope: resolvedScope, key, value }),
       { value },
     )
   }
@@ -182,7 +211,7 @@ export class StateKV {
           function_id: 'state::get', payload: { scope: resolvedScope, key },
         })
         const newValue = applyUpdateOps(oldValue, ops)
-        await this.sdk.trigger({ function_id: 'state::set', payload: { scope: resolvedScope, key, value: newValue } })
+        await this.absoluteWrite('state::set', { scope: resolvedScope, key, value: newValue })
         const result: UpdateResult = { old_value: oldValue, new_value: newValue, errors: [] }
         return result as T
       }
@@ -195,10 +224,7 @@ export class StateKV {
 
   async delete(scope: string, key: string): Promise<void> {
     await this.mutate(scope, key, async (resolvedScope) => {
-      await this.sdk.trigger<{ scope: string; key: string }, void>({
-        function_id: 'state::delete',
-        payload: { scope: resolvedScope, key },
-      })
+      await this.absoluteWrite<void>('state::delete', { scope: resolvedScope, key })
     })
   }
 
